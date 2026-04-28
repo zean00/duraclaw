@@ -11,7 +11,9 @@ import (
 
 type Store interface {
 	ClaimDueSchedulerJobs(ctx context.Context, owner string, limit int, leaseFor time.Duration) ([]db.SchedulerJob, error)
+	ClaimDueReminderSubscriptions(ctx context.Context, owner string, limit int, leaseFor time.Duration) ([]db.ReminderSubscription, error)
 	CompleteSchedulerJob(ctx context.Context, jobID string, firedAt, nextRunAt time.Time) error
+	CompleteReminderSubscription(ctx context.Context, id string, firedAt, nextRunAt time.Time) error
 	CreateRun(ctx context.Context, c db.ACPContext, input any) (*db.Run, error)
 	ResumeWorkflowTimer(ctx context.Context, runID, workflowRunID, nodeKey string, response map[string]any) error
 }
@@ -34,11 +36,14 @@ func (s *Service) RunOnce(ctx context.Context, now time.Time) (int, error) {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
+	created, err := s.runReminderSubscriptions(ctx, now)
+	if err != nil {
+		return created, err
+	}
 	jobs, err := s.store.ClaimDueSchedulerJobs(ctx, s.owner, s.limit, s.leaseFor)
 	if err != nil {
-		return 0, err
+		return created, err
 	}
-	created := 0
 	for _, job := range jobs {
 		spec, err := parsePayload(job.Payload)
 		if err != nil {
@@ -75,6 +80,37 @@ func (s *Service) RunOnce(ctx context.Context, now time.Time) (int, error) {
 			return created, err
 		}
 		if err := s.store.CompleteSchedulerJob(ctx, job.ID, fireAt, next); err != nil {
+			return created, err
+		}
+		created++
+	}
+	return created, nil
+}
+
+func (s *Service) runReminderSubscriptions(ctx context.Context, now time.Time) (int, error) {
+	subs, err := s.store.ClaimDueReminderSubscriptions(ctx, s.owner, s.limit, s.leaseFor)
+	if err != nil {
+		return 0, err
+	}
+	created := 0
+	for _, sub := range subs {
+		fireAt := sub.NextRunAt
+		input := map[string]any{}
+		_ = json.Unmarshal(sub.Payload, &input)
+		if len(input) == 0 {
+			input = map[string]any{"text": sub.Title}
+		}
+		if _, err := s.store.CreateRun(ctx, db.ACPContext{
+			CustomerID: sub.CustomerID, UserID: sub.UserID, AgentInstanceID: sub.AgentInstanceID, SessionID: sub.SessionID,
+			RequestID: "reminder-" + sub.ID, IdempotencyKey: IdempotencyKey(sub.ID, fireAt),
+		}, input); err != nil {
+			return created, err
+		}
+		next, err := Next(sub.Schedule, maxTime(now, fireAt))
+		if err != nil {
+			return created, err
+		}
+		if err := s.store.CompleteReminderSubscription(ctx, sub.ID, fireAt, next); err != nil {
 			return created, err
 		}
 		created++

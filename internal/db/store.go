@@ -33,19 +33,20 @@ type ContentPart struct {
 }
 
 type Run struct {
-	ID              string          `json:"id"`
-	CustomerID      string          `json:"customer_id"`
-	UserID          string          `json:"user_id"`
-	AgentInstanceID string          `json:"agent_instance_id"`
-	SessionID       string          `json:"session_id"`
-	RequestID       string          `json:"request_id"`
-	IdempotencyKey  string          `json:"idempotency_key"`
-	State           string          `json:"state"`
-	Input           json.RawMessage `json:"input"`
-	Error           *string         `json:"error,omitempty"`
-	CreatedAt       time.Time       `json:"created_at"`
-	UpdatedAt       time.Time       `json:"updated_at"`
-	CompletedAt     *time.Time      `json:"completed_at,omitempty"`
+	ID                     string          `json:"id"`
+	CustomerID             string          `json:"customer_id"`
+	UserID                 string          `json:"user_id"`
+	AgentInstanceID        string          `json:"agent_instance_id"`
+	AgentInstanceVersionID string          `json:"agent_instance_version_id,omitempty"`
+	SessionID              string          `json:"session_id"`
+	RequestID              string          `json:"request_id"`
+	IdempotencyKey         string          `json:"idempotency_key"`
+	State                  string          `json:"state"`
+	Input                  json.RawMessage `json:"input"`
+	Error                  *string         `json:"error,omitempty"`
+	CreatedAt              time.Time       `json:"created_at"`
+	UpdatedAt              time.Time       `json:"updated_at"`
+	CompletedAt            *time.Time      `json:"completed_at,omitempty"`
 }
 
 type RunStep struct {
@@ -151,11 +152,14 @@ func (s *Store) EnsureSession(ctx context.Context, c ACPContext) error {
 		if _, err := tx.Exec(ctx, `INSERT INTO agent_instances(customer_id,id) VALUES($1,$2) ON CONFLICT DO NOTHING`, c.CustomerID, c.AgentInstanceID); err != nil {
 			return err
 		}
+		if err := ensureDefaultAgentInstanceVersion(ctx, tx, c.CustomerID, c.AgentInstanceID); err != nil {
+			return err
+		}
 		_, err := tx.Exec(ctx, `
 			INSERT INTO sessions(customer_id,user_id,agent_instance_id,id)
 			VALUES($1,$2,$3,$4)
 			ON CONFLICT (customer_id,id) DO UPDATE
-			SET user_id=EXCLUDED.user_id, agent_instance_id=EXCLUDED.agent_instance_id, updated_at=now()`,
+			SET user_id=EXCLUDED.user_id, updated_at=now()`,
 			c.CustomerID, c.UserID, c.AgentInstanceID, c.SessionID)
 		return err
 	})
@@ -165,19 +169,31 @@ func (s *Store) CreateRun(ctx context.Context, c ACPContext, input any) (*Run, e
 	if err := s.EnsureSession(ctx, c); err != nil {
 		return nil, err
 	}
+	effectiveAgentInstanceID, err := s.sessionAgentInstanceID(ctx, c.CustomerID, c.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	versionID, err := s.currentAgentInstanceVersionID(ctx, c.CustomerID, effectiveAgentInstanceID)
+	if err != nil {
+		return nil, err
+	}
+	var versionArg any
+	if versionID != "" {
+		versionArg = versionID
+	}
 	inputJSON, _ := json.Marshal(input)
 	channelJSON, _ := json.Marshal(map[string]string{
 		"channel_type": c.ChannelType, "channel_user_id": c.ChannelUserID, "channel_conversation_id": c.ChannelConvID, "trace_id": c.TraceID,
 	})
 	var r Run
 	var inserted bool
-	err := s.pool.QueryRow(ctx, `
-		INSERT INTO runs(customer_id,user_id,agent_instance_id,session_id,request_id,idempotency_key,state,input,channel_context)
-		VALUES($1,$2,$3,$4,$5,$6,'queued',$7,$8)
+	err = s.pool.QueryRow(ctx, `
+		INSERT INTO runs(customer_id,user_id,agent_instance_id,agent_instance_version_id,session_id,request_id,idempotency_key,state,input,channel_context)
+		VALUES($1,$2,$3,$4,$5,$6,$7,'queued',$8,$9)
 		ON CONFLICT (customer_id,session_id,idempotency_key) DO UPDATE SET updated_at=runs.updated_at
-		RETURNING id::text, customer_id, user_id, agent_instance_id, session_id, request_id, idempotency_key, state, input, error, created_at, updated_at, completed_at, xmax = 0`,
-		c.CustomerID, c.UserID, c.AgentInstanceID, c.SessionID, c.RequestID, c.IdempotencyKey, inputJSON, channelJSON).
-		Scan(&r.ID, &r.CustomerID, &r.UserID, &r.AgentInstanceID, &r.SessionID, &r.RequestID, &r.IdempotencyKey, &r.State, &r.Input, &r.Error, &r.CreatedAt, &r.UpdatedAt, &r.CompletedAt, &inserted)
+		RETURNING id::text, customer_id, user_id, agent_instance_id, COALESCE(agent_instance_version_id::text,''), session_id, request_id, idempotency_key, state, input, error, created_at, updated_at, completed_at, xmax = 0`,
+		c.CustomerID, c.UserID, effectiveAgentInstanceID, versionArg, c.SessionID, c.RequestID, c.IdempotencyKey, inputJSON, channelJSON).
+		Scan(&r.ID, &r.CustomerID, &r.UserID, &r.AgentInstanceID, &r.AgentInstanceVersionID, &r.SessionID, &r.RequestID, &r.IdempotencyKey, &r.State, &r.Input, &r.Error, &r.CreatedAt, &r.UpdatedAt, &r.CompletedAt, &inserted)
 	if err != nil {
 		return nil, err
 	}
@@ -191,9 +207,9 @@ func (s *Store) CreateRun(ctx context.Context, c ACPContext, input any) (*Run, e
 func (s *Store) GetRun(ctx context.Context, runID string) (*Run, error) {
 	var r Run
 	err := s.pool.QueryRow(ctx, `
-		SELECT id::text, customer_id, user_id, agent_instance_id, session_id, request_id, idempotency_key, state, input, error, created_at, updated_at, completed_at
+		SELECT id::text, customer_id, user_id, agent_instance_id, COALESCE(agent_instance_version_id::text,''), session_id, request_id, idempotency_key, state, input, error, created_at, updated_at, completed_at
 		FROM runs WHERE id=$1`, runID).
-		Scan(&r.ID, &r.CustomerID, &r.UserID, &r.AgentInstanceID, &r.SessionID, &r.RequestID, &r.IdempotencyKey, &r.State, &r.Input, &r.Error, &r.CreatedAt, &r.UpdatedAt, &r.CompletedAt)
+		Scan(&r.ID, &r.CustomerID, &r.UserID, &r.AgentInstanceID, &r.AgentInstanceVersionID, &r.SessionID, &r.RequestID, &r.IdempotencyKey, &r.State, &r.Input, &r.Error, &r.CreatedAt, &r.UpdatedAt, &r.CompletedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -211,9 +227,9 @@ func (s *Store) RunByIdempotencyKey(ctx context.Context, customerID, sessionID, 
 func (s *Store) oneRun(ctx context.Context, where string, args ...any) (*Run, error) {
 	var r Run
 	err := s.pool.QueryRow(ctx, `
-		SELECT id::text, customer_id, user_id, agent_instance_id, session_id, request_id, idempotency_key, state, input, error, created_at, updated_at, completed_at
+		SELECT id::text, customer_id, user_id, agent_instance_id, COALESCE(agent_instance_version_id::text,''), session_id, request_id, idempotency_key, state, input, error, created_at, updated_at, completed_at
 		FROM runs `+where, args...).
-		Scan(&r.ID, &r.CustomerID, &r.UserID, &r.AgentInstanceID, &r.SessionID, &r.RequestID, &r.IdempotencyKey, &r.State, &r.Input, &r.Error, &r.CreatedAt, &r.UpdatedAt, &r.CompletedAt)
+		Scan(&r.ID, &r.CustomerID, &r.UserID, &r.AgentInstanceID, &r.AgentInstanceVersionID, &r.SessionID, &r.RequestID, &r.IdempotencyKey, &r.State, &r.Input, &r.Error, &r.CreatedAt, &r.UpdatedAt, &r.CompletedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -272,9 +288,9 @@ func (s *Store) ClaimRun(ctx context.Context, owner string, leaseFor time.Durati
 			SET state='leased', lease_owner=$1, leased_at=now(), lease_expires_at=now()+$2::interval, updated_at=now()
 			FROM candidate
 			WHERE r.id=candidate.id
-			RETURNING r.id::text, r.customer_id, r.user_id, r.agent_instance_id, r.session_id, r.request_id, r.idempotency_key, r.state, r.input, r.error, r.created_at, r.updated_at, r.completed_at`,
+			RETURNING r.id::text, r.customer_id, r.user_id, r.agent_instance_id, COALESCE(r.agent_instance_version_id::text,''), r.session_id, r.request_id, r.idempotency_key, r.state, r.input, r.error, r.created_at, r.updated_at, r.completed_at`,
 			owner, fmt.Sprintf("%f seconds", leaseFor.Seconds()))
-		return row.Scan(&r.ID, &r.CustomerID, &r.UserID, &r.AgentInstanceID, &r.SessionID, &r.RequestID, &r.IdempotencyKey, &r.State, &r.Input, &r.Error, &r.CreatedAt, &r.UpdatedAt, &r.CompletedAt)
+		return row.Scan(&r.ID, &r.CustomerID, &r.UserID, &r.AgentInstanceID, &r.AgentInstanceVersionID, &r.SessionID, &r.RequestID, &r.IdempotencyKey, &r.State, &r.Input, &r.Error, &r.CreatedAt, &r.UpdatedAt, &r.CompletedAt)
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil

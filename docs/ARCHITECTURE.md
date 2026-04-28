@@ -57,11 +57,14 @@ Required ACP capabilities:
 - Find run by idempotency key.
 - Find latest run for a session.
 
+Admin configuration APIs also manage agent instance versions. A run must snapshot the active `agent_instance_version_id` when it is created so in-flight work remains tied to the configuration it started with.
+
 Duraclaw should implement these concepts even if the concrete HTTP routes are adapted to Nexus' strict/native ACP client.
 
 ```text
 GET    /acp/agents
 PUT    /acp/sessions/{session_id}
+POST   /acp/sessions/{session_id}/reassign
 POST   /acp/runs
 POST   /acp/runs/{run_id}/artifacts
 GET    /acp/runs/{run_id}
@@ -241,6 +244,8 @@ An agent instance owns:
 - Memory policy.
 - Cron and background-job permissions.
 
+Agent instance versions are immutable configuration snapshots. Activating a version updates the agent instance's current pointer; existing runs keep their original `agent_instance_version_id`. Version snapshots can provide system instructions and model fallback configuration for agent-loop and workflow model calls.
+
 A session belongs to one user and is shared across channels. The same user on WhatsApp, webchat, or another channel should map to the same Duraclaw session when Nexus resolves them as the same user.
 
 ```text
@@ -253,6 +258,8 @@ Session reassignment rules:
 
 - A session has a current `agent_instance_id`.
 - Reassignment creates a durable `session_agent_instance_transfers` record.
+- Session ensure/reload and run creation must not silently change `agent_instance_id`; reassignment uses the explicit transfer path.
+- Run creation snapshots the persisted session agent and that agent's active version, not a divergent request header.
 - Conversation history and memory remain attached to the session.
 - Future runs use the new agent instance.
 - Existing in-flight runs continue on the agent instance they started with unless explicitly cancelled and restarted.
@@ -856,8 +863,10 @@ The scheduler should be PostgreSQL-backed:
 
 - Poll due jobs.
 - Acquire row-level locks with `FOR UPDATE SKIP LOCKED`.
-- Create run records transactionally.
+- Claim due reminder subscriptions with row-level locks and fan out one durable run per subscription.
+- Create run records with deterministic idempotency keys.
 - Advance `next_run_at`.
+- Disable one-shot jobs or subscriptions after the first successful fire.
 - Workers execute resulting runs.
 
 ## Background Jobs

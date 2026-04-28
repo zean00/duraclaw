@@ -153,12 +153,16 @@ func (w *Worker) process(ctx context.Context, run *db.Run) error {
 	workflowContext := ""
 	workflowID := workflowIDFromInput(run.Input)
 	if workflowID != "" {
+		modelConfig, err := w.modelConfigForRun(ctx, run)
+		if err != nil {
+			return err
+		}
 		stepID, err := w.store.StartRunStep(ctx, run.ID, "workflow_graph", map[string]any{"workflow_id": workflowID})
 		if err != nil {
 			return err
 		}
 		result, err := workflow.NewExecutor(w.store).
-			WithProviders(w.providers, w.modelConfig).
+			WithProviders(w.providers, modelConfig).
 			WithTools(w.tools).
 			WithMCP(w.mcpManager).
 			WithPolicy(w.policyEngine()).
@@ -307,7 +311,11 @@ func (w *Worker) emitFinalOutbound(ctx context.Context, run *db.Run, messageID, 
 }
 
 func (w *Worker) chat(ctx context.Context, run *db.Run, messages []providers.Message, toolDefs []providers.ToolDefinition, summary map[string]any) (*providers.LLMResponse, error) {
-	candidates := providers.ResolveCandidates(w.modelConfig, w.providers.DefaultProvider())
+	modelConfig, err := w.modelConfigForRun(ctx, run)
+	if err != nil {
+		return nil, err
+	}
+	candidates := providers.ResolveCandidates(modelConfig, w.providers.DefaultProvider())
 	if len(candidates) == 0 {
 		candidates = []providers.FallbackCandidate{{Provider: "mock", Model: "duraclaw"}}
 	}
@@ -376,12 +384,26 @@ func (w *Worker) providerMessages(ctx context.Context, run *db.Run, currentText 
 		return nil, err
 	}
 	promptMessages := make([]prompt.Message, 0, len(history)+1)
+	versionInstructions, err := w.agentInstanceVersionInstructions(ctx, run)
+	if err != nil {
+		return nil, err
+	}
+	if versionInstructions != "" {
+		promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: versionInstructions})
+	}
 	workflowManifest, err := workflow.PromptManifest(ctx, w.store, run.CustomerID, run.AgentInstanceID)
 	if err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(workflowManifest) != "" {
 		promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: workflowManifest})
+	}
+	transferNote, err := w.sessionTransferNote(ctx, run)
+	if err != nil {
+		return nil, err
+	}
+	if transferNote != "" {
+		promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: transferNote})
 	}
 	userProfile, err := w.userProfileContext(ctx, run)
 	if err != nil {
@@ -411,6 +433,54 @@ func (w *Worker) providerMessages(ctx context.Context, run *db.Run, currentText 
 		messages = append(messages, providers.Message{Role: msg.Role, Content: msg.Content})
 	}
 	return messages, nil
+}
+
+func (w *Worker) agentInstanceVersionInstructions(ctx context.Context, run *db.Run) (string, error) {
+	version, err := w.store.AgentInstanceVersion(ctx, run.AgentInstanceVersionID)
+	if err != nil || version == nil {
+		return "", err
+	}
+	return strings.TrimSpace(version.SystemInstructions), nil
+}
+
+func (w *Worker) modelConfigForRun(ctx context.Context, run *db.Run) (providers.ModelConfig, error) {
+	modelConfig := w.modelConfig
+	version, err := w.store.AgentInstanceVersion(ctx, run.AgentInstanceVersionID)
+	if err != nil || version == nil || len(version.ModelConfig) == 0 {
+		return modelConfig, err
+	}
+	var payload struct {
+		Primary   string   `json:"primary"`
+		Model     string   `json:"model"`
+		Fallbacks []string `json:"fallbacks"`
+	}
+	if err := json.Unmarshal(version.ModelConfig, &payload); err != nil {
+		return modelConfig, err
+	}
+	if strings.TrimSpace(payload.Primary) != "" {
+		modelConfig.Primary = payload.Primary
+	} else if strings.TrimSpace(payload.Model) != "" {
+		modelConfig.Primary = payload.Model
+	}
+	if payload.Fallbacks != nil {
+		modelConfig.Fallbacks = payload.Fallbacks
+	}
+	return modelConfig, nil
+}
+
+func (w *Worker) sessionTransferNote(ctx context.Context, run *db.Run) (string, error) {
+	transfer, err := w.store.LatestSessionTransfer(ctx, run.CustomerID, run.SessionID)
+	if err != nil || transfer == nil {
+		return "", err
+	}
+	if transfer.ToAgentInstanceID != run.AgentInstanceID {
+		return "", nil
+	}
+	reason := strings.TrimSpace(transfer.Reason)
+	if reason == "" {
+		reason = "agent instance reassigned"
+	}
+	return fmt.Sprintf("Session was reassigned from agent instance %s to %s. Transfer note: %s", transfer.FromAgentInstanceID, transfer.ToAgentInstanceID, reason), nil
 }
 
 func (w *Worker) policyEngine() *policy.Engine {

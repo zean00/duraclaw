@@ -11,6 +11,7 @@ import (
 
 type fakeSchedulerStore struct {
 	jobs       []db.SchedulerJob
+	subs       []db.ReminderSubscription
 	runCtx     db.ACPContext
 	completed  bool
 	runCreated bool
@@ -20,7 +21,16 @@ func (s *fakeSchedulerStore) ClaimDueSchedulerJobs(context.Context, string, int,
 	return s.jobs, nil
 }
 
+func (s *fakeSchedulerStore) ClaimDueReminderSubscriptions(context.Context, string, int, time.Duration) ([]db.ReminderSubscription, error) {
+	return s.subs, nil
+}
+
 func (s *fakeSchedulerStore) CompleteSchedulerJob(_ context.Context, _ string, _, _ time.Time) error {
+	s.completed = true
+	return nil
+}
+
+func (s *fakeSchedulerStore) CompleteReminderSubscription(_ context.Context, _ string, _, _ time.Time) error {
 	s.completed = true
 	return nil
 }
@@ -77,5 +87,23 @@ func TestServiceResumesWorkflowTimer(t *testing.T) {
 	}
 	if store.runCreated {
 		t.Fatalf("workflow timer wake should not create a fresh run")
+	}
+}
+
+func TestServiceFansOutReminderSubscriptions(t *testing.T) {
+	payload, _ := json.Marshal(map[string]any{"text": "drink water"})
+	fireAt := time.Date(2026, 4, 28, 10, 0, 0, 0, time.UTC)
+	store := &fakeSchedulerStore{subs: []db.ReminderSubscription{{
+		ID: "sub-1", CustomerID: "c", UserID: "u", AgentInstanceID: "a", SessionID: "s", Schedule: "*/5 * * * *", NextRunAt: fireAt, Payload: payload,
+	}}}
+	count, err := NewService(store, "owner").RunOnce(context.Background(), fireAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || !store.runCreated || !store.completed {
+		t.Fatalf("count=%d runCreated=%v completed=%v", count, store.runCreated, store.completed)
+	}
+	if store.runCtx.IdempotencyKey != IdempotencyKey("sub-1", fireAt) || store.runCtx.RequestID != "reminder-sub-1" {
+		t.Fatalf("run ctx=%#v", store.runCtx)
 	}
 }

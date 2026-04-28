@@ -74,6 +74,9 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /healthz", h.healthz)
 	mux.HandleFunc("GET /readyz", h.readyz)
 	mux.HandleFunc("GET /metrics", h.metrics)
+	mux.HandleFunc("POST /admin/agent-instances/{agent_instance_id}/versions", h.requireAdmin(h.createAgentInstanceVersion))
+	mux.HandleFunc("GET /admin/agent-instances/{agent_instance_id}/versions", h.requireAdmin(h.listAgentInstanceVersions))
+	mux.HandleFunc("POST /admin/agent-instances/{agent_instance_id}/versions/{version_id}/activate", h.requireAdmin(h.activateAgentInstanceVersion))
 	mux.HandleFunc("POST /admin/workflows", h.requireAdmin(h.createWorkflow))
 	mux.HandleFunc("GET /admin/workflows", h.requireAdmin(h.listWorkflows))
 	mux.HandleFunc("GET /admin/workflows/{workflow_id}/nodes", h.requireAdmin(h.listWorkflowNodes))
@@ -116,6 +119,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("POST /admin/retention/run", h.requireAdmin(h.runRetention))
 	mux.HandleFunc("GET /acp/agents", h.requireACP(h.agents))
 	mux.HandleFunc("PUT /acp/sessions/{session_id}", h.requireACP(h.ensureSession))
+	mux.HandleFunc("POST /acp/sessions/{session_id}/reassign", h.requireACP(h.reassignSession))
 	mux.HandleFunc("POST /acp/runs", h.requireACP(h.startRun))
 	mux.HandleFunc("POST /acp/runs/{run_id}/artifacts", h.requireACP(h.attachArtifacts))
 	mux.HandleFunc("GET /acp/runs/{run_id}/artifacts", h.requireACP(h.listRunArtifacts))
@@ -233,6 +237,84 @@ func (h *Handler) readyz(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "database": "ok"})
+}
+
+func (h *Handler) createAgentInstanceVersion(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		CustomerID          string         `json:"customer_id"`
+		Version             int            `json:"version"`
+		Name                string         `json:"name"`
+		ModelConfig         map[string]any `json:"model_config"`
+		SystemInstructions  string         `json:"system_instructions"`
+		ToolConfig          map[string]any `json:"tool_config"`
+		MCPConfig           map[string]any `json:"mcp_config"`
+		WorkflowConfig      map[string]any `json:"workflow_config"`
+		PolicyConfig        map[string]any `json:"policy_config"`
+		Metadata            map[string]any `json:"metadata"`
+		ActivateImmediately bool           `json:"activate_immediately"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if payload.CustomerID == "" || r.PathValue("agent_instance_id") == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id and agent_instance_id are required"))
+		return
+	}
+	version, err := h.store.CreateAgentInstanceVersion(r.Context(), db.AgentInstanceVersionSpec{
+		CustomerID:          payload.CustomerID,
+		AgentInstanceID:     r.PathValue("agent_instance_id"),
+		Version:             payload.Version,
+		Name:                payload.Name,
+		ModelConfig:         payload.ModelConfig,
+		SystemInstructions:  payload.SystemInstructions,
+		ToolConfig:          payload.ToolConfig,
+		MCPConfig:           payload.MCPConfig,
+		WorkflowConfig:      payload.WorkflowConfig,
+		PolicyConfig:        payload.PolicyConfig,
+		Metadata:            payload.Metadata,
+		ActivateImmediately: payload.ActivateImmediately,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, version)
+}
+
+func (h *Handler) listAgentInstanceVersions(w http.ResponseWriter, r *http.Request) {
+	customerID := r.URL.Query().Get("customer_id")
+	if customerID == "" || r.PathValue("agent_instance_id") == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id and agent_instance_id are required"))
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	versions, err := h.store.ListAgentInstanceVersions(r.Context(), customerID, r.PathValue("agent_instance_id"), limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"versions": versions})
+}
+
+func (h *Handler) activateAgentInstanceVersion(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		CustomerID string `json:"customer_id"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if payload.CustomerID == "" || r.PathValue("agent_instance_id") == "" || r.PathValue("version_id") == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id, agent_instance_id, and version_id are required"))
+		return
+	}
+	version, err := h.store.ActivateAgentInstanceVersion(r.Context(), payload.CustomerID, r.PathValue("agent_instance_id"), r.PathValue("version_id"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, version)
 }
 
 func (h *Handler) createWorkflow(w http.ResponseWriter, r *http.Request) {
@@ -1074,6 +1156,36 @@ func (h *Handler) ensureSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"session_id": c.SessionID, "state": "ready"})
+}
+
+func (h *Handler) reassignSession(w http.ResponseWriter, r *http.Request) {
+	c, ok := requiredContext(w, r, false)
+	if !ok {
+		return
+	}
+	if c.SessionID != r.PathValue("session_id") {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("X-Session-ID does not match route session id"))
+		return
+	}
+	var payload struct {
+		AgentInstanceID string         `json:"agent_instance_id"`
+		Reason          string         `json:"reason"`
+		Metadata        map[string]any `json:"metadata"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if payload.AgentInstanceID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("agent_instance_id is required"))
+		return
+	}
+	transfer, err := h.store.ReassignSession(r.Context(), c.CustomerID, c.SessionID, payload.AgentInstanceID, payload.Reason, payload.Metadata)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, transfer)
 }
 
 func (h *Handler) startRun(w http.ResponseWriter, r *http.Request) {

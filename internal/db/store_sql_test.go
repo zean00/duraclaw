@@ -11,9 +11,99 @@ func TestStoreClaimQueriesUseSkipLocked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	remindersRaw, err := os.ReadFile("reminders.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw) + string(remindersRaw)
+	if strings.Count(sql, "FOR UPDATE SKIP LOCKED") < 4 {
+		t.Fatalf("expected run, scheduler, outbox, and reminder subscription claim queries to use FOR UPDATE SKIP LOCKED")
+	}
+}
+
+func TestEnsureSessionDoesNotImplicitlyReassignAgentInstance(t *testing.T) {
+	raw, err := os.ReadFile("store.go")
+	if err != nil {
+		t.Fatal(err)
+	}
 	sql := string(raw)
-	if strings.Count(sql, "FOR UPDATE SKIP LOCKED") < 3 {
-		t.Fatalf("expected run, scheduler, and outbox claim queries to use FOR UPDATE SKIP LOCKED")
+	if strings.Contains(sql, "agent_instance_id=EXCLUDED.agent_instance_id") {
+		t.Fatalf("EnsureSession must not reassign sessions without a transfer record")
+	}
+}
+
+func TestStoreHasSessionTransferQueries(t *testing.T) {
+	raw, err := os.ReadFile("sessions.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw)
+	for _, want := range []string{
+		"ReassignSession",
+		"FOR UPDATE",
+		"session_agent_instance_transfers",
+		"LatestSessionTransfer",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("session transfer store missing %q", want)
+		}
+	}
+}
+
+func TestStoreSnapshotsAgentInstanceVersionOnRunCreation(t *testing.T) {
+	raw, err := os.ReadFile("store.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentRaw, err := os.ReadFile("agent_instances.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw) + string(agentRaw)
+	for _, want := range []string{
+		"currentAgentInstanceVersionID",
+		"agent_instance_version_id",
+		"COALESCE(agent_instance_version_id::text,'')",
+		"ensureDefaultAgentInstanceVersion",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("agent instance version snapshot missing %q", want)
+		}
+	}
+}
+
+func TestCreateRunUsesPersistedSessionAgentInstance(t *testing.T) {
+	raw, err := os.ReadFile("store.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionsRaw, err := os.ReadFile("sessions.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw) + string(sessionsRaw)
+	for _, want := range []string{
+		"sessionAgentInstanceID",
+		"effectiveAgentInstanceID",
+		"currentAgentInstanceVersionID(ctx, c.CustomerID, effectiveAgentInstanceID)",
+		"c.CustomerID, c.UserID, effectiveAgentInstanceID, versionArg",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("CreateRun must use persisted session agent instance, missing %q", want)
+		}
+	}
+}
+
+func TestCompleteReminderSubscriptionDisablesOneShotSchedules(t *testing.T) {
+	raw, err := os.ReadFile("reminders.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw)
+	for _, want := range []string{"nextRunAt.IsZero()", "enabled=false", "lease_owner=NULL"} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("CompleteReminderSubscription should disable one-shot subscriptions, missing %q", want)
+		}
 	}
 }
 

@@ -102,3 +102,41 @@ func TestFourthMigrationContainsReminderSchema(t *testing.T) {
 		}
 	}
 }
+
+func TestFifthMigrationContainsSessionTransferAndReminderFanoutSchema(t *testing.T) {
+	raw, err := migrationFS.ReadFile("migrations/0005_session_transfers_and_reminder_fanout.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw)
+	for _, want := range []string{
+		"CREATE TABLE IF NOT EXISTS session_agent_instance_transfers",
+		"FOREIGN KEY (customer_id, session_id) REFERENCES sessions(customer_id, id)",
+		"ALTER TABLE reminder_subscriptions ADD COLUMN IF NOT EXISTS lease_owner",
+		"ALTER TABLE reminder_subscriptions ADD COLUMN IF NOT EXISTS lease_expires_at",
+		"CREATE INDEX IF NOT EXISTS reminder_subscriptions_claim_idx",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("migration missing %q", want)
+		}
+	}
+}
+
+func TestSixthMigrationContainsAgentInstanceVersionSchema(t *testing.T) {
+	raw, err := migrationFS.ReadFile("migrations/0006_agent_instance_versions.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw)
+	for _, want := range []string{
+		"CREATE TABLE IF NOT EXISTS agent_instance_versions",
+		"UNIQUE (customer_id, agent_instance_id, version)",
+		"ALTER TABLE agent_instances ADD COLUMN IF NOT EXISTS current_version_id",
+		"ALTER TABLE runs ADD COLUMN IF NOT EXISTS agent_instance_version_id",
+		"CREATE INDEX IF NOT EXISTS runs_agent_instance_version_idx",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("migration missing %q", want)
+		}
+	}
+}

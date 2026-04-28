@@ -69,6 +69,9 @@ go test ./internal/db -run TestMigrateAgainstPostgres
 - `GET /healthz`
 - `GET /readyz`
 - `GET /metrics`
+- `POST /admin/agent-instances/{agent_instance_id}/versions`
+- `GET /admin/agent-instances/{agent_instance_id}/versions?customer_id={customer_id}`
+- `POST /admin/agent-instances/{agent_instance_id}/versions/{version_id}/activate`
 - `POST /admin/workflows`
 - `GET /admin/workflows`
 - `GET /admin/workflows/{workflow_id}/nodes`
@@ -110,6 +113,7 @@ go test ./internal/db -run TestMigrateAgainstPostgres
 - `POST /admin/broadcasts/{broadcast_id}/cancel`
 - `POST /admin/retention/run`
 - `PUT /acp/sessions/{session_id}`
+- `POST /acp/sessions/{session_id}/reassign`
 - `POST /acp/runs`
 - `POST /acp/runs/{run_id}/artifacts`
 - `GET /acp/runs/{run_id}/artifacts`
@@ -198,19 +202,22 @@ queued run
   -> completed
 ```
 
-Scheduler jobs and async outbox records also use PostgreSQL claim queries with `FOR UPDATE SKIP LOCKED`.
+Scheduler jobs, reminder subscriptions, and async outbox records also use PostgreSQL claim queries with `FOR UPDATE SKIP LOCKED`.
 
 The persistence layer also includes:
 
+- Agent instance versions with active-version pointers, per-run version snapshots, versioned system instructions, and model fallback overrides.
 - Workflow definitions, nodes, edges, assignments, workflow runs, node states, edge activations, and workflow node runs.
 - Policy packs, rules, assignments, and policy evaluation audit records.
+- Session agent-instance transfer records; session ensure and run creation use the persisted session agent unless the explicit reassignment route changes it.
 - Memory records for stable facts scoped by customer/user/session.
 - Preference records for conditional preferences scoped by customer/user/session.
-- Reminder subscriptions and one-shot workflow timer wake jobs backed by scheduler jobs.
+- Reminder subscriptions fan out into deterministic durable runs; one-shot workflow timer wake jobs are backed by scheduler jobs.
 - Knowledge documents and vector-ready chunks with pgvector search helpers.
 - Outbound intents queued through `async_outbox` for Nexus-owned delivery.
 - Broadcast creation creates per-target outbound intents for Nexus-owned delivery.
 - Recent session message history used by the worker when composing model context.
+- Latest session transfer note included in model context after reassignment.
 - Context compaction for bounded prompt history.
 - Artifact attachment policy checks for size, allowed media types, and raw payload metadata fields.
 - Memory tools: `remember` and `list_memories` for stable facts.

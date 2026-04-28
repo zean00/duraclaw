@@ -58,6 +58,29 @@ func TestAccessLogStatusCounter(t *testing.T) {
 	}
 }
 
+func TestAgentInstanceVersionRoutesValidateBeforeStore(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/admin/agent-instances/a1/versions", strings.NewReader(`{"version":1}`))
+	rec := httptest.NewRecorder()
+	NewHandler(nil).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "customer_id") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/admin/agent-instances/a1/versions", nil)
+	rec = httptest.NewRecorder()
+	NewHandler(nil).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "customer_id") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/admin/agent-instances/a1/versions/v1/activate", strings.NewReader(`{}`))
+	rec = httptest.NewRecorder()
+	NewHandler(nil).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "version_id") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestCreateSchedulerJobValidatesSchedule(t *testing.T) {
 	body := `{"customer_id":"c1","user_id":"u1","agent_instance_id":"a1","session_id":"s1","schedule":"not cron"}`
 	req := httptest.NewRequest(http.MethodPost, "/admin/scheduler/jobs", strings.NewReader(body))
@@ -488,6 +511,32 @@ func TestRequestIDResponseHeader(t *testing.T) {
 	NewHandler(nil).Routes().ServeHTTP(rec, req)
 	if rec.Header().Get("X-Request-ID") != "req-1" {
 		t.Fatalf("missing response request id")
+	}
+}
+
+func TestReassignSessionValidatesRouteAndBody(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/acp/sessions/route-session/reassign", strings.NewReader(`{"agent_instance_id":"agent-2"}`))
+	req.Header.Set("X-Customer-ID", "c")
+	req.Header.Set("X-User-ID", "u")
+	req.Header.Set("X-Agent-Instance-ID", "agent-1")
+	req.Header.Set("X-Session-ID", "other-session")
+	req.Header.Set("X-Request-ID", "r")
+	rec := httptest.NewRecorder()
+	NewHandler(nil).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "does not match") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/acp/sessions/route-session/reassign", strings.NewReader(`{"reason":"handoff"}`))
+	req.Header.Set("X-Customer-ID", "c")
+	req.Header.Set("X-User-ID", "u")
+	req.Header.Set("X-Agent-Instance-ID", "agent-1")
+	req.Header.Set("X-Session-ID", "route-session")
+	req.Header.Set("X-Request-ID", "r")
+	rec = httptest.NewRecorder()
+	NewHandler(nil).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "agent_instance_id is required") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 
