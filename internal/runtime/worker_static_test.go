@@ -23,3 +23,14 @@ func TestWorkerUsesAgentInstanceVersionConfiguration(t *testing.T) {
 		}
 	}
 }
+
+func TestWorkerPassesCountersToAllWorkflowExecutors(t *testing.T) {
+	raw, err := os.ReadFile("worker.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(raw)
+	if strings.Count(src, "workflow.NewExecutor(w.store)") != strings.Count(src, "WithCounters(w.counters)") {
+		t.Fatalf("every workflow executor path should receive counters")
+	}
+}

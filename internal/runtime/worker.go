@@ -165,6 +165,7 @@ func (w *Worker) process(ctx context.Context, run *db.Run) error {
 			WithProviders(w.providers, modelConfig).
 			WithTools(w.tools).
 			WithMCP(w.mcpManager).
+			WithCounters(w.counters).
 			WithPolicy(w.policyEngine()).
 			WithProcessors(w.processors).
 			ExecuteGraph(ctx, workflow.GraphRequest{
@@ -714,6 +715,7 @@ func (w *Worker) executeInternalTool(ctx context.Context, run *db.Run, stepID st
 			WithProviders(w.providers, w.modelConfig).
 			WithTools(w.tools).
 			WithMCP(w.mcpManager).
+			WithCounters(w.counters).
 			WithPolicy(w.policyEngine()).
 			WithProcessors(w.processors).
 			ExecuteGraph(ctx, workflow.GraphRequest{

@@ -1,6 +1,11 @@
 package mcp
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+)
 
 func TestExecutionContextHeaders(t *testing.T) {
 	headers := (ExecutionContext{
@@ -20,7 +25,61 @@ func TestManagerRegistersHTTPClient(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing client")
 	}
-	if _, ok := client.(HTTPClient); !ok {
+	if _, ok := client.(*managedClient); !ok {
 		t.Fatalf("client=%T", client)
+	}
+	status, ok := manager.Status("srv")
+	if !ok || status.Transport != "http" {
+		t.Fatalf("status=%#v ok=%v", status, ok)
+	}
+}
+
+func TestRegisterHTTPDoesNotRetryByDefault(t *testing.T) {
+	manager := NewManager()
+	client := &retryClient{}
+	manager.RegisterWithSpec(ServerSpec{Name: "srv", Transport: "http"}, client)
+	managed, ok := manager.Client("srv")
+	if !ok {
+		t.Fatal("missing client")
+	}
+	_, err := managed.CallTool(context.Background(), ExecutionContext{}, "srv", "tool", nil)
+	if err == nil {
+		t.Fatal("expected first call failure without implicit retry")
+	}
+	if client.calls != 1 {
+		t.Fatalf("calls=%d", client.calls)
+	}
+}
+
+type retryClient struct {
+	calls int
+}
+
+func (c *retryClient) CallTool(context.Context, ExecutionContext, string, string, map[string]any) (map[string]any, error) {
+	c.calls++
+	if c.calls == 1 {
+		return nil, errors.New("temporary")
+	}
+	return map[string]any{"ok": true}, nil
+}
+
+func TestManagerManagedClientRetriesAndTracksStatus(t *testing.T) {
+	manager := NewManager()
+	client := &retryClient{}
+	manager.RegisterWithSpec(ServerSpec{Name: "srv", Transport: "custom", MaxRetries: 1, RetryDelay: time.Millisecond}, client)
+	managed, ok := manager.Client("srv")
+	if !ok {
+		t.Fatal("missing client")
+	}
+	got, err := managed.CallTool(context.Background(), ExecutionContext{}, "srv", "tool", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["ok"] != true || client.calls != 2 {
+		t.Fatalf("got=%#v calls=%d", got, client.calls)
+	}
+	status, ok := manager.Status("srv")
+	if !ok || status.CallCount != 2 || status.FailureCount != 1 || status.LastError != "" || status.LastUsedAt == nil {
+		t.Fatalf("status=%#v ok=%v", status, ok)
 	}
 }

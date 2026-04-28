@@ -523,7 +523,9 @@ func (s *Store) StartProcessorCall(ctx context.Context, runID, artifactID, proce
 		VALUES($1,$2,$3,'running',$4)
 		RETURNING id::text`, runID, artifactID, processor, b).Scan(&id)
 	if err == nil {
-		_ = s.AddEvent(ctx, runID, "processor.started", map[string]any{"processor_call_id": id, "artifact_id": artifactID, "processor": processor})
+		payload := map[string]any{"processor_call_id": id, "artifact_id": artifactID, "processor": processor}
+		_ = s.AddEvent(ctx, runID, "processor.started", payload)
+		_ = s.AddObservabilityEvent(ctx, "", runID, "processor.started", payload)
 	}
 	return id, err
 }
@@ -536,7 +538,9 @@ func (s *Store) CompleteProcessorCall(ctx context.Context, callID, runID string,
 	b, _ := json.Marshal(response)
 	_, err := s.pool.Exec(ctx, `UPDATE processor_calls SET state=$2, response_summary=$3, error=$4, completed_at=now() WHERE id=$1`, callID, state, b, errText)
 	if err == nil {
-		_ = s.AddEvent(ctx, runID, "processor."+state, map[string]any{"processor_call_id": callID})
+		payload := map[string]any{"processor_call_id": callID, "state": state}
+		_ = s.AddEvent(ctx, runID, "processor."+state, payload)
+		_ = s.AddObservabilityEvent(ctx, "", runID, "processor."+state, payload)
 	}
 	return err
 }
@@ -563,7 +567,9 @@ func (s *Store) StartModelCall(ctx context.Context, runID, provider, model strin
 		VALUES($1,$2,$3,'running',$4)
 		RETURNING id::text`, runID, provider, model, b).Scan(&id)
 	if err == nil {
-		_ = s.AddEvent(ctx, runID, "model.started", map[string]any{"model_call_id": id, "provider": provider, "model": model})
+		payload := map[string]any{"model_call_id": id, "provider": provider, "model": model}
+		_ = s.AddEvent(ctx, runID, "model.started", payload)
+		_ = s.AddObservabilityEvent(ctx, "", runID, "model.started", payload)
 	}
 	return id, err
 }
@@ -576,7 +582,9 @@ func (s *Store) CompleteModelCall(ctx context.Context, callID, runID string, res
 	b, _ := json.Marshal(response)
 	_, err := s.pool.Exec(ctx, `UPDATE model_calls SET state=$2, response_summary=$3, error=$4, completed_at=now() WHERE id=$1`, callID, state, b, errText)
 	if err == nil {
-		_ = s.AddEvent(ctx, runID, "model."+state, map[string]any{"model_call_id": callID})
+		payload := map[string]any{"model_call_id": callID, "state": state}
+		_ = s.AddEvent(ctx, runID, "model."+state, payload)
+		_ = s.AddObservabilityEvent(ctx, "", runID, "model."+state, payload)
 	}
 	return err
 }
@@ -590,7 +598,9 @@ func (s *Store) StartToolCall(ctx context.Context, runID, toolName string, args 
 		VALUES($1,$2,'running',$3,$4,$5)
 		RETURNING id::text`, runID, toolName, b, retryable, argsHash).Scan(&id)
 	if err == nil {
-		_ = s.AddEvent(ctx, runID, "tool.started", map[string]any{"tool_call_id": id, "tool_name": toolName})
+		payload := map[string]any{"tool_call_id": id, "tool_name": toolName}
+		_ = s.AddEvent(ctx, runID, "tool.started", payload)
+		_ = s.AddObservabilityEvent(ctx, "", runID, "tool.started", payload)
 	}
 	return id, err
 }
@@ -603,7 +613,9 @@ func (s *Store) CompleteToolCall(ctx context.Context, callID, runID string, resu
 	b, _ := json.Marshal(result)
 	_, err := s.pool.Exec(ctx, `UPDATE tool_calls SET state=$2, result=$3, error=$4, completed_at=now() WHERE id=$1`, callID, state, b, errText)
 	if err == nil {
-		_ = s.AddEvent(ctx, runID, "tool."+state, map[string]any{"tool_call_id": callID})
+		payload := map[string]any{"tool_call_id": callID, "state": state}
+		_ = s.AddEvent(ctx, runID, "tool."+state, payload)
+		_ = s.AddObservabilityEvent(ctx, "", runID, "tool."+state, payload)
 	}
 	return err
 }
@@ -674,7 +686,9 @@ func (s *Store) StartMCPCall(ctx context.Context, runID, serverName, toolName st
 		VALUES($1,$2,$3,'running',$4)
 		RETURNING id::text`, runID, serverName, toolName, b).Scan(&id)
 	if err == nil {
-		_ = s.AddEvent(ctx, runID, "mcp.started", map[string]any{"mcp_call_id": id, "server_name": serverName, "tool_name": toolName})
+		payload := map[string]any{"mcp_call_id": id, "server_name": serverName, "tool_name": toolName}
+		_ = s.AddEvent(ctx, runID, "mcp.started", payload)
+		_ = s.AddObservabilityEvent(ctx, "", runID, "mcp.started", payload)
 	}
 	return id, err
 }
@@ -687,7 +701,9 @@ func (s *Store) CompleteMCPCall(ctx context.Context, callID, runID string, respo
 	b, _ := json.Marshal(response)
 	_, err := s.pool.Exec(ctx, `UPDATE mcp_calls SET state=$2, response_summary=$3, error=$4, completed_at=now() WHERE id=$1`, callID, state, b, errText)
 	if err == nil {
-		_ = s.AddEvent(ctx, runID, "mcp."+state, map[string]any{"mcp_call_id": callID})
+		payload := map[string]any{"mcp_call_id": callID, "state": state}
+		_ = s.AddEvent(ctx, runID, "mcp."+state, payload)
+		_ = s.AddObservabilityEvent(ctx, "", runID, "mcp."+state, payload)
 	}
 	return err
 }

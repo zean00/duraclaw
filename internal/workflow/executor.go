@@ -13,6 +13,7 @@ import (
 	"duraclaw/internal/artifacts"
 	"duraclaw/internal/db"
 	"duraclaw/internal/mcp"
+	"duraclaw/internal/observability"
 	"duraclaw/internal/policy"
 	"duraclaw/internal/preferences"
 	"duraclaw/internal/providers"
@@ -72,6 +73,7 @@ type Executor struct {
 	mcpManager  *mcp.Manager
 	policy      *policy.Engine
 	processors  *artifacts.Registry
+	counters    *observability.Counters
 	concurrency int
 }
 
@@ -92,6 +94,11 @@ func (e *Executor) WithTools(registry *tools.Registry) *Executor {
 
 func (e *Executor) WithMCP(manager *mcp.Manager) *Executor {
 	e.mcpManager = manager
+	return e
+}
+
+func (e *Executor) WithCounters(counters *observability.Counters) *Executor {
+	e.counters = counters
 	return e
 }
 
@@ -628,7 +635,7 @@ func (e *Executor) executeMCPNode(ctx context.Context, req GraphRequest, node db
 	serverName, _ := config["server_name"].(string)
 	toolName, _ := config["tool_name"].(string)
 	args, _ := config["arguments"].(map[string]any)
-	result, err := mcp.NewExecutor(e.mcpManager, e.store).CallTool(ctx, mcp.ExecutionContext{
+	result, err := mcp.NewExecutor(e.mcpManager, e.store).WithCounters(e.counters).CallTool(ctx, mcp.ExecutionContext{
 		CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID, RunID: req.RunID, RequestID: req.RequestID,
 	}, serverName, toolName, args)
 	if err != nil {

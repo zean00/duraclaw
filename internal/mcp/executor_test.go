@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"duraclaw/internal/observability"
 )
 
 type fakeMCPStore struct {
@@ -61,5 +63,20 @@ func TestExecutorPersistsFailure(t *testing.T) {
 	}
 	if !store.completed || store.errText == nil {
 		t.Fatalf("expected failed completion: %#v", store)
+	}
+}
+
+func TestExecutorRecordsCounters(t *testing.T) {
+	store := &fakeMCPStore{}
+	client := &fakeMCPClient{}
+	manager := NewManager()
+	manager.Register("srv", client)
+	counters := observability.NewCounters()
+	_, err := NewExecutor(manager, store).WithCounters(counters).CallTool(context.Background(), ExecutionContext{RunID: "run-1"}, "srv", "tool", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counters.Snapshot()["mcp_call_succeeded"] != 1 || counters.DurationSnapshot()["mcp_call_duration_seconds"].Count != 1 {
+		t.Fatalf("counters=%#v durations=%#v", counters.Snapshot(), counters.DurationSnapshot())
 	}
 }

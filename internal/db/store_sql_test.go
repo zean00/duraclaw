@@ -181,6 +181,24 @@ func TestStoreCanLoadCompletedNonRetryableToolCalls(t *testing.T) {
 	}
 }
 
+func TestStoreWritesDurableObservabilityForExecutionCalls(t *testing.T) {
+	raw, err := os.ReadFile("store.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw)
+	for _, want := range []string{
+		`AddObservabilityEvent(ctx, "", runID, "model.started"`,
+		`AddObservabilityEvent(ctx, "", runID, "tool.started"`,
+		`AddObservabilityEvent(ctx, "", runID, "mcp.started"`,
+		`AddObservabilityEvent(ctx, "", runID, "processor.started"`,
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("store missing durable observability hook %q", want)
+		}
+	}
+}
+
 func TestCompleteSchedulerJobDisablesOneShotJobs(t *testing.T) {
 	raw, err := os.ReadFile("store.go")
 	if err != nil {

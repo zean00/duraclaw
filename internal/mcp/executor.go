@@ -3,6 +3,9 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"time"
+
+	"duraclaw/internal/observability"
 )
 
 type CallStore interface {
@@ -11,8 +14,9 @@ type CallStore interface {
 }
 
 type Executor struct {
-	manager *Manager
-	store   CallStore
+	manager  *Manager
+	store    CallStore
+	counters *observability.Counters
 }
 
 func NewExecutor(manager *Manager, store CallStore) *Executor {
@@ -22,7 +26,13 @@ func NewExecutor(manager *Manager, store CallStore) *Executor {
 	return &Executor{manager: manager, store: store}
 }
 
+func (e *Executor) WithCounters(counters *observability.Counters) *Executor {
+	e.counters = counters
+	return e
+}
+
 func (e *Executor) CallTool(ctx context.Context, exec ExecutionContext, serverName, toolName string, arguments map[string]any) (map[string]any, error) {
+	start := time.Now()
 	if e.store == nil {
 		return nil, fmt.Errorf("mcp executor store is nil")
 	}
@@ -39,13 +49,22 @@ func (e *Executor) CallTool(ctx context.Context, exec ExecutionContext, serverNa
 	}
 	exec.ToolCallID = callID
 	result, err := client.CallTool(ctx, exec, serverName, toolName, arguments)
+	if e.counters != nil {
+		e.counters.ObserveDuration("mcp_call_duration_seconds", time.Since(start))
+	}
 	if err != nil {
+		if e.counters != nil {
+			e.counters.Inc("mcp_call_failed")
+		}
 		msg := err.Error()
 		_ = e.store.CompleteMCPCall(context.Background(), callID, exec.RunID, nil, &msg)
 		return nil, err
 	}
 	if err := e.store.CompleteMCPCall(ctx, callID, exec.RunID, result, nil); err != nil {
 		return nil, err
+	}
+	if e.counters != nil {
+		e.counters.Inc("mcp_call_succeeded")
 	}
 	return result, nil
 }

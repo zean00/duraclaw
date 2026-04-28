@@ -232,6 +232,8 @@ The persistence layer also includes:
 - Retry release/backoff for failed async outbox delivery.
 - Provider registry and model fallback attempts with persisted model-call records per attempt.
 - Artifact processor registry for modality-specific processor selection.
+- MCP manager registration now tracks transport metadata, retry attempts, per-server status, and MCP call metrics.
+- Durable observability events are written for model, tool, MCP, and processor call lifecycle transitions.
 - Internal model-visible control tools: `duraclaw.run_workflow` and `duraclaw.ask_user`.
 - Optional admin bearer-token protection.
 - Graceful SIGINT/SIGTERM shutdown.

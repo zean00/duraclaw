@@ -651,6 +651,8 @@ X-Request-ID
 
 MCP tool arguments should remain domain-specific. Customer context should not be duplicated into tool arguments unless a specific MCP server requires it.
 
+Implementation status: Duraclaw's MCP manager tracks registered server specs, transport type, retry settings, last-use status, last error, and call/failure counts. HTTP clients propagate Duraclaw context headers, and MCP calls persist intent/result records before and after execution.
+
 ## Knowledge, Preferences, and Memory
 
 PostgreSQL is the source of truth for knowledge, preferences, memory, messages, run history, and vector search.
@@ -1274,6 +1276,8 @@ Checkpoints should store the active `trace_id` and last completed span name so c
 Duraclaw should support OpenTelemetry-compatible tracing and metrics. PostgreSQL remains the durable source of truth; external observability systems are optional operational integrations.
 
 The `observability_events` table is for durable audit/debug events that are too important to exist only in logs.
+
+Implementation status: model, tool, MCP, and artifact processor call starts/completions write both run events and durable observability events. In-process metrics expose counters plus duration count/sum series through `/metrics`.
 
 Example event types:
 
