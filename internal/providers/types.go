@@ -6,14 +6,69 @@ package providers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 )
 
 type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role         string        `json:"role"`
+	Content      string        `json:"-"`
+	ContentParts []ContentPart `json:"-"`
+}
+
+func (m Message) MarshalJSON() ([]byte, error) {
+	type wire struct {
+		Role    string `json:"role"`
+		Content any    `json:"content"`
+	}
+	if len(m.ContentParts) > 0 {
+		return json.Marshal(wire{Role: m.Role, Content: m.ContentParts})
+	}
+	return json.Marshal(wire{Role: m.Role, Content: m.Content})
+}
+
+func (m Message) Text() string {
+	if strings.TrimSpace(m.Content) != "" {
+		return m.Content
+	}
+	var out []string
+	for _, part := range m.ContentParts {
+		if part.Type == "text" && strings.TrimSpace(part.Text) != "" {
+			out = append(out, part.Text)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+type ContentPart struct {
+	Type       string             `json:"type"`
+	Text       string             `json:"text,omitempty"`
+	ImageURL   *ImageURLContent   `json:"image_url,omitempty"`
+	File       *FileContent       `json:"file,omitempty"`
+	InputAudio *InputAudioContent `json:"input_audio,omitempty"`
+	VideoURL   *VideoURLContent   `json:"video_url,omitempty"`
+}
+
+type ImageURLContent struct {
+	URL    string `json:"url"`
+	Detail string `json:"detail,omitempty"`
+}
+
+type FileContent struct {
+	Filename string `json:"filename,omitempty"`
+	FileData string `json:"file_data,omitempty"`
+	FileID   string `json:"file_id,omitempty"`
+}
+
+type InputAudioContent struct {
+	Data   string `json:"data"`
+	Format string `json:"format"`
+}
+
+type VideoURLContent struct {
+	URL string `json:"url"`
 }
 
 type ToolDefinition struct {
@@ -80,12 +135,13 @@ func (MockProvider) Chat(ctx context.Context, messages []Message, _ []ToolDefini
 	var last string
 	var toolResult string
 	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == "tool" && strings.TrimSpace(messages[i].Content) != "" {
-			toolResult = messages[i].Content
+		text := messages[i].Text()
+		if messages[i].Role == "tool" && strings.TrimSpace(text) != "" {
+			toolResult = text
 			break
 		}
 		if messages[i].Role == "user" {
-			last = messages[i].Content
+			last = text
 		}
 	}
 	if toolResult != "" {
@@ -202,6 +258,8 @@ func NormalizeProvider(provider string) string {
 		return "anthropic"
 	case "google":
 		return "gemini"
+	case "openai_compatible", "openai-compatible", "local", "local-llm":
+		return "openai-compatible"
 	}
 	return p
 }

@@ -1858,7 +1858,7 @@ func validateRunInput(payload map[string]any) error {
 		}
 		typ, _ := part["type"].(string)
 		switch typ {
-		case "text", "artifact_ref", "location", "structured_data":
+		case "text", "artifact_ref", "location", "structured_data", "image", "image_url", "document", "pdf", "file", "audio", "input_audio", "video", "video_url":
 		default:
 			return fmt.Errorf("parts[%d] has unsupported type %q", i, typ)
 		}

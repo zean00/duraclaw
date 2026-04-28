@@ -17,6 +17,8 @@ type config struct {
 	ProviderAPIKey              string
 	ProviderModel               string
 	ProviderFallbacks           []string
+	ProviderReferer             string
+	ProviderTitle               string
 	WorkerInterval              time.Duration
 	SchedulerInterval           time.Duration
 	OutboxInterval              time.Duration
@@ -59,6 +61,8 @@ func loadConfig() (config, error) {
 		ProviderAPIKey:              os.Getenv("DURACLAW_PROVIDER_API_KEY"),
 		ProviderModel:               os.Getenv("DURACLAW_PROVIDER_MODEL"),
 		ProviderFallbacks:           splitCSV(os.Getenv("DURACLAW_PROVIDER_FALLBACKS")),
+		ProviderReferer:             os.Getenv("DURACLAW_PROVIDER_REFERER"),
+		ProviderTitle:               os.Getenv("DURACLAW_PROVIDER_TITLE"),
 		WorkerInterval:              time.Second,
 		SchedulerInterval:           5 * time.Second,
 		OutboxInterval:              2 * time.Second,

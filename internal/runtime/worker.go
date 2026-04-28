@@ -645,7 +645,115 @@ func (w *Worker) providerMessages(ctx context.Context, run *db.Run, currentText 
 	for _, msg := range compacted.Messages {
 		messages = append(messages, providers.Message{Role: msg.Role, Content: msg.Content})
 	}
+	if len(messages) > 0 {
+		parts := providerContentParts(run.Input, currentText)
+		if len(parts) > 0 {
+			messages[len(messages)-1].Content = ""
+			messages[len(messages)-1].ContentParts = parts
+		}
+	}
 	return messages, nil
+}
+
+func providerContentParts(raw json.RawMessage, fallbackText string) []providers.ContentPart {
+	var payload struct {
+		Parts []db.ContentPart `json:"parts"`
+		Text  string           `json:"text"`
+	}
+	_ = json.Unmarshal(raw, &payload)
+	var out []providers.ContentPart
+	text := strings.TrimSpace(payload.Text)
+	if text == "" {
+		text = strings.TrimSpace(fallbackText)
+	}
+	if text != "" {
+		out = append(out, providers.ContentPart{Type: "text", Text: text})
+	}
+	for _, part := range payload.Parts {
+		converted, ok := providerContentPart(part)
+		if ok {
+			out = append(out, converted)
+		}
+	}
+	if providerContentPartsTextOnly(out) {
+		return nil
+	}
+	return out
+}
+
+func providerContentPartsTextOnly(parts []providers.ContentPart) bool {
+	if len(parts) == 0 {
+		return true
+	}
+	for _, part := range parts {
+		if part.Type != "text" {
+			return false
+		}
+	}
+	return true
+}
+
+func providerContentPart(part db.ContentPart) (providers.ContentPart, bool) {
+	data := part.Data
+	if data == nil {
+		data = map[string]any{}
+	}
+	str := func(keys ...string) string {
+		for _, key := range keys {
+			if value, _ := data[key].(string); strings.TrimSpace(value) != "" {
+				return strings.TrimSpace(value)
+			}
+		}
+		return ""
+	}
+	switch part.Type {
+	case "text":
+		if strings.TrimSpace(part.Text) == "" {
+			return providers.ContentPart{}, false
+		}
+		return providers.ContentPart{Type: "text", Text: part.Text}, true
+	case "image", "image_url":
+		url := str("url", "image_url", "storage_ref", "data_uri")
+		if url == "" {
+			return providers.ContentPart{}, false
+		}
+		return providers.ContentPart{Type: "image_url", ImageURL: &providers.ImageURLContent{URL: url, Detail: str("detail")}}, true
+	case "document", "pdf", "file":
+		fileData := str("file_data", "data_uri", "storage_ref", "url")
+		fileID := str("file_id")
+		if fileData == "" && fileID == "" {
+			return providers.ContentPart{}, false
+		}
+		return providers.ContentPart{Type: "file", File: &providers.FileContent{Filename: str("filename"), FileData: fileData, FileID: fileID}}, true
+	case "audio", "input_audio":
+		audio := str("data", "base64")
+		format := str("format")
+		if format == "" {
+			format = mediaFormat(str("media_type"))
+		}
+		if audio == "" || format == "" {
+			return providers.ContentPart{}, false
+		}
+		return providers.ContentPart{Type: "input_audio", InputAudio: &providers.InputAudioContent{Data: audio, Format: format}}, true
+	case "video", "video_url":
+		url := str("url", "video_url", "storage_ref", "data_uri")
+		if url == "" {
+			return providers.ContentPart{}, false
+		}
+		return providers.ContentPart{Type: "video_url", VideoURL: &providers.VideoURLContent{URL: url}}, true
+	default:
+		return providers.ContentPart{}, false
+	}
+}
+
+func mediaFormat(mediaType string) string {
+	if mediaType == "" {
+		return ""
+	}
+	if _, suffix, ok := strings.Cut(mediaType, "/"); ok {
+		return suffix
+	}
+	return mediaType
 }
 
 func (w *Worker) agentInstanceVersionInstructions(ctx context.Context, run *db.Run) (string, error) {

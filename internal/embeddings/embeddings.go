@@ -10,6 +10,11 @@ type Provider interface {
 	Dimension() int
 }
 
+type InputProvider interface {
+	Provider
+	EmbedInput(ctx context.Context, input any) ([]float32, error)
+}
+
 type HashProvider struct {
 	dim int
 }

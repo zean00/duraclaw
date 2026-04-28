@@ -1,10 +1,12 @@
 package main
 
 import (
+	"reflect"
 	"testing"
 
 	"duraclaw/internal/artifacts"
 	"duraclaw/internal/embeddings"
+	"duraclaw/internal/providers"
 )
 
 func TestEnvDefault(t *testing.T) {
@@ -58,6 +60,26 @@ func TestBuildProviderDefaultsToMock(t *testing.T) {
 	}
 }
 
+func TestBuildProviderSupportsConcreteProviderTypes(t *testing.T) {
+	cases := []struct {
+		name     string
+		cfg      config
+		wantType any
+	}{
+		{name: "openai", cfg: config{Provider: "openai", ProviderAPIKey: "key"}, wantType: providers.OpenAIProvider{}},
+		{name: "openrouter", cfg: config{Provider: "openrouter", ProviderAPIKey: "key", ProviderReferer: "https://duraclaw.test", ProviderTitle: "Duraclaw"}, wantType: providers.OpenRouterProvider{}},
+		{name: "openai-compatible", cfg: config{Provider: "openai-compatible", ProviderBaseURL: "http://localhost:11434/v1"}, wantType: providers.OpenAICompatibleProvider{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := buildProvider(tc.cfg)
+			if reflect.TypeOf(got) != reflect.TypeOf(tc.wantType) {
+				t.Fatalf("got %T want %T", got, tc.wantType)
+			}
+		})
+	}
+}
+
 func TestBuildOutboxSinkDefaultsToLog(t *testing.T) {
 	if buildOutboxSink(config{} /* default */) == nil {
 		t.Fatalf("expected sink")
@@ -81,9 +103,30 @@ func TestBuildModelConfigPrefixesProvider(t *testing.T) {
 	if cfg.Primary != "openai/gpt-x" || len(cfg.Fallbacks) != 1 {
 		t.Fatalf("cfg=%#v", cfg)
 	}
+	cfg = buildModelConfig(config{Provider: "openrouter", ProviderModel: "openai/gpt-4.1-mini"})
+	if cfg.Primary != "openrouter/openai/gpt-4.1-mini" {
+		t.Fatalf("cfg=%#v", cfg)
+	}
+	cfg = buildModelConfig(config{Provider: "openai-compatible", ProviderModel: "llama3.1"})
+	if cfg.Primary != "openai-compatible/llama3.1" {
+		t.Fatalf("cfg=%#v", cfg)
+	}
+	cfg = buildModelConfig(config{Provider: "openai-compatible", ProviderModel: "meta-llama/llama-3.1"})
+	if cfg.Primary != "openai-compatible/meta-llama/llama-3.1" {
+		t.Fatalf("cfg=%#v", cfg)
+	}
 	cfg = buildModelConfig(config{})
 	if cfg.Primary != "mock/duraclaw" {
 		t.Fatalf("cfg=%#v", cfg)
+	}
+}
+
+func TestBuildProviderRegistryUsesProviderIdentity(t *testing.T) {
+	if got := buildProviderRegistry(config{Provider: "openrouter"}).DefaultProvider(); got != "openrouter" {
+		t.Fatalf("default=%s", got)
+	}
+	if got := buildProviderRegistry(config{Provider: "local"}).DefaultProvider(); got != "openai-compatible" {
+		t.Fatalf("default=%s", got)
 	}
 }
 
@@ -93,6 +136,9 @@ func TestBuildEmbeddingProvider(t *testing.T) {
 	}
 	if got := buildEmbeddingProvider(config{EmbeddingProvider: "openai", EmbeddingBaseURL: "http://example.test", EmbeddingModel: "embed", EmbeddingDimensions: 768}); got.Dimension() != 768 {
 		t.Fatalf("dimension=%d", got.Dimension())
+	}
+	if _, ok := buildEmbeddingProvider(config{EmbeddingProvider: "openrouter", EmbeddingModel: "openai/text-embedding-3-small"}).(embeddings.OpenRouterProvider); !ok {
+		t.Fatalf("expected openrouter embedding provider")
 	}
 }
 

@@ -264,9 +264,18 @@ func TestStartRunRequiresContextHeadersBeforeBody(t *testing.T) {
 }
 
 func TestValidateRunInputRejectsUnsupportedPartType(t *testing.T) {
-	payload := map[string]any{"parts": []any{map[string]any{"type": "file"}}}
+	payload := map[string]any{"parts": []any{map[string]any{"type": "unknown"}}}
 	if err := validateRunInput(payload); err == nil || !strings.Contains(err.Error(), "unsupported type") {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestValidateRunInputAllowsProviderMultimodalPartTypes(t *testing.T) {
+	for _, typ := range []string{"image_url", "file", "input_audio", "video_url"} {
+		payload := map[string]any{"parts": []any{map[string]any{"type": typ, "data": map[string]any{"url": "https://example.test/file"}}}}
+		if err := validateRunInput(payload); err != nil {
+			t.Fatalf("type=%s err=%v", typ, err)
+		}
 	}
 }
 

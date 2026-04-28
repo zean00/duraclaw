@@ -20,15 +20,39 @@ The service applies embedded SQL migrations on startup, starts the durable run w
 It also starts an async outbox worker with a placeholder sink; Nexus delivery can replace that sink without changing runtime persistence.
 `/readyz` verifies database connectivity and returns queue counts for queued/active runs, pending outbox rows, queued async writes, and due scheduler jobs.
 
-Provider configuration defaults to the built-in mock provider. To use an OpenAI-compatible `/chat/completions` endpoint:
+Provider configuration defaults to the built-in mock provider. Duraclaw supports OpenAI, OpenRouter, and generic OpenAI-compatible `/chat/completions` endpoints for local LLM servers.
+
+OpenAI:
 
 ```bash
-DURACLAW_PROVIDER=openai-compatible
-DURACLAW_PROVIDER_BASE_URL=https://api.openai.com/v1
+DURACLAW_PROVIDER=openai
 DURACLAW_PROVIDER_API_KEY=...
 DURACLAW_PROVIDER_MODEL=gpt-4.1-mini
 DURACLAW_PROVIDER_FALLBACKS=mock/duraclaw
 ```
+
+OpenRouter:
+
+```bash
+DURACLAW_PROVIDER=openrouter
+DURACLAW_PROVIDER_API_KEY=...
+DURACLAW_PROVIDER_MODEL=openai/gpt-4.1-mini
+DURACLAW_PROVIDER_REFERER=https://your-app.example
+DURACLAW_PROVIDER_TITLE=Duraclaw
+DURACLAW_PROVIDER_FALLBACKS=mock/duraclaw
+```
+
+Generic OpenAI-compatible or local LLM:
+
+```bash
+DURACLAW_PROVIDER=openai-compatible
+DURACLAW_PROVIDER_BASE_URL=http://localhost:11434/v1
+DURACLAW_PROVIDER_API_KEY=...
+DURACLAW_PROVIDER_MODEL=llama3.1
+DURACLAW_PROVIDER_FALLBACKS=mock/duraclaw
+```
+
+OpenAI and OpenRouter chat requests support provider message content arrays for multimodal inputs. ACP run parts can include `text`, `image_url`, `file`, `input_audio`, and `video_url`; Duraclaw maps those to the OpenAI-compatible content part shapes used by both providers. Use URL/data URI fields for images/files/videos and base64 `data` plus `format` for audio.
 
 Knowledge ingestion and workflow retrieval default to a deterministic local hash embedder. To use an OpenAI-compatible `/embeddings` endpoint:
 
@@ -38,6 +62,14 @@ DURACLAW_EMBEDDING_BASE_URL=https://api.openai.com/v1
 DURACLAW_EMBEDDING_API_KEY=...
 DURACLAW_EMBEDDING_MODEL=text-embedding-3-small
 DURACLAW_EMBEDDING_DIMENSIONS=768
+```
+
+OpenRouter embeddings are also supported:
+
+```bash
+DURACLAW_EMBEDDING_PROVIDER=openrouter
+DURACLAW_EMBEDDING_API_KEY=...
+DURACLAW_EMBEDDING_MODEL=openai/text-embedding-3-small
 ```
 
 Outbox delivery defaults to a placeholder log sink. To push queued outbound intents to Nexus:

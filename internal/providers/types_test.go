@@ -2,6 +2,7 @@ package providers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 )
@@ -19,6 +20,35 @@ func TestResolveCandidatesDeduplicatesAndNormalizes(t *testing.T) {
 	}
 	if got[1].Provider != "anthropic" || got[1].Model != "sonnet" {
 		t.Fatalf("second=%#v", got[1])
+	}
+}
+
+func TestOpenAICompatibleProviderAliases(t *testing.T) {
+	for _, raw := range []string{"openai_compatible", "openai-compatible", "local", "local-llm"} {
+		if got := NormalizeProvider(raw); got != "openai-compatible" {
+			t.Fatalf("%s normalized to %s", raw, got)
+		}
+	}
+}
+
+func TestMessageMarshalsContentParts(t *testing.T) {
+	raw, err := json.Marshal(Message{Role: "user", ContentParts: []ContentPart{
+		{Type: "text", Text: "hello"},
+		{Type: "image_url", ImageURL: &ImageURLContent{URL: "https://example.test/image.png"}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["role"] != "user" {
+		t.Fatalf("got=%#v", got)
+	}
+	parts, ok := got["content"].([]any)
+	if !ok || len(parts) != 2 {
+		t.Fatalf("got=%s", raw)
 	}
 }
 

@@ -37,6 +37,42 @@ func TestArtifactRefsFromContentParts(t *testing.T) {
 	}
 }
 
+func TestProviderContentPartsFromMultimodalInput(t *testing.T) {
+	raw, _ := json.Marshal(map[string]any{
+		"parts": []map[string]any{
+			{"type": "text", "text": "ignored because fallback already carries context"},
+			{"type": "image_url", "data": map[string]any{"url": "https://example.test/image.png", "detail": "low"}},
+			{"type": "file", "data": map[string]any{"file_data": "data:application/pdf;base64,abc", "filename": "doc.pdf"}},
+			{"type": "input_audio", "data": map[string]any{"data": "abc", "format": "mp3"}},
+			{"type": "video_url", "data": map[string]any{"url": "https://example.test/video.mp4"}},
+		},
+	})
+	got := providerContentParts(raw, "hello")
+	if len(got) != 6 {
+		t.Fatalf("got=%#v", got)
+	}
+	if got[1].Type != "text" || got[2].ImageURL == nil || got[3].File == nil || got[4].InputAudio == nil || got[5].VideoURL == nil {
+		t.Fatalf("got=%#v", got)
+	}
+}
+
+func TestProviderContentPartsPreservesSingleNonTextInput(t *testing.T) {
+	raw, _ := json.Marshal(map[string]any{
+		"parts": []map[string]any{{"type": "image_url", "data": map[string]any{"url": "https://example.test/image.png"}}},
+	})
+	got := providerContentParts(raw, "")
+	if len(got) != 1 || got[0].ImageURL == nil {
+		t.Fatalf("got=%#v", got)
+	}
+}
+
+func TestProviderContentPartsDropsTextOnlyInput(t *testing.T) {
+	raw, _ := json.Marshal(map[string]any{"parts": []map[string]any{{"type": "text", "text": "hello"}}})
+	if got := providerContentParts(raw, ""); got != nil {
+		t.Fatalf("got=%#v", got)
+	}
+}
+
 func TestMessageTextFromStoredAssistantContent(t *testing.T) {
 	raw, _ := json.Marshal(map[string]any{
 		"parts": []map[string]any{

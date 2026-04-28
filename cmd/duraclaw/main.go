@@ -152,8 +152,22 @@ func buildOutboxSink(cfg config) outbound.Sink {
 }
 
 func buildProvider(cfg config) providers.LLMProvider {
-	switch cfg.Provider {
-	case "openai-compatible", "openai":
+	switch providers.NormalizeProvider(cfg.Provider) {
+	case "openai":
+		return providers.OpenAIProvider{
+			BaseURL:      cfg.ProviderBaseURL,
+			APIKey:       cfg.ProviderAPIKey,
+			DefaultModel: cfg.ProviderModel,
+		}
+	case "openrouter":
+		return providers.OpenRouterProvider{
+			BaseURL:      cfg.ProviderBaseURL,
+			APIKey:       cfg.ProviderAPIKey,
+			DefaultModel: cfg.ProviderModel,
+			Referer:      cfg.ProviderReferer,
+			Title:        cfg.ProviderTitle,
+		}
+	case "openai-compatible":
 		return providers.OpenAICompatibleProvider{
 			BaseURL:      cfg.ProviderBaseURL,
 			APIKey:       cfg.ProviderAPIKey,
@@ -199,7 +213,16 @@ func buildArtifactRegistry(cfg config) *artifacts.Registry {
 }
 
 func buildEmbeddingProvider(cfg config) embeddings.Provider {
-	switch cfg.EmbeddingProvider {
+	switch providers.NormalizeProvider(cfg.EmbeddingProvider) {
+	case "openrouter":
+		return embeddings.OpenRouterProvider{
+			BaseURL:    cfg.EmbeddingBaseURL,
+			APIKey:     cfg.EmbeddingAPIKey,
+			Model:      cfg.EmbeddingModel,
+			Dimensions: cfg.EmbeddingDimensions,
+			Referer:    cfg.ProviderReferer,
+			Title:      cfg.ProviderTitle,
+		}
 	case "openai-compatible", "openai":
 		return embeddings.OpenAICompatibleProvider{
 			BaseURL:    cfg.EmbeddingBaseURL,
@@ -227,32 +250,55 @@ func stringSet(values []string) map[string]bool {
 }
 
 func buildProviderRegistry(cfg config) *providers.Registry {
-	defaultProvider := "mock"
-	if cfg.Provider == "openai-compatible" || cfg.Provider == "openai" {
-		defaultProvider = "openai"
+	defaultProvider := providers.NormalizeProvider(cfg.Provider)
+	switch defaultProvider {
+	case "openai", "openrouter", "openai-compatible":
+	default:
+		defaultProvider = "mock"
 	}
 	registry := providers.NewRegistry(defaultProvider)
 	registry.Register("mock", providers.MockProvider{})
 	registry.Register(defaultProvider, buildProvider(cfg))
+	if defaultProvider == "openai-compatible" {
+		registry.Register("local", buildProvider(cfg))
+	}
 	return registry
 }
 
 func buildModelConfig(cfg config) providers.ModelConfig {
+	defaultProvider := providers.NormalizeProvider(cfg.Provider)
+	switch defaultProvider {
+	case "openai", "openrouter", "openai-compatible":
+	default:
+		defaultProvider = "mock"
+	}
 	primary := cfg.ProviderModel
 	if primary == "" {
-		switch cfg.Provider {
-		case "openai-compatible", "openai":
-			primary = "openai/" + providers.OpenAICompatibleProvider{DefaultModel: cfg.ProviderModel}.GetDefaultModel()
+		switch defaultProvider {
+		case "openai":
+			primary = "openai/" + providers.OpenAIProvider{DefaultModel: cfg.ProviderModel}.GetDefaultModel()
+		case "openrouter":
+			primary = "openrouter/" + providers.OpenRouterProvider{DefaultModel: cfg.ProviderModel}.GetDefaultModel()
+		case "openai-compatible":
+			primary = "openai-compatible/" + providers.OpenAICompatibleProvider{DefaultModel: cfg.ProviderModel}.GetDefaultModel()
 		default:
 			primary = "mock/duraclaw"
 		}
-	} else if providers.ParseModelRef(primary, "") == nil || !strings.Contains(primary, "/") {
-		switch cfg.Provider {
-		case "openai-compatible", "openai":
-			primary = "openai/" + primary
-		default:
-			primary = "mock/" + primary
-		}
+	} else if shouldPrefixModelRef(defaultProvider, primary) {
+		primary = defaultProvider + "/" + primary
 	}
 	return providers.ModelConfig{Primary: primary, Fallbacks: cfg.ProviderFallbacks}
+}
+
+func shouldPrefixModelRef(defaultProvider, primary string) bool {
+	ref := providers.ParseModelRef(primary, "")
+	if ref == nil || !strings.Contains(primary, "/") {
+		return true
+	}
+	switch defaultProvider {
+	case "openrouter", "openai-compatible":
+		return ref.Provider != defaultProvider
+	default:
+		return false
+	}
 }
