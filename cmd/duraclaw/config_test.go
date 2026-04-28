@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"duraclaw/internal/artifacts"
+	"duraclaw/internal/embeddings"
+)
 
 func TestEnvDefault(t *testing.T) {
 	t.Setenv("DURACLAW_TEST_VALUE", "set")
@@ -16,6 +21,27 @@ func TestLoadConfigRequiresDatabaseURL(t *testing.T) {
 	t.Setenv("DATABASE_URL", "")
 	if _, err := loadConfig(); err == nil {
 		t.Fatalf("expected DATABASE_URL error")
+	}
+}
+
+func TestLoadConfigRequiresTokensWhenAuthRequired(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://example")
+	t.Setenv("DURACLAW_REQUIRE_AUTH", "true")
+	if _, err := loadConfig(); err == nil {
+		t.Fatalf("expected auth token error")
+	}
+	t.Setenv("DURACLAW_ADMIN_TOKEN", "admin")
+	t.Setenv("DURACLAW_ACP_TOKEN", "acp")
+	if _, err := loadConfig(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadConfigRejectsInvalidMCPConfig(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://example")
+	t.Setenv("DURACLAW_MCP_CONFIG", "{bad")
+	if _, err := loadConfig(); err == nil {
+		t.Fatalf("expected mcp config error")
 	}
 }
 
@@ -38,6 +64,18 @@ func TestBuildOutboxSinkDefaultsToLog(t *testing.T) {
 	}
 }
 
+func TestBuildArtifactRegistryAddsHTTPProcessor(t *testing.T) {
+	registry := buildArtifactRegistry(config{
+		ArtifactProcessorURL:        "http://processor.test",
+		ArtifactProcessorName:       "ocr",
+		ArtifactProcessorModalities: []string{"image"},
+	})
+	processor, ok := registry.ProcessorFor(artifacts.Artifact{Modality: "image", MediaType: "image/png"})
+	if !ok || processor.Name() != "ocr" {
+		t.Fatalf("processor=%#v ok=%v", processor, ok)
+	}
+}
+
 func TestBuildModelConfigPrefixesProvider(t *testing.T) {
 	cfg := buildModelConfig(config{Provider: "openai", ProviderModel: "gpt-x", ProviderFallbacks: []string{"mock/duraclaw"}})
 	if cfg.Primary != "openai/gpt-x" || len(cfg.Fallbacks) != 1 {
@@ -46,5 +84,48 @@ func TestBuildModelConfigPrefixesProvider(t *testing.T) {
 	cfg = buildModelConfig(config{})
 	if cfg.Primary != "mock/duraclaw" {
 		t.Fatalf("cfg=%#v", cfg)
+	}
+}
+
+func TestBuildEmbeddingProvider(t *testing.T) {
+	if _, ok := buildEmbeddingProvider(config{EmbeddingProvider: "hash", EmbeddingDimensions: 8}).(embeddings.HashProvider); !ok {
+		t.Fatalf("expected hash provider")
+	}
+	if got := buildEmbeddingProvider(config{EmbeddingProvider: "openai", EmbeddingBaseURL: "http://example.test", EmbeddingModel: "embed", EmbeddingDimensions: 768}); got.Dimension() != 768 {
+		t.Fatalf("dimension=%d", got.Dimension())
+	}
+}
+
+func TestBuildMCPManagerFromConfig(t *testing.T) {
+	manager := buildMCPManager(config{MCPConfig: []byte(`{"servers":[{"name":"srv","transport":"http","base_url":"http://example.test"}]}`)})
+	statuses := manager.Statuses()
+	if len(statuses) != 1 || statuses[0].Name != "srv" || statuses[0].Transport != "http" {
+		t.Fatalf("statuses=%#v", statuses)
+	}
+}
+
+func TestEnvInt(t *testing.T) {
+	t.Setenv("DURACLAW_TEST_INT", "42")
+	if got := envInt("DURACLAW_TEST_INT", 7); got != 42 {
+		t.Fatalf("got=%d", got)
+	}
+	t.Setenv("DURACLAW_TEST_INT", "bad")
+	if got := envInt("DURACLAW_TEST_INT", 7); got != 7 {
+		t.Fatalf("got=%d", got)
+	}
+}
+
+func TestParseHeadersAndEnvBool(t *testing.T) {
+	got := parseHeaders("Authorization=Bearer abc, X-Test = ok, invalid")
+	if got["Authorization"] != "Bearer abc" || got["X-Test"] != "ok" {
+		t.Fatalf("headers=%#v", got)
+	}
+	t.Setenv("DURACLAW_TEST_BOOL", "true")
+	if !envBool("DURACLAW_TEST_BOOL", false) {
+		t.Fatal("expected true")
+	}
+	t.Setenv("DURACLAW_TEST_BOOL", "false")
+	if envBool("DURACLAW_TEST_BOOL", true) {
+		t.Fatal("expected false")
 	}
 }

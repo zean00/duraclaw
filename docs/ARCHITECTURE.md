@@ -651,7 +651,7 @@ X-Request-ID
 
 MCP tool arguments should remain domain-specific. Customer context should not be duplicated into tool arguments unless a specific MCP server requires it.
 
-Implementation status: Duraclaw's MCP manager tracks registered server specs, transport type, opt-in retry settings, max-concurrency limits, last-use status, last error, call/failure counts, and bounded tool discovery. HTTP clients propagate Duraclaw context headers, SSE clients negotiate `text/event-stream`, stdio clients speak MCP JSON-RPC and inject context into the command environment, opt-in long-lived stdio clients can reuse a JSON-RPC process, and MCP calls persist intent/result records before and after execution. Agent instance version `mcp_config` can register per-version MCP servers.
+Implementation status: Duraclaw's MCP manager tracks registered server specs, transport type, opt-in retry settings, max-concurrency limits, last-use status, last error, call/failure counts, bounded tool discovery, MCP resource list/read/subscribe/unsubscribe operations, and MCP prompt list/get operations. HTTP clients propagate Duraclaw context headers, SSE clients parse `text/event-stream` data frames, stdio clients speak MCP JSON-RPC and inject context into the command environment, opt-in long-lived stdio clients can reuse a JSON-RPC process, and MCP calls persist intent/result records before and after execution. Global `DURACLAW_MCP_CONFIG` and agent instance version `mcp_config` can register MCP servers, admin MCP routes expose server status and discovery output, and an admin notification endpoint persists MCP resource-change notifications as durable observability events.
 
 ## Knowledge, Preferences, and Memory
 
@@ -682,7 +682,7 @@ Retrieval should combine:
 - Shared knowledge.
 - Active run state.
 
-Implementation status: prompt context now includes recent messages, durable session summaries, stable memories, conditional preferences, text-matched customer knowledge, workflow manifests, MCP tool manifests, transfer notes, and policy prompt instructions.
+Implementation status: prompt context now includes recent messages, durable session summaries, stable memories, conditional preferences, text/hybrid-vector customer and shared knowledge, workflow manifests, MCP tool manifests, transfer notes, policy prompt instructions, and durable artifact representations. Knowledge chunks have full-text and pgvector index migrations, knowledge documents/chunks carry explicit `customer` or `shared` scope, and workflow retrieval nodes prefer hybrid vector/text retrieval when an embedder is configured.
 
 ## Database Architecture
 
@@ -916,6 +916,8 @@ Broadcast target selection should support:
 - Users attached to an agent instance.
 - Explicit user list.
 - Segment query.
+
+Implementation status: broadcast creation accepts explicit targets and database-resolved target selections for all customer users, specific user IDs, users attached to an agent instance, reminder subscribers, and a constrained segment selector over durable session fields (`user_id_prefix`, `session_id_prefix`, `agent_instance_id`, and RFC3339 `updated_since`). Arbitrary SQL segment queries are intentionally not accepted. Nexus delivery status callbacks accept `sent_to_nexus`, `delivered`, `failed`, and `cancelled`, update outbound and broadcast target state transactionally, and persist durable outbound acknowledgement observability events.
 
 Outbound message states:
 
@@ -1279,7 +1281,7 @@ Duraclaw should support OpenTelemetry-compatible tracing and metrics. PostgreSQL
 
 The `observability_events` table is for durable audit/debug events that are too important to exist only in logs.
 
-Implementation status: model, tool, MCP, and artifact processor call starts/completions write both run events and durable observability events. In-process metrics expose counters plus duration count/sum/bucket series through `/metrics`, including run queue lag, run duration, model token usage, async write drop/degrade/flush counts, and model/tool/MCP/artifact processor/workflow-node durations. Non-critical observability sidecars can flow through `async_write_jobs` with degradation and drop accounting. Checkpoints include trace metadata when inbound ACP context provides `X-Trace-ID`.
+Implementation status: model, tool, MCP, and artifact processor call starts/completions write both run events and durable observability events. In-process metrics expose counters plus duration count/sum/bucket series through `/metrics`, including run queue lag, run duration, model token usage, async write drop/degrade/flush counts, and model/tool/MCP/artifact processor/workflow-node durations. OpenTelemetry SDK tracing/metrics can export to OTLP HTTP collectors while `/metrics` remains available for local inspection. Non-critical observability sidecars can flow through `async_write_jobs` with degradation and drop accounting. Inbound `traceparent` and `X-Trace-ID` headers are parsed into durable trace metadata, checkpoints include trace metadata, MCP and artifact processor execution context can propagate trace headers, and policy audit payloads redact common secret and personal-data patterns.
 
 Example event types:
 
@@ -1308,7 +1310,7 @@ Concurrency rules:
 - Use workflow concurrency limits.
 - Use background-job concurrency limits.
 
-Implementation status: database-managed customer and agent-instance runtime limits can hard-fail run, workflow, and background-job creation when configured quotas are exceeded. Background runs are marked distinctly, can store progress, and are exposed through admin/status APIs while reusing the durable run worker.
+Implementation status: database-managed customer and agent-instance runtime limits can hard-fail run, workflow, and background-job creation when configured quotas are exceeded. Background runs are marked distinctly, can store progress, and are exposed through admin/status APIs while reusing the durable run worker. Readiness reports queue depth for runs, outbox, async writes, and due scheduler jobs. Async write sidecars have bounded retry attempts and terminal async write rows are covered by retention cleanup.
 
 PostgreSQL patterns:
 

@@ -209,34 +209,55 @@ func (s *Store) DeletePreference(ctx context.Context, preferenceID, customerID, 
 type KnowledgeDocument struct {
 	ID         string          `json:"id"`
 	CustomerID string          `json:"customer_id"`
+	Scope      string          `json:"scope"`
 	Title      string          `json:"title"`
 	SourceRef  string          `json:"source_ref"`
 	Metadata   json.RawMessage `json:"metadata"`
 }
 
 func (s *Store) CreateKnowledgeDocument(ctx context.Context, customerID, title, sourceRef string, metadata any) (string, error) {
+	return s.CreateKnowledgeDocumentWithScope(ctx, customerID, "customer", title, sourceRef, metadata)
+}
+
+func (s *Store) CreateKnowledgeDocumentWithScope(ctx context.Context, customerID, scope, title, sourceRef string, metadata any) (string, error) {
 	if err := s.ensureCustomer(ctx, customerID); err != nil {
 		return "", err
 	}
+	scope = normalizeKnowledgeScope(scope)
 	b, _ := json.Marshal(metadata)
 	var id string
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO knowledge_documents(customer_id,title,source_ref,metadata)
-		VALUES($1,$2,$3,$4)
-		RETURNING id::text`, customerID, title, sourceRef, b).Scan(&id)
+		INSERT INTO knowledge_documents(customer_id,scope,title,source_ref,metadata)
+		VALUES($1,$2,$3,$4,$5)
+		RETURNING id::text`, customerID, scope, title, sourceRef, b).Scan(&id)
 	return id, err
 }
 
 func (s *Store) ListKnowledgeDocuments(ctx context.Context, customerID string, limit int) ([]KnowledgeDocument, error) {
+	return s.ListKnowledgeDocumentsByScope(ctx, customerID, "", limit)
+}
+
+func (s *Store) ListKnowledgeDocumentsByScope(ctx context.Context, customerID, scope string, limit int) ([]KnowledgeDocument, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
+	scope = strings.TrimSpace(scope)
+	filter := `WHERE customer_id=$1`
+	args := []any{customerID, limit}
+	if scope == "shared" {
+		filter = `WHERE scope='shared'`
+		args = []any{customerID, limit}
+	} else if scope == "customer" {
+		filter = `WHERE customer_id=$1 AND scope='customer'`
+	} else if scope == "all" {
+		filter = `WHERE customer_id=$1 OR scope='shared'`
+	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT id::text, customer_id, title, source_ref, metadata
+		SELECT id::text, customer_id, scope, title, source_ref, metadata
 		FROM knowledge_documents
-		WHERE customer_id=$1
-		ORDER BY created_at DESC
-		LIMIT $2`, customerID, limit)
+		`+filter+`
+		ORDER BY CASE WHEN customer_id=$1 THEN 0 ELSE 1 END, created_at DESC
+		LIMIT $2`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -244,7 +265,7 @@ func (s *Store) ListKnowledgeDocuments(ctx context.Context, customerID string, l
 	var documents []KnowledgeDocument
 	for rows.Next() {
 		var document KnowledgeDocument
-		if err := rows.Scan(&document.ID, &document.CustomerID, &document.Title, &document.SourceRef, &document.Metadata); err != nil {
+		if err := rows.Scan(&document.ID, &document.CustomerID, &document.Scope, &document.Title, &document.SourceRef, &document.Metadata); err != nil {
 			return nil, err
 		}
 		documents = append(documents, document)
@@ -269,9 +290,9 @@ func (s *Store) AddKnowledgeChunk(ctx context.Context, documentID, customerID st
 	b, _ := json.Marshal(metadata)
 	var id string
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO knowledge_chunks(document_id,customer_id,chunk_index,content,metadata)
-		VALUES($1,$2,$3,$4,$5)
-		ON CONFLICT (document_id, chunk_index) DO UPDATE SET content=EXCLUDED.content, metadata=EXCLUDED.metadata
+		INSERT INTO knowledge_chunks(document_id,customer_id,scope,chunk_index,content,metadata)
+		VALUES($1,$2,(SELECT scope FROM knowledge_documents WHERE id=$1),$3,$4,$5)
+		ON CONFLICT (document_id, chunk_index) DO UPDATE SET content=EXCLUDED.content, metadata=EXCLUDED.metadata, scope=EXCLUDED.scope
 		RETURNING id::text`, documentID, customerID, chunkIndex, content, b).Scan(&id)
 	return id, err
 }
@@ -322,9 +343,11 @@ type KnowledgeChunk struct {
 	ID         string          `json:"id"`
 	DocumentID string          `json:"document_id"`
 	CustomerID string          `json:"customer_id"`
+	Scope      string          `json:"scope"`
 	ChunkIndex int             `json:"chunk_index"`
 	Content    string          `json:"content"`
 	Metadata   json.RawMessage `json:"metadata"`
+	Score      float64         `json:"score,omitempty"`
 }
 
 func (s *Store) SearchKnowledgeChunks(ctx context.Context, customerID string, embedding []float32, limit int) ([]KnowledgeChunk, error) {
@@ -333,10 +356,10 @@ func (s *Store) SearchKnowledgeChunks(ctx context.Context, customerID string, em
 	}
 	vector := pgVector(embedding)
 	rows, err := s.pool.Query(ctx, `
-		SELECT id::text, document_id::text, customer_id, chunk_index, content, metadata
+		SELECT id::text, document_id::text, customer_id, scope, chunk_index, content, metadata
 		FROM knowledge_chunks
-		WHERE customer_id=$1 AND embedding IS NOT NULL
-		ORDER BY embedding <-> $2::vector
+		WHERE (customer_id=$1 OR scope='shared') AND embedding IS NOT NULL
+		ORDER BY embedding <-> $2::vector, CASE WHEN customer_id=$1 THEN 0 ELSE 1 END
 		LIMIT $3`, customerID, vector, limit)
 	if err != nil {
 		return nil, err
@@ -345,12 +368,55 @@ func (s *Store) SearchKnowledgeChunks(ctx context.Context, customerID string, em
 	var out []KnowledgeChunk
 	for rows.Next() {
 		var k KnowledgeChunk
-		if err := rows.Scan(&k.ID, &k.DocumentID, &k.CustomerID, &k.ChunkIndex, &k.Content, &k.Metadata); err != nil {
+		if err := rows.Scan(&k.ID, &k.DocumentID, &k.CustomerID, &k.Scope, &k.ChunkIndex, &k.Content, &k.Metadata); err != nil {
 			return nil, err
 		}
 		out = append(out, k)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) SearchKnowledgeHybrid(ctx context.Context, customerID, query string, embedding []float32, limit int) ([]KnowledgeChunk, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 10
+	}
+	seen := map[string]bool{}
+	var out []KnowledgeChunk
+	if len(embedding) > 0 {
+		vectorChunks, err := s.SearchKnowledgeChunks(ctx, customerID, embedding, limit)
+		if err != nil {
+			return nil, err
+		}
+		for i, chunk := range vectorChunks {
+			if seen[chunk.ID] {
+				continue
+			}
+			chunk.Score = 1 - float64(i)/float64(limit+1)
+			out = append(out, chunk)
+			seen[chunk.ID] = true
+		}
+	}
+	if len(out) < limit {
+		textChunks, err := s.SearchKnowledgeText(ctx, customerID, query, limit)
+		if err != nil {
+			return nil, err
+		}
+		for i, chunk := range textChunks {
+			if seen[chunk.ID] {
+				continue
+			}
+			chunk.Score = 0.5 - float64(i)/float64((limit+1)*2)
+			out = append(out, chunk)
+			seen[chunk.ID] = true
+			if len(out) >= limit {
+				break
+			}
+		}
+	}
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 
 func (s *Store) SearchKnowledgeText(ctx context.Context, customerID, query string, limit int) ([]KnowledgeChunk, error) {
@@ -362,11 +428,14 @@ func (s *Store) SearchKnowledgeText(ctx context.Context, customerID, query strin
 		return nil, nil
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT id::text, document_id::text, customer_id, chunk_index, content, metadata
+		SELECT id::text, document_id::text, customer_id, scope, chunk_index, content, metadata
 		FROM knowledge_chunks
-		WHERE customer_id=$1
-		AND content ILIKE '%' || $2 || '%'
-		ORDER BY chunk_index ASC
+		WHERE (customer_id=$1 OR scope='shared')
+		AND (
+			to_tsvector('simple', content) @@ plainto_tsquery('simple', $2)
+			OR content ILIKE '%' || $2 || '%'
+		)
+		ORDER BY ts_rank_cd(to_tsvector('simple', content), plainto_tsquery('simple', $2)) DESC, CASE WHEN customer_id=$1 THEN 0 ELSE 1 END, chunk_index ASC
 		LIMIT $3`, customerID, query, limit)
 	if err != nil {
 		return nil, err
@@ -375,7 +444,7 @@ func (s *Store) SearchKnowledgeText(ctx context.Context, customerID, query strin
 	var out []KnowledgeChunk
 	for rows.Next() {
 		var k KnowledgeChunk
-		if err := rows.Scan(&k.ID, &k.DocumentID, &k.CustomerID, &k.ChunkIndex, &k.Content, &k.Metadata); err != nil {
+		if err := rows.Scan(&k.ID, &k.DocumentID, &k.CustomerID, &k.Scope, &k.ChunkIndex, &k.Content, &k.Metadata); err != nil {
 			return nil, err
 		}
 		out = append(out, k)
@@ -388,7 +457,7 @@ func (s *Store) ListKnowledgeChunks(ctx context.Context, documentID string, limi
 		limit = 100
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT id::text, document_id::text, customer_id, chunk_index, content, metadata
+		SELECT id::text, document_id::text, customer_id, scope, chunk_index, content, metadata
 		FROM knowledge_chunks
 		WHERE document_id=$1
 		ORDER BY chunk_index ASC
@@ -400,12 +469,21 @@ func (s *Store) ListKnowledgeChunks(ctx context.Context, documentID string, limi
 	var chunks []KnowledgeChunk
 	for rows.Next() {
 		var chunk KnowledgeChunk
-		if err := rows.Scan(&chunk.ID, &chunk.DocumentID, &chunk.CustomerID, &chunk.ChunkIndex, &chunk.Content, &chunk.Metadata); err != nil {
+		if err := rows.Scan(&chunk.ID, &chunk.DocumentID, &chunk.CustomerID, &chunk.Scope, &chunk.ChunkIndex, &chunk.Content, &chunk.Metadata); err != nil {
 			return nil, err
 		}
 		chunks = append(chunks, chunk)
 	}
 	return chunks, rows.Err()
+}
+
+func normalizeKnowledgeScope(scope string) string {
+	switch strings.TrimSpace(scope) {
+	case "shared":
+		return "shared"
+	default:
+		return "customer"
+	}
 }
 
 func pgVector(values []float32) string {

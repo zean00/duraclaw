@@ -78,3 +78,90 @@ printf '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"lookup","description
 		t.Fatalf("tools=%#v", tools)
 	}
 }
+
+func TestStdioClientReadsResources(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "server.sh")
+	if err := os.WriteFile(script, []byte(`#!/bin/sh
+IFS= read init
+printf '{"jsonrpc":"2.0","id":1,"result":{}}\n'
+IFS= read initialized
+IFS= read list
+printf '{"jsonrpc":"2.0","id":2,"result":{"resources":[{"uri":"file://doc","name":"doc"}]}}\n'
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	resources, err := (StdioClient{Command: script}).ListResources(context.Background(), ExecutionContext{}, "srv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resources) != 1 || resources[0].URI != "file://doc" {
+		t.Fatalf("resources=%#v", resources)
+	}
+	script = filepath.Join(t.TempDir(), "reader.sh")
+	if err := os.WriteFile(script, []byte(`#!/bin/sh
+IFS= read init
+printf '{"jsonrpc":"2.0","id":1,"result":{}}\n'
+IFS= read initialized
+IFS= read read_request
+printf '{"jsonrpc":"2.0","id":2,"result":{"contents":[{"uri":"file://doc","text":"hello"}]}}\n'
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content, err := (StdioClient{Command: script}).ReadResource(context.Background(), ExecutionContext{}, "srv", "file://doc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if content.Text != "hello" {
+		t.Fatalf("content=%#v", content)
+	}
+	script = filepath.Join(t.TempDir(), "subscribe.sh")
+	if err := os.WriteFile(script, []byte(`#!/bin/sh
+IFS= read init
+printf '{"jsonrpc":"2.0","id":1,"result":{}}\n'
+IFS= read initialized
+IFS= read subscribe
+printf '{"jsonrpc":"2.0","id":2,"result":{}}\n'
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := (StdioClient{Command: script}).SubscribeResource(context.Background(), ExecutionContext{}, "srv", "file://doc"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStdioClientPrompts(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "prompts.sh")
+	if err := os.WriteFile(script, []byte(`#!/bin/sh
+IFS= read init
+printf '{"jsonrpc":"2.0","id":1,"result":{}}\n'
+IFS= read initialized
+IFS= read list
+printf '{"jsonrpc":"2.0","id":2,"result":{"prompts":[{"name":"summarize"}]}}\n'
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	prompts, err := (StdioClient{Command: script}).ListPrompts(context.Background(), ExecutionContext{}, "srv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prompts) != 1 || prompts[0].Name != "summarize" {
+		t.Fatalf("prompts=%#v", prompts)
+	}
+	script = filepath.Join(t.TempDir(), "prompt.sh")
+	if err := os.WriteFile(script, []byte(`#!/bin/sh
+IFS= read init
+printf '{"jsonrpc":"2.0","id":1,"result":{}}\n'
+IFS= read initialized
+IFS= read get
+printf '{"jsonrpc":"2.0","id":2,"result":{"name":"summarize","messages":[{"role":"user","content":{"type":"text","text":"Summarize"}}]}}\n'
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	prompt, err := (StdioClient{Command: script}).GetPrompt(context.Background(), ExecutionContext{}, "srv", "summarize", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prompt.Name != "summarize" || len(prompt.Messages) != 1 {
+		t.Fatalf("prompt=%#v", prompt)
+	}
+}

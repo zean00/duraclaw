@@ -1,6 +1,7 @@
 package acp
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,7 +12,9 @@ import (
 	"time"
 
 	"duraclaw/internal/db"
+	"duraclaw/internal/embeddings"
 	"duraclaw/internal/knowledge"
+	"duraclaw/internal/mcp"
 	"duraclaw/internal/observability"
 	"duraclaw/internal/policy"
 	"duraclaw/internal/scheduler"
@@ -26,7 +29,10 @@ type Handler struct {
 	artifactPolicy policy.ArtifactRule
 	adminToken     string
 	acpToken       string
+	requireAuth    bool
 	counters       *observability.Counters
+	embedder       embeddings.Provider
+	mcpManager     *mcp.Manager
 	logger         *slog.Logger
 }
 
@@ -57,8 +63,21 @@ func (h *Handler) WithACPToken(token string) *Handler {
 	return h
 }
 
+func (h *Handler) WithRequireAuth(required bool) *Handler {
+	h.requireAuth = required
+	return h
+}
+
 func (h *Handler) WithCounters(counters *observability.Counters) *Handler {
 	h.counters = counters
+	return h
+}
+
+func (h *Handler) WithEmbedder(embedder embeddings.Provider) *Handler {
+	h.embedder = embedder
+	if h.workflow != nil {
+		h.workflow.WithEmbedder(embedder)
+	}
 	return h
 }
 
@@ -66,6 +85,11 @@ func (h *Handler) WithLogger(logger *slog.Logger) *Handler {
 	if logger != nil {
 		h.logger = logger
 	}
+	return h
+}
+
+func (h *Handler) WithMCPManager(manager *mcp.Manager) *Handler {
+	h.mcpManager = manager
 	return h
 }
 
@@ -117,6 +141,13 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /admin/observability/events", h.requireAdmin(h.listObservabilityEvents))
 	mux.HandleFunc("GET /admin/outbound-intents", h.requireAdmin(h.listOutboundIntents))
 	mux.HandleFunc("GET /admin/background-runs", h.requireAdmin(h.listBackgroundRuns))
+	mux.HandleFunc("GET /admin/mcp/servers", h.requireAdmin(h.listMCPServers))
+	mux.HandleFunc("GET /admin/mcp/servers/{server_name}/tools", h.requireAdmin(h.listMCPTools))
+	mux.HandleFunc("GET /admin/mcp/servers/{server_name}/resources", h.requireAdmin(h.listMCPResources))
+	mux.HandleFunc("GET /admin/mcp/servers/{server_name}/resources/read", h.requireAdmin(h.readMCPResource))
+	mux.HandleFunc("GET /admin/mcp/servers/{server_name}/prompts", h.requireAdmin(h.listMCPPrompts))
+	mux.HandleFunc("POST /admin/mcp/servers/{server_name}/prompts/{prompt_name}/get", h.requireAdmin(h.getMCPPrompt))
+	mux.HandleFunc("POST /admin/mcp/notifications", h.requireAdmin(h.ingestMCPNotification))
 	mux.HandleFunc("POST /admin/broadcasts", h.requireAdmin(h.createBroadcast))
 	mux.HandleFunc("GET /admin/broadcasts", h.requireAdmin(h.listBroadcasts))
 	mux.HandleFunc("GET /admin/broadcasts/{broadcast_id}/targets", h.requireAdmin(h.listBroadcastTargets))
@@ -196,12 +227,13 @@ func (h *Handler) metrics(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if h.adminToken != "" {
-			want := "Bearer " + h.adminToken
-			if r.Header.Get("Authorization") != want {
-				writeError(w, http.StatusUnauthorized, fmt.Errorf("admin authorization required"))
-				return
-			}
+		if h.requireAuth && h.adminToken == "" {
+			writeError(w, http.StatusUnauthorized, fmt.Errorf("admin authorization is not configured"))
+			return
+		}
+		if h.adminToken != "" && !bearerTokenEqual(r.Header.Get("Authorization"), h.adminToken) {
+			writeError(w, http.StatusUnauthorized, fmt.Errorf("admin authorization required"))
+			return
 		}
 		next(w, r)
 	}
@@ -209,12 +241,13 @@ func (h *Handler) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 
 func (h *Handler) requireACP(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if h.acpToken != "" {
-			want := "Bearer " + h.acpToken
-			if r.Header.Get("Authorization") != want {
-				writeError(w, http.StatusUnauthorized, fmt.Errorf("acp authorization required"))
-				return
-			}
+		if h.requireAuth && h.acpToken == "" {
+			writeError(w, http.StatusUnauthorized, fmt.Errorf("acp authorization is not configured"))
+			return
+		}
+		if h.acpToken != "" && !bearerTokenEqual(r.Header.Get("Authorization"), h.acpToken) {
+			writeError(w, http.StatusUnauthorized, fmt.Errorf("acp authorization required"))
+			return
 		}
 		next(w, r)
 	}
@@ -222,11 +255,26 @@ func (h *Handler) requireACP(next http.HandlerFunc) http.HandlerFunc {
 
 func (h *Handler) withRequestHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Cache-Control", "no-store")
 		if reqID := r.Header.Get("X-Request-ID"); reqID != "" {
 			w.Header().Set("X-Request-ID", reqID)
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func bearerTokenEqual(header, token string) bool {
+	const prefix = "Bearer "
+	if !strings.HasPrefix(header, prefix) {
+		return false
+	}
+	got := strings.TrimPrefix(header, prefix)
+	if len(got) != len(token) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(got), []byte(token)) == 1
 }
 
 func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
@@ -242,7 +290,12 @@ func (h *Handler) readyz(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "database": "ok"})
+	stats, err := h.store.QueueStats(r.Context())
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "database": "ok", "queues": stats})
 }
 
 func (h *Handler) createAgentInstanceVersion(w http.ResponseWriter, r *http.Request) {
@@ -649,6 +702,7 @@ func (h *Handler) ingestKnowledgeText(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
 		CustomerID string         `json:"customer_id"`
 		Title      string         `json:"title"`
+		Scope      string         `json:"scope"`
 		SourceRef  string         `json:"source_ref"`
 		Text       string         `json:"text"`
 		Metadata   map[string]any `json:"metadata"`
@@ -661,7 +715,8 @@ func (h *Handler) ingestKnowledgeText(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id and text are required"))
 		return
 	}
-	docID, chunks, err := knowledge.NewIngester(h.store).IngestText(r.Context(), payload.CustomerID, payload.Title, payload.SourceRef, payload.Text, payload.Metadata)
+	ingester := knowledge.NewIngester(h.store).WithEmbedder(h.embedder)
+	docID, chunks, err := ingester.IngestTextWithScope(r.Context(), payload.CustomerID, payload.Scope, payload.Title, payload.SourceRef, payload.Text, payload.Metadata)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -676,7 +731,7 @@ func (h *Handler) listKnowledgeDocuments(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	documents, err := h.store.ListKnowledgeDocuments(r.Context(), customerID, limit)
+	documents, err := h.store.ListKnowledgeDocumentsByScope(r.Context(), customerID, r.URL.Query().Get("scope"), limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -1083,19 +1138,198 @@ func (h *Handler) listBackgroundRuns(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"background_runs": runs})
 }
 
-func (h *Handler) createBroadcast(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) listMCPServers(w http.ResponseWriter, r *http.Request) {
+	if h.mcpManager == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"servers": []mcp.ServerStatus{}})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"servers": h.mcpManager.Statuses()})
+}
+
+func (h *Handler) listMCPTools(w http.ResponseWriter, r *http.Request) {
+	serverName := r.PathValue("server_name")
+	if serverName == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("server_name is required"))
+		return
+	}
+	if h.mcpManager == nil {
+		writeError(w, http.StatusNotFound, fmt.Errorf("mcp server %q not found", serverName))
+		return
+	}
+	tools, err := h.mcpManager.ListTools(r.Context(), adminMCPExecutionContext(r), serverName)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"server_name": serverName, "tools": tools})
+}
+
+func (h *Handler) listMCPResources(w http.ResponseWriter, r *http.Request) {
+	serverName := r.PathValue("server_name")
+	if serverName == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("server_name is required"))
+		return
+	}
+	if h.mcpManager == nil {
+		writeError(w, http.StatusNotFound, fmt.Errorf("mcp server %q not found", serverName))
+		return
+	}
+	resources, err := h.mcpManager.ListResources(r.Context(), adminMCPExecutionContext(r), serverName)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"server_name": serverName, "resources": resources})
+}
+
+func (h *Handler) readMCPResource(w http.ResponseWriter, r *http.Request) {
+	serverName := r.PathValue("server_name")
+	uri := r.URL.Query().Get("uri")
+	if serverName == "" || uri == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("server_name and uri are required"))
+		return
+	}
+	if h.mcpManager == nil {
+		writeError(w, http.StatusNotFound, fmt.Errorf("mcp server %q not found", serverName))
+		return
+	}
+	resource, err := h.mcpManager.ReadResource(r.Context(), adminMCPExecutionContext(r), serverName, uri)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"server_name": serverName, "resource": resource})
+}
+
+func (h *Handler) listMCPPrompts(w http.ResponseWriter, r *http.Request) {
+	serverName := r.PathValue("server_name")
+	if serverName == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("server_name is required"))
+		return
+	}
+	if h.mcpManager == nil {
+		writeError(w, http.StatusNotFound, fmt.Errorf("mcp server %q not found", serverName))
+		return
+	}
+	prompts, err := h.mcpManager.ListPrompts(r.Context(), adminMCPExecutionContext(r), serverName)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"server_name": serverName, "prompts": prompts})
+}
+
+func (h *Handler) getMCPPrompt(w http.ResponseWriter, r *http.Request) {
+	serverName := r.PathValue("server_name")
+	promptName := r.PathValue("prompt_name")
+	if serverName == "" || promptName == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("server_name and prompt_name are required"))
+		return
+	}
+	if h.mcpManager == nil {
+		writeError(w, http.StatusNotFound, fmt.Errorf("mcp server %q not found", serverName))
+		return
+	}
 	var payload struct {
-		CustomerID string                   `json:"customer_id"`
-		Title      string                   `json:"title"`
-		Payload    map[string]any           `json:"payload"`
-		Targets    []db.BroadcastTargetSpec `json:"targets"`
+		Arguments map[string]any `json:"arguments"`
 	}
 	if err := decodeJSON(w, r, &payload); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if payload.CustomerID == "" || strings.TrimSpace(payload.Title) == "" || len(payload.Targets) == 0 {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id, title, and targets are required"))
+	prompt, err := h.mcpManager.GetPrompt(r.Context(), adminMCPExecutionContext(r), serverName, promptName, payload.Arguments)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"server_name": serverName, "prompt": prompt})
+}
+
+func (h *Handler) ingestMCPNotification(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		CustomerID  string         `json:"customer_id"`
+		RunID       string         `json:"run_id"`
+		ServerName  string         `json:"server_name"`
+		EventType   string         `json:"event_type"`
+		ResourceURI string         `json:"resource_uri"`
+		Data        map[string]any `json:"data"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if payload.CustomerID == "" || payload.ServerName == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id and server_name are required"))
+		return
+	}
+	if payload.EventType == "" {
+		payload.EventType = "mcp.notification"
+	}
+	if h.store == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("store is not configured"))
+		return
+	}
+	body := map[string]any{
+		"server_name":  payload.ServerName,
+		"resource_uri": payload.ResourceURI,
+		"event_type":   payload.EventType,
+		"data":         payload.Data,
+		"trace_id":     r.Header.Get("X-Trace-ID"),
+		"traceparent":  r.Header.Get("traceparent"),
+	}
+	if err := h.store.AddObservabilityEvent(r.Context(), payload.CustomerID, payload.RunID, "mcp.notification", body); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"accepted": true})
+}
+
+func adminMCPExecutionContext(r *http.Request) mcp.ExecutionContext {
+	return mcp.ExecutionContext{
+		CustomerID:      r.URL.Query().Get("customer_id"),
+		UserID:          r.URL.Query().Get("user_id"),
+		AgentInstanceID: r.URL.Query().Get("agent_instance_id"),
+		SessionID:       r.URL.Query().Get("session_id"),
+		RequestID:       r.Header.Get("X-Request-ID"),
+		TraceID:         r.Header.Get("X-Trace-ID"),
+		TraceParent:     r.Header.Get("traceparent"),
+	}
+}
+
+func (h *Handler) createBroadcast(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		CustomerID      string                      `json:"customer_id"`
+		Title           string                      `json:"title"`
+		Payload         map[string]any              `json:"payload"`
+		Targets         []db.BroadcastTargetSpec    `json:"targets"`
+		TargetSelection db.BroadcastTargetSelection `json:"target_selection"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if payload.CustomerID == "" || strings.TrimSpace(payload.Title) == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id and title are required"))
+		return
+	}
+	if len(payload.Targets) == 0 {
+		targets, err := h.store.ResolveBroadcastTargets(r.Context(), payload.CustomerID, payload.TargetSelection)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		payload.Targets = targets
+	}
+	if len(payload.Targets) == 0 {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("broadcast targets are required"))
+		return
+	}
+	if _, err := policy.NewEngine(h.store).Enforce(r.Context(), "pre_broadcast", policy.Context{
+		CustomerID:       payload.CustomerID,
+		Content:          mustJSONString(map[string]any{"title": payload.Title, "payload": payload.Payload}),
+		AdditionalFields: map[string]any{"target_count": len(payload.Targets)},
+	}); err != nil {
+		writeError(w, http.StatusForbidden, err)
 		return
 	}
 	id, count, err := h.store.CreateBroadcast(r.Context(), payload.CustomerID, payload.Title, payload.Payload, payload.Targets)
@@ -1160,6 +1394,7 @@ func (h *Handler) runRetention(w http.ResponseWriter, r *http.Request) {
 		ArtifactDays      int `json:"artifact_days"`
 		EventDays         int `json:"event_days"`
 		OutboxDays        int `json:"outbox_days"`
+		AsyncWriteDays    int `json:"async_write_days"`
 		ObservabilityDays int `json:"observability_days"`
 		BroadcastDays     int `json:"broadcast_days"`
 	}
@@ -1192,6 +1427,14 @@ func (h *Handler) runRetention(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		result["outbox_deleted"] = n
+	}
+	if payload.AsyncWriteDays > 0 {
+		n, err := h.store.DeleteTerminalAsyncWriteJobsOlderThan(r.Context(), now.AddDate(0, 0, -payload.AsyncWriteDays))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		result["async_write_jobs_deleted"] = n
 	}
 	if payload.ObservabilityDays > 0 {
 		n, err := h.store.DeleteObservabilityEventsOlderThan(r.Context(), now.AddDate(0, 0, -payload.ObservabilityDays))
@@ -1534,11 +1777,16 @@ func (h *Handler) updateOutboundIntentStatus(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, fmt.Errorf("intent_id and status are required"))
 		return
 	}
-	if err := h.store.SetOutboundIntentStatus(r.Context(), r.PathValue("intent_id"), customerID, payload.Status); err != nil {
+	status, err := db.NormalizeOutboundIntentStatus(payload.Status)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := h.store.SetOutboundIntentStatus(r.Context(), r.PathValue("intent_id"), customerID, status); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"outbound_intent_id": r.PathValue("intent_id"), "status": payload.Status})
+	writeJSON(w, http.StatusOK, map[string]any{"outbound_intent_id": r.PathValue("intent_id"), "status": status})
 }
 
 func (h *Handler) latest(w http.ResponseWriter, r *http.Request) {
@@ -1560,10 +1808,11 @@ func (h *Handler) byKey(w http.ResponseWriter, r *http.Request) {
 }
 
 func requiredContext(w http.ResponseWriter, r *http.Request, requireIdempotency bool) (db.ACPContext, bool) {
+	trace := observability.TraceContextFromHeaders(r.Header)
 	c := db.ACPContext{
 		CustomerID: r.Header.Get("X-Customer-ID"), UserID: r.Header.Get("X-User-ID"), AgentInstanceID: r.Header.Get("X-Agent-Instance-ID"),
 		SessionID: r.Header.Get("X-Session-ID"), RequestID: r.Header.Get("X-Request-ID"), IdempotencyKey: r.Header.Get("X-Idempotency-Key"),
-		ChannelType: r.Header.Get("X-Channel-Type"), ChannelUserID: r.Header.Get("X-Channel-User-ID"), ChannelConvID: r.Header.Get("X-Channel-Conversation-ID"), TraceID: r.Header.Get("X-Trace-ID"),
+		ChannelType: r.Header.Get("X-Channel-Type"), ChannelUserID: r.Header.Get("X-Channel-User-ID"), ChannelConvID: r.Header.Get("X-Channel-Conversation-ID"), TraceID: trace.TraceID, TraceParent: trace.TraceParent,
 	}
 	required := []struct {
 		name string
@@ -1687,6 +1936,11 @@ func queryLimit(r *http.Request, fallback int) int {
 		return fallback
 	}
 	return limit
+}
+
+func mustJSONString(v any) string {
+	b, _ := json.Marshal(v)
+	return string(b)
 }
 
 func writeError(w http.ResponseWriter, status int, err error) {

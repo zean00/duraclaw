@@ -3,6 +3,7 @@ package policy
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"duraclaw/internal/db"
@@ -94,5 +95,25 @@ func TestRuleMatchesRegexCondition(t *testing.T) {
 	}
 	if decision.Action != "modify" {
 		t.Fatalf("decision=%#v", decision)
+	}
+}
+
+func TestRedactContextPayload(t *testing.T) {
+	pc := Context{
+		Content: "email a@example.com token: abc123",
+		AdditionalFields: map[string]any{
+			"authorization": "Bearer secret",
+			"nested":        map[string]any{"note": "card 4111 1111 1111 1111"},
+		},
+	}.Redacted()
+	if strings.Contains(pc.Content, "a@example.com") || strings.Contains(pc.Content, "abc123") {
+		t.Fatalf("content not redacted: %q", pc.Content)
+	}
+	if pc.AdditionalFields["authorization"] != "[REDACTED]" {
+		t.Fatalf("secret key not redacted: %#v", pc.AdditionalFields)
+	}
+	nested := pc.AdditionalFields["nested"].(map[string]any)
+	if strings.Contains(nested["note"].(string), "4111") {
+		t.Fatalf("nested value not redacted: %#v", nested)
 	}
 }

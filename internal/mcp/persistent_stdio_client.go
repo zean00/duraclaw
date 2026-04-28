@@ -56,6 +56,113 @@ func (c *PersistentStdioClient) ListTools(ctx context.Context, execCtx Execution
 	return decodeToolList(result)
 }
 
+func (c *PersistentStdioClient) ListResources(ctx context.Context, execCtx ExecutionContext, serverName string) ([]ResourceInfo, error) {
+	c.callMu.Lock()
+	defer c.callMu.Unlock()
+	session, err := c.ensureSession(ctx, execCtx)
+	if err != nil {
+		return nil, err
+	}
+	id := c.next()
+	if err := session.write(map[string]any{"jsonrpc": "2.0", "id": id, "method": "resources/list", "params": map[string]any{}}); err != nil {
+		c.Close()
+		return nil, err
+	}
+	result, err := session.readResult(id)
+	if err != nil {
+		c.Close()
+		return nil, err
+	}
+	return decodeResourceList(result)
+}
+
+func (c *PersistentStdioClient) ReadResource(ctx context.Context, execCtx ExecutionContext, serverName, uri string) (*ResourceContent, error) {
+	c.callMu.Lock()
+	defer c.callMu.Unlock()
+	session, err := c.ensureSession(ctx, execCtx)
+	if err != nil {
+		return nil, err
+	}
+	id := c.next()
+	if err := session.write(map[string]any{"jsonrpc": "2.0", "id": id, "method": "resources/read", "params": map[string]any{"uri": uri}}); err != nil {
+		c.Close()
+		return nil, err
+	}
+	result, err := session.readResult(id)
+	if err != nil {
+		c.Close()
+		return nil, err
+	}
+	return decodeResourceContent(result)
+}
+
+func (c *PersistentStdioClient) SubscribeResource(ctx context.Context, execCtx ExecutionContext, serverName, uri string) error {
+	return c.resourceSubscription(ctx, execCtx, "resources/subscribe", uri)
+}
+
+func (c *PersistentStdioClient) UnsubscribeResource(ctx context.Context, execCtx ExecutionContext, serverName, uri string) error {
+	return c.resourceSubscription(ctx, execCtx, "resources/unsubscribe", uri)
+}
+
+func (c *PersistentStdioClient) resourceSubscription(ctx context.Context, execCtx ExecutionContext, method, uri string) error {
+	c.callMu.Lock()
+	defer c.callMu.Unlock()
+	session, err := c.ensureSession(ctx, execCtx)
+	if err != nil {
+		return err
+	}
+	id := c.next()
+	if err := session.write(map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": map[string]any{"uri": uri}}); err != nil {
+		c.Close()
+		return err
+	}
+	if _, err := session.readResult(id); err != nil {
+		c.Close()
+		return err
+	}
+	return nil
+}
+
+func (c *PersistentStdioClient) ListPrompts(ctx context.Context, execCtx ExecutionContext, serverName string) ([]PromptInfo, error) {
+	c.callMu.Lock()
+	defer c.callMu.Unlock()
+	session, err := c.ensureSession(ctx, execCtx)
+	if err != nil {
+		return nil, err
+	}
+	id := c.next()
+	if err := session.write(map[string]any{"jsonrpc": "2.0", "id": id, "method": "prompts/list", "params": map[string]any{}}); err != nil {
+		c.Close()
+		return nil, err
+	}
+	result, err := session.readResult(id)
+	if err != nil {
+		c.Close()
+		return nil, err
+	}
+	return decodePromptList(result)
+}
+
+func (c *PersistentStdioClient) GetPrompt(ctx context.Context, execCtx ExecutionContext, serverName, promptName string, arguments map[string]any) (*PromptContent, error) {
+	c.callMu.Lock()
+	defer c.callMu.Unlock()
+	session, err := c.ensureSession(ctx, execCtx)
+	if err != nil {
+		return nil, err
+	}
+	id := c.next()
+	if err := session.write(map[string]any{"jsonrpc": "2.0", "id": id, "method": "prompts/get", "params": map[string]any{"name": promptName, "arguments": arguments}}); err != nil {
+		c.Close()
+		return nil, err
+	}
+	result, err := session.readResult(id)
+	if err != nil {
+		c.Close()
+		return nil, err
+	}
+	return decodePromptContent(result)
+}
+
 func (c *PersistentStdioClient) ensureSession(ctx context.Context, execCtx ExecutionContext) (*stdioSession, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

@@ -51,3 +51,15 @@ func (s *Store) DeleteTerminalBroadcastsOlderThan(ctx context.Context, cutoff ti
 	}
 	return tag.RowsAffected(), nil
 }
+
+func (s *Store) DeleteTerminalAsyncWriteJobsOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `
+		DELETE FROM async_write_jobs
+		WHERE state IN ('completed','failed','dropped','degraded')
+		AND completed_at IS NOT NULL
+		AND completed_at < $1`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}

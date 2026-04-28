@@ -94,3 +94,74 @@ func TestHTTPClientSSEParsesToolListEventData(t *testing.T) {
 		t.Fatalf("accept=%q tools=%#v", sawAccept, tools)
 	}
 }
+
+func TestHTTPClientResourceEndpoints(t *testing.T) {
+	var subscriptions int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/resources/list":
+			_ = json.NewEncoder(w).Encode(map[string]any{"resources": []map[string]any{{"uri": "file://doc", "name": "doc"}}})
+		case "/resources/read":
+			_ = json.NewEncoder(w).Encode(map[string]any{"resource": map[string]any{"uri": "file://doc", "text": "hello"}})
+		case "/resources/subscribe", "/resources/unsubscribe":
+			subscriptions++
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client := HTTPClient{BaseURL: server.URL}
+	resources, err := client.ListResources(context.Background(), ExecutionContext{}, "srv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resources) != 1 || resources[0].URI != "file://doc" {
+		t.Fatalf("resources=%#v", resources)
+	}
+	content, err := client.ReadResource(context.Background(), ExecutionContext{}, "srv", "file://doc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if content.Text != "hello" {
+		t.Fatalf("content=%#v", content)
+	}
+	if err := client.SubscribeResource(context.Background(), ExecutionContext{}, "srv", "file://doc"); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.UnsubscribeResource(context.Background(), ExecutionContext{}, "srv", "file://doc"); err != nil {
+		t.Fatal(err)
+	}
+	if subscriptions != 2 {
+		t.Fatalf("subscriptions=%d", subscriptions)
+	}
+}
+
+func TestHTTPClientPromptEndpoints(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/prompts/list":
+			_ = json.NewEncoder(w).Encode(map[string]any{"prompts": []map[string]any{{"name": "summarize"}}})
+		case "/prompts/get":
+			_ = json.NewEncoder(w).Encode(map[string]any{"prompt": map[string]any{"name": "summarize", "messages": []map[string]any{{"role": "user", "content": map[string]any{"type": "text", "text": "Summarize"}}}}})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client := HTTPClient{BaseURL: server.URL}
+	prompts, err := client.ListPrompts(context.Background(), ExecutionContext{}, "srv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prompts) != 1 || prompts[0].Name != "summarize" {
+		t.Fatalf("prompts=%#v", prompts)
+	}
+	prompt, err := client.GetPrompt(context.Background(), ExecutionContext{}, "srv", "summarize", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prompt.Name != "summarize" || len(prompt.Messages) != 1 {
+		t.Fatalf("prompt=%#v", prompt)
+	}
+}

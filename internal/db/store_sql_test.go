@@ -21,6 +21,19 @@ func TestStoreClaimQueriesUseSkipLocked(t *testing.T) {
 	}
 }
 
+func TestStoreHasQueueStatsForReadiness(t *testing.T) {
+	raw, err := os.ReadFile("store.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw)
+	for _, want := range []string{"QueueStats", "runs WHERE state='queued'", "async_outbox WHERE completed_at IS NULL", "async_write_jobs WHERE state='queued'", "scheduler_jobs WHERE enabled=true"} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("queue stats missing %q", want)
+		}
+	}
+}
+
 func TestEnsureSessionDoesNotImplicitlyReassignAgentInstance(t *testing.T) {
 	raw, err := os.ReadFile("store.go")
 	if err != nil {
@@ -161,9 +174,52 @@ func TestOutboundStatusUpdatesBroadcastTargets(t *testing.T) {
 		t.Fatal(err)
 	}
 	sql := string(raw)
-	for _, want := range []string{"UPDATE broadcast_targets", "outbound_intent_id=$1", "UPDATE broadcasts b"} {
+	for _, want := range []string{"NormalizeOutboundIntentStatus", `status == "sent"`, "sent_to_nexus", "delivered", "UPDATE broadcast_targets", "outbound_intent_id=$1", "UPDATE broadcasts b", "INSERT INTO observability_events", "outbound."} {
 		if !strings.Contains(sql, want) {
 			t.Fatalf("outbound status update missing %q", want)
+		}
+	}
+}
+
+func TestNormalizeOutboundIntentStatus(t *testing.T) {
+	got, err := NormalizeOutboundIntentStatus("sent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "sent_to_nexus" {
+		t.Fatalf("got %q", got)
+	}
+	for _, status := range []string{"sent_to_nexus", "delivered", "failed", "cancelled"} {
+		got, err := NormalizeOutboundIntentStatus(status)
+		if err != nil || got != status {
+			t.Fatalf("status=%s got=%q err=%v", status, got, err)
+		}
+	}
+	if _, err := NormalizeOutboundIntentStatus("queued"); err == nil {
+		t.Fatalf("expected invalid callback status")
+	}
+}
+
+func TestBroadcastTargetSelectionQueries(t *testing.T) {
+	raw, err := os.ReadFile("broadcasts.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw)
+	for _, want := range []string{
+		"pgx.BeginFunc",
+		"createOutboundIntentTx",
+		"ResolveBroadcastTargets",
+		"DISTINCT ON (user_id)",
+		"agent_instance_id=$2",
+		"reminder_subscriptions",
+		"BroadcastTargetSelection",
+		"resolveBroadcastSegment",
+		"user_id_prefix",
+		"updated_since",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("broadcast target selection missing %q", want)
 		}
 	}
 }
@@ -247,8 +303,16 @@ func TestStoreHasSessionSummaryBackgroundAndTraceQueries(t *testing.T) {
 		"MarkRunBackground",
 		"BackgroundRuns",
 		"withTraceCheckpoint",
+		"RunTraceContext",
 		"trace_id",
+		"traceparent",
 		"SearchKnowledgeText",
+		"SearchKnowledgeHybrid",
+		"ListKnowledgeDocumentsByScope",
+		"scope='shared'",
+		"OR scope='shared'",
+		"to_tsvector('simple', content)",
+		"plainto_tsquery('simple', $2)",
 		"ILIKE '%' || $2 || '%'",
 	} {
 		if !strings.Contains(sql, want) {

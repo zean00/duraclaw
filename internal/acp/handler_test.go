@@ -1,7 +1,9 @@
 package acp
 
 import (
+	"context"
 	"duraclaw/internal/db"
+	"duraclaw/internal/mcp"
 	"duraclaw/internal/observability"
 
 	"net/http"
@@ -9,6 +11,32 @@ import (
 	"strings"
 	"testing"
 )
+
+type adminMCPClient struct{}
+
+func (adminMCPClient) CallTool(context.Context, mcp.ExecutionContext, string, string, map[string]any) (map[string]any, error) {
+	return map[string]any{}, nil
+}
+
+func (adminMCPClient) ListTools(context.Context, mcp.ExecutionContext, string) ([]mcp.ToolInfo, error) {
+	return []mcp.ToolInfo{{Name: "lookup"}}, nil
+}
+
+func (adminMCPClient) ListResources(context.Context, mcp.ExecutionContext, string) ([]mcp.ResourceInfo, error) {
+	return []mcp.ResourceInfo{{URI: "file://doc"}}, nil
+}
+
+func (adminMCPClient) ReadResource(context.Context, mcp.ExecutionContext, string, string) (*mcp.ResourceContent, error) {
+	return &mcp.ResourceContent{URI: "file://doc", Text: "hello"}, nil
+}
+
+func (adminMCPClient) ListPrompts(context.Context, mcp.ExecutionContext, string) ([]mcp.PromptInfo, error) {
+	return []mcp.PromptInfo{{Name: "summarize"}}, nil
+}
+
+func (adminMCPClient) GetPrompt(context.Context, mcp.ExecutionContext, string, string, map[string]any) (*mcp.PromptContent, error) {
+	return &mcp.PromptContent{Name: "summarize", Messages: []mcp.PromptMessage{{Role: "user", Content: map[string]any{"type": "text", "text": "Summarize"}}}}, nil
+}
 
 func TestAgentsDiscovery(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/acp/agents", nil)
@@ -121,6 +149,41 @@ func TestListSchedulerJobsRequiresCustomer(t *testing.T) {
 
 func TestListBackgroundRunsRequiresCustomer(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/admin/background-runs", nil)
+	rec := httptest.NewRecorder()
+	NewHandler(nil).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "customer_id") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAdminMCPRoutes(t *testing.T) {
+	manager := mcp.NewManager()
+	manager.Register("srv", adminMCPClient{})
+	handler := NewHandler(nil).WithMCPManager(manager).Routes()
+	for _, tc := range []struct {
+		method string
+		path   string
+		body   string
+		want   string
+	}{
+		{http.MethodGet, "/admin/mcp/servers", "", `"srv"`},
+		{http.MethodGet, "/admin/mcp/servers/srv/tools", "", `"lookup"`},
+		{http.MethodGet, "/admin/mcp/servers/srv/resources", "", `"file://doc"`},
+		{http.MethodGet, "/admin/mcp/servers/srv/resources/read?uri=file://doc", "", `"hello"`},
+		{http.MethodGet, "/admin/mcp/servers/srv/prompts", "", `"summarize"`},
+		{http.MethodPost, "/admin/mcp/servers/srv/prompts/summarize/get", `{}`, `"Summarize"`},
+	} {
+		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), tc.want) {
+			t.Fatalf("path=%s status=%d body=%s", tc.path, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestMCPNotificationRequiresContext(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/admin/mcp/notifications", strings.NewReader(`{"server_name":"srv"}`))
 	rec := httptest.NewRecorder()
 	NewHandler(nil).Routes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "customer_id") {
@@ -526,6 +589,15 @@ func TestACPTokenRequiredWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestRequireAuthRejectsUnconfiguredTokens(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/acp/agents", nil)
+	rec := httptest.NewRecorder()
+	NewHandler(nil).WithRequireAuth(true).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestRequestIDResponseHeader(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	req.Header.Set("X-Request-ID", "req-1")
@@ -533,6 +605,15 @@ func TestRequestIDResponseHeader(t *testing.T) {
 	NewHandler(nil).Routes().ServeHTTP(rec, req)
 	if rec.Header().Get("X-Request-ID") != "req-1" {
 		t.Fatalf("missing response request id")
+	}
+}
+
+func TestSecurityHeaders(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+	NewHandler(nil).Routes().ServeHTTP(rec, req)
+	if rec.Header().Get("X-Content-Type-Options") != "nosniff" || rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("headers=%#v", rec.Header())
 	}
 }
 
@@ -683,6 +764,19 @@ func TestOutboundIntentStatusRequiresCustomer(t *testing.T) {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), "X-Customer-ID") {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+}
+
+func TestOutboundIntentStatusRejectsInvalidCallbackStatus(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/acp/outbound-intents/out-1/status", strings.NewReader(`{"status":"queued"}`))
+	req.Header.Set("X-Customer-ID", "c")
+	rec := httptest.NewRecorder()
+	NewHandler(nil).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "invalid outbound intent status") {
 		t.Fatalf("body=%s", rec.Body.String())
 	}
 }

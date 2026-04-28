@@ -25,6 +25,7 @@ type ACPContext struct {
 	ChannelUserID   string
 	ChannelConvID   string
 	TraceID         string
+	TraceParent     string
 }
 
 type ContentPart struct {
@@ -87,6 +88,14 @@ type ObservabilityEvent struct {
 	CreatedAt  time.Time       `json:"created_at"`
 }
 
+type QueueStats struct {
+	RunsQueued       int `json:"runs_queued"`
+	RunsActive       int `json:"runs_active"`
+	OutboxPending    int `json:"outbox_pending"`
+	AsyncWriteQueued int `json:"async_write_queued"`
+	SchedulerDue     int `json:"scheduler_due"`
+}
+
 type SchedulerJob struct {
 	ID             string          `json:"id"`
 	CustomerID     string          `json:"customer_id"`
@@ -142,6 +151,19 @@ func (s *Store) Ping(ctx context.Context) error {
 	return Ping(ctx, s.pool)
 }
 
+func (s *Store) QueueStats(ctx context.Context) (QueueStats, error) {
+	var stats QueueStats
+	err := s.pool.QueryRow(ctx, `
+		SELECT
+			(SELECT count(*) FROM runs WHERE state='queued'),
+			(SELECT count(*) FROM runs WHERE state IN ('leased','running','running_workflow','awaiting_user')),
+			(SELECT count(*) FROM async_outbox WHERE completed_at IS NULL),
+			(SELECT count(*) FROM async_write_jobs WHERE state='queued'),
+			(SELECT count(*) FROM scheduler_jobs WHERE enabled=true AND next_run_at <= now() AND (lease_expires_at IS NULL OR lease_expires_at < now()))`).
+		Scan(&stats.RunsQueued, &stats.RunsActive, &stats.OutboxPending, &stats.AsyncWriteQueued, &stats.SchedulerDue)
+	return stats, err
+}
+
 func (s *Store) EnsureSession(ctx context.Context, c ACPContext) error {
 	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `INSERT INTO customers(id) VALUES($1) ON CONFLICT DO NOTHING`, c.CustomerID); err != nil {
@@ -195,7 +217,7 @@ func (s *Store) CreateRun(ctx context.Context, c ACPContext, input any) (*Run, e
 	}
 	inputJSON, _ := json.Marshal(input)
 	channelJSON, _ := json.Marshal(map[string]string{
-		"channel_type": c.ChannelType, "channel_user_id": c.ChannelUserID, "channel_conversation_id": c.ChannelConvID, "trace_id": c.TraceID,
+		"channel_type": c.ChannelType, "channel_user_id": c.ChannelUserID, "channel_conversation_id": c.ChannelConvID, "trace_id": c.TraceID, "traceparent": c.TraceParent,
 	})
 	var r Run
 	var inserted bool
@@ -415,6 +437,18 @@ func (s *Store) Checkpoint(ctx context.Context, runID, key string, state any) er
 	return err
 }
 
+func (s *Store) RunTraceContext(ctx context.Context, runID string) (traceID, traceParent string, err error) {
+	var channel []byte
+	if err := s.pool.QueryRow(ctx, `SELECT channel_context FROM runs WHERE id=$1`, runID).Scan(&channel); err != nil {
+		return "", "", err
+	}
+	var payload map[string]any
+	_ = json.Unmarshal(channel, &payload)
+	traceID, _ = payload["trace_id"].(string)
+	traceParent, _ = payload["traceparent"].(string)
+	return strings.TrimSpace(traceID), strings.TrimSpace(traceParent), nil
+}
+
 func (s *Store) withTraceCheckpoint(ctx context.Context, runID, key string, state any) any {
 	payload, ok := state.(map[string]any)
 	if !ok {
@@ -426,14 +460,15 @@ func (s *Store) withTraceCheckpoint(ctx context.Context, runID, key string, stat
 	if _, ok := payload["trace_id"]; ok {
 		return payload
 	}
-	var channel []byte
-	if err := s.pool.QueryRow(ctx, `SELECT channel_context FROM runs WHERE id=$1`, runID).Scan(&channel); err != nil {
+	traceID, traceParent, err := s.RunTraceContext(ctx, runID)
+	if err != nil {
 		return payload
 	}
-	var ctxPayload map[string]any
-	_ = json.Unmarshal(channel, &ctxPayload)
-	if traceID, _ := ctxPayload["trace_id"].(string); strings.TrimSpace(traceID) != "" {
+	if traceID != "" {
 		payload["trace_id"] = traceID
+	}
+	if traceParent != "" {
+		payload["traceparent"] = traceParent
 	}
 	return payload
 }

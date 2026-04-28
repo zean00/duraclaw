@@ -35,6 +35,17 @@ func TestWorkerPassesCountersToAllWorkflowExecutors(t *testing.T) {
 	}
 }
 
+func TestWorkerPassesTraceContextToWorkflowExecutors(t *testing.T) {
+	raw, err := os.ReadFile("worker.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(raw)
+	if !strings.Contains(src, "runTraceContext") || !strings.Contains(src, "TraceParent: traceCtx.TraceParent") || !strings.Contains(src, "TraceID: traceCtx.TraceID") {
+		t.Fatalf("workflow executor paths should receive durable trace context")
+	}
+}
+
 func TestWorkerAppliesVersionRuntimeConfig(t *testing.T) {
 	raw, err := os.ReadFile("worker.go")
 	if err != nil {
@@ -59,9 +70,57 @@ func TestWorkerAppliesVersionRuntimeConfig(t *testing.T) {
 		"knowledgeContext",
 		"updateSessionSummary",
 		"policyConfigInstructions",
+		"pre_artifact_read",
+		"artifactRepresentationSummaries",
+		"ArtifactRepresentations",
 	} {
 		if !strings.Contains(src, want) {
 			t.Fatalf("worker missing version runtime config hook %q", want)
 		}
+	}
+}
+
+func TestDirectWorkflowRunsEnforceWorkflowPolicy(t *testing.T) {
+	raw, err := os.ReadFile("worker.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(raw)
+	start := strings.Index(src, `StartRunStep(ctx, run.ID, "workflow_graph"`)
+	if start < 0 {
+		t.Fatalf("worker direct workflow path not found")
+	}
+	exec := strings.Index(src[start:], "ExecuteGraph")
+	if exec < 0 {
+		t.Fatalf("worker direct workflow path not found")
+	}
+	block := src[start : start+exec]
+	if !strings.Contains(block, `Enforce(ctx, "pre_workflow"`) {
+		t.Fatalf("direct workflow path should enforce pre_workflow before ExecuteGraph")
+	}
+	afterExec := src[start+exec:]
+	awaiting := strings.Index(afterExec, `result.State == "awaiting_user"`)
+	if awaiting < 0 {
+		t.Fatalf("direct workflow awaiting branch not found")
+	}
+	awaitingBlockEnd := strings.Index(afterExec[awaiting:], `return runStoppedError{runID: run.ID, state: "awaiting_user"}`)
+	if awaitingBlockEnd < 0 {
+		t.Fatalf("direct workflow awaiting return not found")
+	}
+	awaitingBlock := afterExec[awaiting : awaiting+awaitingBlockEnd]
+	if !strings.Contains(awaitingBlock, `CompleteRunStep(ctx, run.ID, stepID, "succeeded"`) {
+		t.Fatalf("direct workflow awaiting branch should complete workflow_graph step before pausing")
+	}
+	post := strings.Index(afterExec, `Enforce(ctx, "post_workflow"`)
+	if post < 0 {
+		t.Fatalf("direct workflow path should enforce post_workflow")
+	}
+	complete := strings.Index(afterExec[post:], `CompleteRunStep(ctx, run.ID, stepID, "succeeded"`)
+	if complete < 0 {
+		t.Fatalf("direct workflow terminal completion not found")
+	}
+	block = afterExec[:post+complete]
+	if !strings.Contains(block, `Enforce(ctx, "post_workflow"`) {
+		t.Fatalf("direct workflow path should enforce post_workflow before completing the step")
 	}
 }

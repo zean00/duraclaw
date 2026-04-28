@@ -4,12 +4,24 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 type BroadcastTargetSpec struct {
 	UserID    string `json:"user_id"`
 	SessionID string `json:"session_id"`
+}
+
+type BroadcastTargetSelection struct {
+	AllUsers               bool           `json:"all_users,omitempty"`
+	UserIDs                []string       `json:"user_ids,omitempty"`
+	AgentInstanceID        string         `json:"agent_instance_id,omitempty"`
+	ReminderSubscriptionID string         `json:"reminder_subscription_id,omitempty"`
+	Segment                map[string]any `json:"segment,omitempty"`
+	Limit                  int            `json:"limit,omitempty"`
 }
 
 type Broadcast struct {
@@ -51,37 +63,194 @@ func (s *Store) CreateBroadcast(ctx context.Context, customerID, title string, p
 		payloadJSON = []byte(`{}`)
 	}
 	var broadcastID string
-	if err := s.pool.QueryRow(ctx, `
-		INSERT INTO broadcasts(customer_id,title,payload,status)
-		VALUES($1,$2,$3,'queued')
-		RETURNING id::text`, customerID, title, payloadJSON).Scan(&broadcastID); err != nil {
-		return "", 0, err
-	}
 	created := 0
-	for _, target := range targets {
-		var targetID string
-		if err := s.pool.QueryRow(ctx, `
-			INSERT INTO broadcast_targets(broadcast_id,customer_id,user_id,session_id,status)
-			VALUES($1,$2,$3,$4,'pending')
-			RETURNING id::text`, broadcastID, customerID, target.UserID, target.SessionID).Scan(&targetID); err != nil {
-			return broadcastID, created, err
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO broadcasts(customer_id,title,payload,status)
+			VALUES($1,$2,$3,'queued')
+			RETURNING id::text`, customerID, title, payloadJSON).Scan(&broadcastID); err != nil {
+			return err
 		}
-		intentID, _, err := s.CreateOutboundIntent(ctx, OutboundIntent{
-			CustomerID: customerID,
-			UserID:     target.UserID,
-			SessionID:  target.SessionID,
-			Type:       "broadcast",
-			Payload:    mustJSON(map[string]any{"broadcast_id": broadcastID, "target_id": targetID, "title": title, "payload": json.RawMessage(payloadJSON)}),
-		})
-		if err != nil {
-			return broadcastID, created, err
+		for _, target := range targets {
+			var targetID string
+			if err := tx.QueryRow(ctx, `
+				INSERT INTO broadcast_targets(broadcast_id,customer_id,user_id,session_id,status)
+				VALUES($1,$2,$3,$4,'pending')
+				RETURNING id::text`, broadcastID, customerID, target.UserID, target.SessionID).Scan(&targetID); err != nil {
+				return err
+			}
+			intentID, _, err := createOutboundIntentTx(ctx, tx, OutboundIntent{
+				CustomerID: customerID,
+				UserID:     target.UserID,
+				SessionID:  target.SessionID,
+				Type:       "broadcast",
+				Payload:    mustJSON(map[string]any{"broadcast_id": broadcastID, "target_id": targetID, "title": title, "payload": json.RawMessage(payloadJSON)}),
+			})
+			if err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `UPDATE broadcast_targets SET status='queued', outbound_intent_id=$2, updated_at=now() WHERE id=$1`, targetID, intentID); err != nil {
+				return err
+			}
+			created++
 		}
-		if _, err := s.pool.Exec(ctx, `UPDATE broadcast_targets SET status='queued', outbound_intent_id=$2, updated_at=now() WHERE id=$1`, targetID, intentID); err != nil {
-			return broadcastID, created, err
-		}
-		created++
+		return nil
+	})
+	return broadcastID, created, err
+}
+
+func (s *Store) ResolveBroadcastTargets(ctx context.Context, customerID string, selection BroadcastTargetSelection) ([]BroadcastTargetSpec, error) {
+	if customerID == "" {
+		return nil, fmt.Errorf("customer_id is required")
 	}
-	return broadcastID, created, nil
+	limit := selection.Limit
+	if limit <= 0 || limit > 10000 {
+		limit = 10000
+	}
+	seen := map[string]bool{}
+	var out []BroadcastTargetSpec
+	addRows := func(rows pgx.Rows) error {
+		defer rows.Close()
+		for rows.Next() {
+			var target BroadcastTargetSpec
+			if err := rows.Scan(&target.UserID, &target.SessionID); err != nil {
+				return err
+			}
+			key := target.UserID + "\x00" + target.SessionID
+			if target.UserID == "" || target.SessionID == "" || seen[key] {
+				continue
+			}
+			out = append(out, target)
+			seen[key] = true
+		}
+		return rows.Err()
+	}
+	if selection.AllUsers {
+		rows, err := s.pool.Query(ctx, `
+			SELECT DISTINCT ON (user_id) user_id, id
+			FROM sessions
+			WHERE customer_id=$1
+			ORDER BY user_id, updated_at DESC
+			LIMIT $2`, customerID, limit)
+		if err != nil {
+			return nil, err
+		}
+		if err := addRows(rows); err != nil {
+			return nil, err
+		}
+	}
+	if selection.AgentInstanceID != "" && len(out) < limit {
+		rows, err := s.pool.Query(ctx, `
+			SELECT DISTINCT ON (user_id) user_id, id
+			FROM sessions
+			WHERE customer_id=$1 AND agent_instance_id=$2
+			ORDER BY user_id, updated_at DESC
+			LIMIT $3`, customerID, selection.AgentInstanceID, limit-len(out))
+		if err != nil {
+			return nil, err
+		}
+		if err := addRows(rows); err != nil {
+			return nil, err
+		}
+	}
+	if selection.ReminderSubscriptionID != "" && len(out) < limit {
+		rows, err := s.pool.Query(ctx, `
+			SELECT user_id, session_id
+			FROM reminder_subscriptions
+			WHERE customer_id=$1 AND id=$2 AND enabled=true
+			LIMIT $3`, customerID, selection.ReminderSubscriptionID, limit-len(out))
+		if err != nil {
+			return nil, err
+		}
+		if err := addRows(rows); err != nil {
+			return nil, err
+		}
+	}
+	for _, userID := range selection.UserIDs {
+		if len(out) >= limit {
+			break
+		}
+		var target BroadcastTargetSpec
+		err := s.pool.QueryRow(ctx, `
+			SELECT user_id, id
+			FROM sessions
+			WHERE customer_id=$1 AND user_id=$2
+			ORDER BY updated_at DESC
+			LIMIT 1`, customerID, userID).Scan(&target.UserID, &target.SessionID)
+		if err != nil {
+			continue
+		}
+		key := target.UserID + "\x00" + target.SessionID
+		if !seen[key] {
+			out = append(out, target)
+			seen[key] = true
+		}
+	}
+	if len(selection.Segment) > 0 && len(out) < limit {
+		segmentTargets, err := s.resolveBroadcastSegment(ctx, customerID, selection.Segment, limit-len(out))
+		if err != nil {
+			return nil, err
+		}
+		for _, target := range segmentTargets {
+			key := target.UserID + "\x00" + target.SessionID
+			if !seen[key] {
+				out = append(out, target)
+				seen[key] = true
+			}
+		}
+	}
+	return out, nil
+}
+
+func (s *Store) resolveBroadcastSegment(ctx context.Context, customerID string, segment map[string]any, limit int) ([]BroadcastTargetSpec, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	clauses := []string{"customer_id=$1"}
+	args := []any{customerID}
+	nextArg := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	if prefix, _ := segment["user_id_prefix"].(string); strings.TrimSpace(prefix) != "" {
+		clauses = append(clauses, "user_id LIKE "+nextArg(prefix+"%"))
+	}
+	if prefix, _ := segment["session_id_prefix"].(string); strings.TrimSpace(prefix) != "" {
+		clauses = append(clauses, "id LIKE "+nextArg(prefix+"%"))
+	}
+	if agentInstanceID, _ := segment["agent_instance_id"].(string); strings.TrimSpace(agentInstanceID) != "" {
+		clauses = append(clauses, "agent_instance_id="+nextArg(agentInstanceID))
+	}
+	if updatedSince, _ := segment["updated_since"].(string); strings.TrimSpace(updatedSince) != "" {
+		t, err := time.Parse(time.RFC3339, updatedSince)
+		if err != nil {
+			return nil, fmt.Errorf("segment.updated_since must be RFC3339")
+		}
+		clauses = append(clauses, "updated_at >= "+nextArg(t))
+	}
+	if len(clauses) == 1 {
+		return nil, fmt.Errorf("segment requires at least one supported condition")
+	}
+	args = append(args, limit)
+	rows, err := s.pool.Query(ctx, `
+		SELECT DISTINCT ON (user_id) user_id, id
+		FROM sessions
+		WHERE `+strings.Join(clauses, " AND ")+`
+		ORDER BY user_id, updated_at DESC
+		LIMIT `+fmt.Sprintf("$%d", len(args)), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []BroadcastTargetSpec
+	for rows.Next() {
+		var target BroadcastTargetSpec
+		if err := rows.Scan(&target.UserID, &target.SessionID); err != nil {
+			return nil, err
+		}
+		out = append(out, target)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) ListBroadcasts(ctx context.Context, customerID string, limit int) ([]Broadcast, error) {

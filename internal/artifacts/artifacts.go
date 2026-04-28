@@ -6,13 +6,16 @@ import (
 )
 
 type ProcessorContext struct {
-	CustomerID      string
-	UserID          string
-	AgentInstanceID string
-	SessionID       string
-	RunID           string
-	ArtifactID      string
-	RequestID       string
+	CustomerID               string   `json:"customer_id"`
+	UserID                   string   `json:"user_id"`
+	AgentInstanceID          string   `json:"agent_instance_id"`
+	SessionID                string   `json:"session_id"`
+	RunID                    string   `json:"run_id"`
+	ArtifactID               string   `json:"artifact_id"`
+	ProcessorCallID          string   `json:"processor_call_id"`
+	RequestID                string   `json:"request_id"`
+	TraceParent              string   `json:"traceparent,omitempty"`
+	RequestedRepresentations []string `json:"requested_representations,omitempty"`
 }
 
 type Artifact struct {
@@ -27,6 +30,15 @@ type Representation struct {
 	Type     string
 	Summary  string
 	Metadata map[string]any
+}
+
+type ProcessorLimits struct {
+	MaxResponseBytes   int  `json:"max_response_bytes,omitempty"`
+	MaxRepresentations int  `json:"max_representations,omitempty"`
+	MaxSummaryBytes    int  `json:"max_summary_bytes,omitempty"`
+	RawMediaAllowed    bool `json:"raw_media_allowed"`
+	DegradeOnOversize  bool `json:"degrade_on_oversize"`
+	RetryNonIdempotent bool `json:"retry_non_idempotent"`
 }
 
 type Processor interface {

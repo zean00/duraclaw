@@ -62,6 +62,12 @@ type Context struct {
 	AdditionalFields map[string]any `json:"additional_fields,omitempty"`
 }
 
+func (pc Context) Redacted() Context {
+	pc.Content = RedactString(pc.Content)
+	pc.AdditionalFields = RedactMap(pc.AdditionalFields)
+	return pc
+}
+
 type Decision struct {
 	Action       string          `json:"action"`
 	Reason       string          `json:"reason,omitempty"`
@@ -137,7 +143,7 @@ func (e *Engine) record(ctx context.Context, mode string, pc Context, rule db.Po
 	if e == nil || e.store == nil {
 		return nil
 	}
-	payload, _ := json.Marshal(pc)
+	payload, _ := json.Marshal(pc.Redacted())
 	ev := db.PolicyEvaluation{
 		WorkflowNodeKey: pc.WorkflowNodeKey,
 		EnforcementMode: mode,
@@ -161,6 +167,54 @@ func (e *Engine) record(ctx context.Context, mode string, pc Context, rule db.Po
 		ev.PolicyRuleID = &rule.ID
 	}
 	return e.store.RecordPolicyEvaluation(ctx, ev)
+}
+
+func RedactMap(in map[string]any) map[string]any {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		if sensitiveKey(key) {
+			out[key] = "[REDACTED]"
+			continue
+		}
+		out[key] = RedactValue(value)
+	}
+	return out
+}
+
+func RedactValue(value any) any {
+	switch v := value.(type) {
+	case string:
+		return RedactString(v)
+	case map[string]any:
+		return RedactMap(v)
+	case []any:
+		out := make([]any, len(v))
+		for i, item := range v {
+			out[i] = RedactValue(item)
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+func RedactString(value string) string {
+	value = regexp.MustCompile(`(?i)(api[_-]?key|token|secret|password)\s*[:=]\s*([^\s,;]+)`).ReplaceAllString(value, `$1=[REDACTED]`)
+	value = regexp.MustCompile(`\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b`).ReplaceAllString(value, "[REDACTED_EMAIL]")
+	return regexp.MustCompile(`\b(?:\d[ -]*?){13,19}\b`).ReplaceAllString(value, "[REDACTED_NUMBER]")
+}
+
+func sensitiveKey(key string) bool {
+	key = strings.ToLower(key)
+	for _, needle := range []string{"password", "secret", "token", "api_key", "apikey", "authorization", "cookie", "credential"} {
+		if strings.Contains(key, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func strongerDecision(current Decision, action, reason string) Decision {

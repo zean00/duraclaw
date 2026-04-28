@@ -11,6 +11,7 @@ import (
 	"duraclaw/internal/artifacts"
 	"duraclaw/internal/asyncwrite"
 	"duraclaw/internal/db"
+	"duraclaw/internal/embeddings"
 	"duraclaw/internal/mcp"
 	"duraclaw/internal/observability"
 	"duraclaw/internal/outbound"
@@ -20,6 +21,8 @@ import (
 	"duraclaw/internal/providers"
 	"duraclaw/internal/tools"
 	"duraclaw/internal/workflow"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 const defaultMaxIterations = 6
@@ -32,12 +35,33 @@ type Worker struct {
 	tools         *tools.Registry
 	mcpManager    *mcp.Manager
 	counters      *observability.Counters
+	otlp          observability.OTLPExporter
+	embedder      embeddings.Provider
 	asyncWriter   *asyncwrite.Writer
 	outbound      *outbound.Service
 	policy        *policy.Engine
 	owner         string
 	leaseFor      time.Duration
 	maxIterations int
+}
+
+type runTraceContext struct {
+	TraceID     string
+	TraceParent string
+}
+
+func (w *Worker) runTraceContext(ctx context.Context, runID string) runTraceContext {
+	if w == nil || w.store == nil || runID == "" {
+		return runTraceContext{}
+	}
+	traceID, traceParent, err := w.store.RunTraceContext(ctx, runID)
+	if err != nil {
+		return runTraceContext{}
+	}
+	if traceParent == "" && traceID != "" {
+		traceParent = observability.NewTraceParent(traceID)
+	}
+	return runTraceContext{TraceID: traceID, TraceParent: traceParent}
 }
 
 func NewWorker(store *db.Store, provider providers.LLMProvider, owner string) *Worker {
@@ -72,11 +96,16 @@ func NewWorkerWithProviders(store *db.Store, registry *providers.Registry, model
 		toolRegistry.Register(tools.SavePreferenceTool{Store: store})
 		toolRegistry.Register(tools.ListPreferencesTool{Store: store})
 	}
-	return &Worker{store: store, providers: registry, modelConfig: modelConfig, processors: artifacts.NewRegistry(artifacts.MockProcessor{}), tools: toolRegistry, policy: policy.NewEngine(store), owner: owner, leaseFor: 2 * time.Minute, maxIterations: defaultMaxIterations}
+	return &Worker{store: store, providers: registry, modelConfig: modelConfig, processors: artifacts.NewRegistry(artifacts.MockProcessor{}), tools: toolRegistry, policy: policy.NewEngine(store), owner: owner, leaseFor: 2 * time.Minute, maxIterations: defaultMaxIterations, embedder: embeddings.NewHashProvider(768)}
 }
 
 func (w *Worker) WithCounters(counters *observability.Counters) *Worker {
 	w.counters = counters
+	return w
+}
+
+func (w *Worker) WithOTLPExporter(exporter observability.OTLPExporter) *Worker {
+	w.otlp = exporter
 	return w
 }
 
@@ -87,6 +116,20 @@ func (w *Worker) WithOutbound(service *outbound.Service) *Worker {
 
 func (w *Worker) WithAsyncWriter(writer *asyncwrite.Writer) *Worker {
 	w.asyncWriter = writer
+	return w
+}
+
+func (w *Worker) WithProcessors(registry *artifacts.Registry) *Worker {
+	if registry != nil {
+		w.processors = registry
+	}
+	return w
+}
+
+func (w *Worker) WithEmbedder(embedder embeddings.Provider) *Worker {
+	if embedder != nil {
+		w.embedder = embedder
+	}
 	return w
 }
 
@@ -102,6 +145,8 @@ func (w *Worker) SetMCPManager(manager *mcp.Manager) {
 }
 
 func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
+	ctx, span := observability.StartSpan(ctx, "worker.run_once")
+	defer span.End()
 	if _, err := w.store.RecoverExpiredLeases(ctx); err != nil {
 		return false, err
 	}
@@ -109,6 +154,7 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 	if err != nil || run == nil {
 		return false, err
 	}
+	span.SetAttributes(attribute.String("duraclaw.run_id", run.ID), attribute.String("duraclaw.customer_id", run.CustomerID), attribute.String("duraclaw.agent_instance_id", run.AgentInstanceID))
 	if w.counters != nil {
 		w.counters.ObserveDuration("run_queue_lag_seconds", time.Since(run.CreatedAt))
 	}
@@ -167,6 +213,8 @@ func (w *Worker) Loop(ctx context.Context, every time.Duration) error {
 }
 
 func (w *Worker) process(ctx context.Context, run *db.Run) error {
+	ctx, span := observability.StartSpan(ctx, "durable_run", attribute.String("duraclaw.run_id", run.ID), attribute.String("duraclaw.customer_id", run.CustomerID), attribute.String("duraclaw.session_id", run.SessionID))
+	defer span.End()
 	if err := w.store.SetRunState(ctx, run.ID, "running", nil); err != nil {
 		return err
 	}
@@ -194,8 +242,14 @@ func (w *Worker) process(ctx context.Context, run *db.Run) error {
 		if err != nil {
 			return err
 		}
+		traceCtx := w.runTraceContext(ctx, run.ID)
 		stepID, err := w.store.StartRunStep(ctx, run.ID, "workflow_graph", map[string]any{"workflow_id": workflowID})
 		if err != nil {
+			return err
+		}
+		if _, err := w.policyEngine().Enforce(ctx, "pre_workflow", w.policyContext(run, stepID, workflowID, "")); err != nil {
+			msg := err.Error()
+			_ = w.store.CompleteRunStep(context.Background(), run.ID, stepID, "failed", nil, &msg)
 			return err
 		}
 		result, err := workflow.NewExecutor(w.store).
@@ -203,6 +257,7 @@ func (w *Worker) process(ctx context.Context, run *db.Run) error {
 			WithTools(toolRegistry).
 			WithMCP(mcpManager).
 			WithCounters(w.counters).
+			WithEmbedder(w.embedder).
 			WithPolicy(w.policyEngine()).
 			WithProcessors(w.processors).
 			ExecuteGraph(ctx, workflow.GraphRequest{
@@ -212,6 +267,8 @@ func (w *Worker) process(ctx context.Context, run *db.Run) error {
 				AgentInstanceID:      run.AgentInstanceID,
 				SessionID:            run.SessionID,
 				RequestID:            run.RequestID,
+				TraceID:              traceCtx.TraceID,
+				TraceParent:          traceCtx.TraceParent,
 				WorkflowDefinitionID: workflowID,
 				Input:                inputMap(run.Input),
 			})
@@ -220,11 +277,19 @@ func (w *Worker) process(ctx context.Context, run *db.Run) error {
 			_ = w.store.CompleteRunStep(context.Background(), run.ID, stepID, "failed", nil, &msg)
 			return err
 		}
-		if err := w.store.CompleteRunStep(ctx, run.ID, stepID, "succeeded", result, nil); err != nil {
+		if result.State == "awaiting_user" {
+			if err := w.store.CompleteRunStep(ctx, run.ID, stepID, "succeeded", result, nil); err != nil {
+				return err
+			}
+			return runStoppedError{runID: run.ID, state: "awaiting_user"}
+		}
+		if _, err := w.policyEngine().Enforce(ctx, "post_workflow", w.policyContext(run, stepID, workflowID, workflowOutputText(result.Output))); err != nil {
+			msg := err.Error()
+			_ = w.store.CompleteRunStep(context.Background(), run.ID, stepID, "failed", nil, &msg)
 			return err
 		}
-		if result.State == "awaiting_user" {
-			return runStoppedError{runID: run.ID, state: "awaiting_user"}
+		if err := w.store.CompleteRunStep(ctx, run.ID, stepID, "succeeded", result, nil); err != nil {
+			return err
 		}
 		if err := w.store.Checkpoint(ctx, run.ID, "workflow_graph_complete", result); err != nil {
 			return err
@@ -357,6 +422,36 @@ func (w *Worker) enqueueAsyncObservability(ctx context.Context, run *db.Run, eve
 			"payload":    payload,
 		},
 	})
+	if !w.otlp.Enabled() {
+		return
+	}
+	trace := w.runTraceContext(ctx, run.ID)
+	attrs := map[string]any{
+		"event_type":        eventType,
+		"customer_id":       run.CustomerID,
+		"user_id":           run.UserID,
+		"agent_instance_id": run.AgentInstanceID,
+		"session_id":        run.SessionID,
+		"run_id":            run.ID,
+		"trace_id":          trace.TraceID,
+		"traceparent":       trace.TraceParent,
+	}
+	if body, ok := payload.(map[string]any); ok {
+		for key, value := range body {
+			attrs["payload."+key] = value
+		}
+	}
+	w.asyncWriter.Enqueue(ctx, db.AsyncWriteSpec{
+		CustomerID:      run.CustomerID,
+		AgentInstanceID: run.AgentInstanceID,
+		RunID:           run.ID,
+		JobType:         "otlp_event",
+		TargetTable:     "otlp",
+		Payload: map[string]any{
+			"name":       eventType,
+			"attributes": attrs,
+		},
+	})
 }
 
 func (w *Worker) emitFinalOutbound(ctx context.Context, run *db.Run, messageID, text string) error {
@@ -378,6 +473,8 @@ func (w *Worker) emitFinalOutbound(ctx context.Context, run *db.Run, messageID, 
 }
 
 func (w *Worker) chat(ctx context.Context, run *db.Run, messages []providers.Message, toolDefs []providers.ToolDefinition, summary map[string]any) (*providers.LLMResponse, error) {
+	ctx, span := observability.StartSpan(ctx, "model_call", attribute.String("duraclaw.run_id", run.ID))
+	defer span.End()
 	modelConfig, err := w.modelConfigForRun(ctx, run)
 	if err != nil {
 		return nil, err
@@ -388,6 +485,7 @@ func (w *Worker) chat(ctx context.Context, run *db.Run, messages []providers.Mes
 	}
 	var lastErr error
 	for _, candidate := range candidates {
+		span.SetAttributes(attribute.String("duraclaw.model_provider", candidate.Provider), attribute.String("duraclaw.model", candidate.Model))
 		callID, err := w.store.StartModelCall(ctx, run.ID, candidate.Provider, candidate.Model, summary)
 		if err != nil {
 			return nil, err
@@ -567,6 +665,11 @@ func (w *Worker) sessionSummaryContext(ctx context.Context, run *db.Run) (string
 }
 
 func (w *Worker) knowledgeContext(ctx context.Context, run *db.Run, query string) (string, error) {
+	if _, err := w.policyEngine().Enforce(ctx, "pre_knowledge_retrieval", policy.Context{
+		CustomerID: run.CustomerID, UserID: run.UserID, AgentInstanceID: run.AgentInstanceID, SessionID: run.SessionID, RunID: run.ID, Content: query,
+	}); err != nil {
+		return "", err
+	}
 	chunks, err := w.store.SearchKnowledgeText(ctx, run.CustomerID, query, 5)
 	if err != nil || len(chunks) == 0 {
 		return "", err
@@ -757,10 +860,12 @@ func (w *Worker) mcpToolManifest(ctx context.Context, run *db.Run) (string, erro
 		return "", err
 	}
 	var lines []string
+	traceCtx := w.runTraceContext(ctx, run.ID)
 	for _, status := range manager.Statuses() {
 		discoveryCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		tools, err := manager.ListTools(discoveryCtx, mcp.ExecutionContext{
 			CustomerID: run.CustomerID, UserID: run.UserID, AgentInstanceID: run.AgentInstanceID, SessionID: run.SessionID, RunID: run.ID, RequestID: run.RequestID,
+			TraceID: traceCtx.TraceID, TraceParent: traceCtx.TraceParent,
 		}, status.Name)
 		cancel()
 		if err != nil {
@@ -967,6 +1072,8 @@ func (w *Worker) toolDefinitions(ctx context.Context, run *db.Run) ([]providers.
 }
 
 func (w *Worker) executeToolCalls(ctx context.Context, run *db.Run, stepID string, calls []providers.ToolCall) ([]string, error) {
+	ctx, span := observability.StartSpan(ctx, "tool_loop", attribute.String("duraclaw.run_id", run.ID), attribute.Int("duraclaw.tool_calls", len(calls)))
+	defer span.End()
 	if w.tools == nil {
 		w.tools = tools.NewRegistry()
 	}
@@ -1154,16 +1261,18 @@ func (w *Worker) executeInternalTool(ctx context.Context, run *db.Run, stepID st
 		if err != nil {
 			return "", err
 		}
+		traceCtx := w.runTraceContext(ctx, run.ID)
 		result, err := workflow.NewExecutor(w.store).
 			WithProviders(w.providers, modelConfig).
 			WithTools(toolRegistry).
 			WithMCP(mcpManager).
 			WithCounters(w.counters).
+			WithEmbedder(w.embedder).
 			WithPolicy(w.policyEngine()).
 			WithProcessors(w.processors).
 			ExecuteGraph(ctx, workflow.GraphRequest{
 				RunID: run.ID, CustomerID: run.CustomerID, UserID: run.UserID, AgentInstanceID: run.AgentInstanceID,
-				SessionID: run.SessionID, RequestID: run.RequestID, WorkflowDefinitionID: workflowID, Input: input,
+				SessionID: run.SessionID, RequestID: run.RequestID, TraceID: traceCtx.TraceID, TraceParent: traceCtx.TraceParent, WorkflowDefinitionID: workflowID, Input: input,
 			})
 		if err != nil {
 			return "", err
@@ -1211,9 +1320,28 @@ func (w *Worker) processArtifacts(ctx context.Context, run *db.Run) ([]string, e
 		if !ok {
 			continue
 		}
+		if _, err := w.policyEngine().Enforce(ctx, "pre_artifact_read", policy.Context{
+			CustomerID: run.CustomerID, UserID: run.UserID, AgentInstanceID: run.AgentInstanceID, SessionID: run.SessionID,
+			RunID: run.ID, ArtifactID: a.ID,
+			AdditionalFields: map[string]any{
+				"modality":   a.Modality,
+				"media_type": a.MediaType,
+			},
+		}); err != nil {
+			return nil, err
+		}
+		existing, err := w.artifactRepresentationSummaries(ctx, run, a)
+		if err != nil {
+			return nil, err
+		}
+		if a.State == "processed" {
+			summaries = append(summaries, existing...)
+			continue
+		}
 		pa := artifacts.Artifact{ID: a.ID, Modality: a.Modality, MediaType: a.MediaType, StorageRef: a.StorageRef, Metadata: a.Metadata}
 		processor, ok := w.processors.ProcessorFor(pa)
-		if !ok || a.State == "processed" {
+		if !ok {
+			summaries = append(summaries, existing...)
 			continue
 		}
 		if _, err := w.policyEngine().Enforce(ctx, "pre_artifact_process", policy.Context{
@@ -1238,8 +1366,9 @@ func (w *Worker) processArtifacts(ctx context.Context, run *db.Run) ([]string, e
 			return nil, err
 		}
 		started := time.Now()
+		traceCtx := w.runTraceContext(ctx, run.ID)
 		reps, err := processor.Process(ctx, artifacts.ProcessorContext{
-			CustomerID: run.CustomerID, UserID: run.UserID, AgentInstanceID: run.AgentInstanceID, SessionID: run.SessionID, RunID: run.ID, ArtifactID: a.ID, RequestID: run.RequestID,
+			CustomerID: run.CustomerID, UserID: run.UserID, AgentInstanceID: run.AgentInstanceID, SessionID: run.SessionID, RunID: run.ID, ArtifactID: a.ID, ProcessorCallID: callID, RequestID: run.RequestID, TraceParent: traceCtx.TraceParent,
 		}, pa)
 		if w.counters != nil {
 			w.counters.ObserveDuration("artifact_processor_duration_seconds", time.Since(started))
@@ -1252,6 +1381,16 @@ func (w *Worker) processArtifacts(ctx context.Context, run *db.Run) ([]string, e
 			return nil, err
 		}
 		for _, rep := range reps {
+			if _, err := w.policyEngine().Enforce(ctx, "post_artifact_process", policy.Context{
+				CustomerID: run.CustomerID, UserID: run.UserID, AgentInstanceID: run.AgentInstanceID, SessionID: run.SessionID,
+				RunID: run.ID, ArtifactID: a.ID, Processor: processor.Name(), Content: rep.Summary,
+			}); err != nil {
+				msg := err.Error()
+				_ = w.store.CompleteProcessorCall(context.Background(), callID, run.ID, nil, &msg)
+				_ = w.store.SetArtifactState(context.Background(), a.ID, "failed")
+				_ = w.store.CompleteRunStep(context.Background(), run.ID, stepID, "failed", nil, &msg)
+				return nil, err
+			}
 			if err := w.store.InsertArtifactRepresentation(ctx, a.ID, rep.Type, rep.Summary, rep.Metadata); err != nil {
 				msg := err.Error()
 				_ = w.store.CompleteRunStep(context.Background(), run.ID, stepID, "failed", nil, &msg)
@@ -1284,6 +1423,21 @@ func (w *Worker) processArtifacts(ctx context.Context, run *db.Run) ([]string, e
 			return nil, err
 		}
 		w.enqueueAsyncObservability(ctx, run, "checkpoint.artifacts_processed", map[string]any{"representations": summaries})
+	}
+	return summaries, nil
+}
+
+func (w *Worker) artifactRepresentationSummaries(ctx context.Context, run *db.Run, a db.Artifact) ([]string, error) {
+	reps, err := w.store.ArtifactRepresentations(ctx, run.CustomerID, a.ID)
+	if err != nil {
+		return nil, err
+	}
+	summaries := make([]string, 0, len(reps))
+	for _, rep := range reps {
+		if strings.TrimSpace(rep.Summary) == "" {
+			continue
+		}
+		summaries = append(summaries, "- "+a.ID+" "+rep.Type+": "+rep.Summary)
 	}
 	return summaries, nil
 }

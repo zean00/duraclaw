@@ -174,6 +174,54 @@ func TestManagerListToolsDelegates(t *testing.T) {
 	}
 }
 
+func TestManagerResourcesDelegate(t *testing.T) {
+	manager := NewManager()
+	manager.Register("srv", resourceClient{})
+	resources, err := manager.ListResources(context.Background(), ExecutionContext{}, "srv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resources) != 1 || resources[0].URI != "file://doc" {
+		t.Fatalf("resources=%#v", resources)
+	}
+	content, err := manager.ReadResource(context.Background(), ExecutionContext{}, "srv", "file://doc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if content.Text != "hello" {
+		t.Fatalf("content=%#v", content)
+	}
+	if err := manager.SubscribeResource(context.Background(), ExecutionContext{}, "srv", "file://doc"); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.UnsubscribeResource(context.Background(), ExecutionContext{}, "srv", "file://doc"); err != nil {
+		t.Fatal(err)
+	}
+	status, ok := manager.Status("srv")
+	if !ok || status.CallCount != 4 || status.LastError != "" {
+		t.Fatalf("status=%#v ok=%v", status, ok)
+	}
+}
+
+func TestManagerPromptsDelegate(t *testing.T) {
+	manager := NewManager()
+	manager.Register("srv", promptClient{})
+	prompts, err := manager.ListPrompts(context.Background(), ExecutionContext{}, "srv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prompts) != 1 || prompts[0].Name != "summarize" {
+		t.Fatalf("prompts=%#v", prompts)
+	}
+	prompt, err := manager.GetPrompt(context.Background(), ExecutionContext{}, "srv", "summarize", map[string]any{"topic": "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prompt.Name != "summarize" || len(prompt.Messages) != 1 {
+		t.Fatalf("prompt=%#v", prompt)
+	}
+}
+
 type listingClient struct{}
 
 func (listingClient) CallTool(context.Context, ExecutionContext, string, string, map[string]any) (map[string]any, error) {
@@ -182,4 +230,40 @@ func (listingClient) CallTool(context.Context, ExecutionContext, string, string,
 
 func (listingClient) ListTools(context.Context, ExecutionContext, string) ([]ToolInfo, error) {
 	return []ToolInfo{{Name: "lookup"}}, nil
+}
+
+type resourceClient struct{}
+
+func (resourceClient) CallTool(context.Context, ExecutionContext, string, string, map[string]any) (map[string]any, error) {
+	return map[string]any{}, nil
+}
+
+func (resourceClient) ListResources(context.Context, ExecutionContext, string) ([]ResourceInfo, error) {
+	return []ResourceInfo{{URI: "file://doc", Name: "doc"}}, nil
+}
+
+func (resourceClient) ReadResource(context.Context, ExecutionContext, string, string) (*ResourceContent, error) {
+	return &ResourceContent{URI: "file://doc", Text: "hello"}, nil
+}
+
+func (resourceClient) SubscribeResource(context.Context, ExecutionContext, string, string) error {
+	return nil
+}
+
+func (resourceClient) UnsubscribeResource(context.Context, ExecutionContext, string, string) error {
+	return nil
+}
+
+type promptClient struct{}
+
+func (promptClient) CallTool(context.Context, ExecutionContext, string, string, map[string]any) (map[string]any, error) {
+	return map[string]any{}, nil
+}
+
+func (promptClient) ListPrompts(context.Context, ExecutionContext, string) ([]PromptInfo, error) {
+	return []PromptInfo{{Name: "summarize"}}, nil
+}
+
+func (promptClient) GetPrompt(context.Context, ExecutionContext, string, string, map[string]any) (*PromptContent, error) {
+	return &PromptContent{Name: "summarize", Messages: []PromptMessage{{Role: "user", Content: map[string]any{"type": "text", "text": "Summarize"}}}}, nil
 }

@@ -12,7 +12,7 @@ func TestRetentionQueriesExist(t *testing.T) {
 		t.Fatal(err)
 	}
 	src := string(raw)
-	for _, want := range []string{"ExpireArtifactsOlderThan", "DeleteRunEventsOlderThan", "DeleteCompletedOutboxOlderThan", "DeleteObservabilityEventsOlderThan", "DeleteTerminalBroadcastsOlderThan"} {
+	for _, want := range []string{"ExpireArtifactsOlderThan", "DeleteRunEventsOlderThan", "DeleteCompletedOutboxOlderThan", "DeleteObservabilityEventsOlderThan", "DeleteTerminalBroadcastsOlderThan", "DeleteTerminalAsyncWriteJobsOlderThan"} {
 		if !strings.Contains(src, want) {
 			t.Fatalf("missing %s", want)
 		}

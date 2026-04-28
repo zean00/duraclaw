@@ -51,6 +51,30 @@ func (testMCPClient) CallTool(context.Context, mcp.ExecutionContext, string, str
 	return map[string]any{"mcp": "ok"}, nil
 }
 
+func (testMCPClient) ListResources(context.Context, mcp.ExecutionContext, string) ([]mcp.ResourceInfo, error) {
+	return []mcp.ResourceInfo{{URI: "file://doc", Name: "doc"}}, nil
+}
+
+func (testMCPClient) ReadResource(context.Context, mcp.ExecutionContext, string, string) (*mcp.ResourceContent, error) {
+	return &mcp.ResourceContent{URI: "file://doc", Text: "hello"}, nil
+}
+
+func (testMCPClient) SubscribeResource(context.Context, mcp.ExecutionContext, string, string) error {
+	return nil
+}
+
+func (testMCPClient) UnsubscribeResource(context.Context, mcp.ExecutionContext, string, string) error {
+	return nil
+}
+
+func (testMCPClient) ListPrompts(context.Context, mcp.ExecutionContext, string) ([]mcp.PromptInfo, error) {
+	return []mcp.PromptInfo{{Name: "summarize"}}, nil
+}
+
+func (testMCPClient) GetPrompt(context.Context, mcp.ExecutionContext, string, string, map[string]any) (*mcp.PromptContent, error) {
+	return &mcp.PromptContent{Name: "summarize", Messages: []mcp.PromptMessage{{Role: "user", Content: map[string]any{"type": "text", "text": "Summarize"}}}}, nil
+}
+
 func (s *fakeWorkflowStore) WorkflowDefinition(context.Context, string) (*db.WorkflowDefinition, error) {
 	return &db.WorkflowDefinition{ID: "wf-1", Version: 2, Status: "active"}, nil
 }
@@ -186,6 +210,10 @@ func (s *fakeWorkflowStore) ListKnowledgeChunks(context.Context, string, int) ([
 }
 
 func (s *fakeWorkflowStore) SearchKnowledgeText(context.Context, string, string, int) ([]db.KnowledgeChunk, error) {
+	return nil, nil
+}
+
+func (s *fakeWorkflowStore) SearchKnowledgeHybrid(context.Context, string, string, []float32, int) ([]db.KnowledgeChunk, error) {
 	return nil, nil
 }
 
@@ -441,6 +469,57 @@ func TestExecuteGraphMCPNode(t *testing.T) {
 	}
 }
 
+func TestExecuteGraphMCPResourceNodes(t *testing.T) {
+	manager := mcp.NewManager()
+	manager.Register("srv", testMCPClient{})
+	store := &fakeWorkflowStore{
+		nodes: []db.WorkflowNode{{NodeKey: "resources", NodeType: "mcp_list_resources", Config: json.RawMessage(`{"server_name":"srv"}`)}, {NodeKey: "read", NodeType: "mcp_read_resource", Config: json.RawMessage(`{"server_name":"srv","uri":"file://doc"}`)}},
+		edges: []db.WorkflowEdge{{FromNodeKey: "resources", ToNodeKey: "read", Condition: json.RawMessage(`{}`)}},
+	}
+	got, err := NewExecutor(store).WithMCP(manager).ExecuteGraph(context.Background(), GraphRequest{RunID: "run-1", WorkflowDefinitionID: "wf-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != "succeeded" || got.Output["resource"] == nil {
+		t.Fatalf("got=%#v", got)
+	}
+}
+
+func TestExecuteGraphMCPResourceSubscriptionNodes(t *testing.T) {
+	manager := mcp.NewManager()
+	manager.Register("srv", testMCPClient{})
+	store := &fakeWorkflowStore{
+		nodes: []db.WorkflowNode{
+			{NodeKey: "subscribe", NodeType: "mcp_subscribe_resource", Config: json.RawMessage(`{"server_name":"srv","uri":"file://doc"}`)},
+			{NodeKey: "unsubscribe", NodeType: "mcp_unsubscribe_resource", Config: json.RawMessage(`{"server_name":"srv","uri":"file://doc"}`)},
+		},
+		edges: []db.WorkflowEdge{{FromNodeKey: "subscribe", ToNodeKey: "unsubscribe", Condition: json.RawMessage(`{}`)}},
+	}
+	got, err := NewExecutor(store).WithMCP(manager).ExecuteGraph(context.Background(), GraphRequest{RunID: "run-1", WorkflowDefinitionID: "wf-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != "succeeded" || got.Output["subscribed"] != false {
+		t.Fatalf("got=%#v", got)
+	}
+}
+
+func TestExecuteGraphMCPPromptNodes(t *testing.T) {
+	manager := mcp.NewManager()
+	manager.Register("srv", testMCPClient{})
+	store := &fakeWorkflowStore{
+		nodes: []db.WorkflowNode{{NodeKey: "prompts", NodeType: "mcp_list_prompts", Config: json.RawMessage(`{"server_name":"srv"}`)}, {NodeKey: "get", NodeType: "mcp_get_prompt", Config: json.RawMessage(`{"server_name":"srv","name":"summarize"}`)}},
+		edges: []db.WorkflowEdge{{FromNodeKey: "prompts", ToNodeKey: "get", Condition: json.RawMessage(`{}`)}},
+	}
+	got, err := NewExecutor(store).WithMCP(manager).ExecuteGraph(context.Background(), GraphRequest{RunID: "run-1", WorkflowDefinitionID: "wf-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != "succeeded" || got.Output["prompt"] == nil {
+		t.Fatalf("got=%#v", got)
+	}
+}
+
 func TestExecuteGraphLLMConditionRoutesByJSON(t *testing.T) {
 	registry := providers.NewRegistry("mock")
 	registry.Register("mock", routeProvider{})
@@ -556,6 +635,45 @@ func TestExecuteGraphWaitTimerPausesWithSchedulerJob(t *testing.T) {
 	}
 	if got.State != "awaiting_user" || got.Output["scheduler_job_id"] != "scheduler-1" {
 		t.Fatalf("got=%#v", got)
+	}
+}
+
+func TestExecuteGraphProcessArtifactPostPolicyDenialMarksNodeFailed(t *testing.T) {
+	store := &fakeWorkflowStore{
+		policyRules: []db.PolicyRule{{
+			ID: "rule-1", PolicyPackID: "pack-1", RuleType: "deny", EnforcementMode: "post_artifact_process", Action: "deny", InstructionText: "blocked representation",
+		}},
+		nodes:     []db.WorkflowNode{{NodeKey: "process", NodeType: "process_artifact", Config: json.RawMessage(`{"artifact_id":"art-1"}`)}},
+		artifacts: []db.Artifact{{ID: "art-1", Modality: "image", MediaType: "image/png", State: "available"}},
+	}
+	_, err := NewExecutor(store).ExecuteGraph(context.Background(), GraphRequest{
+		RunID: "run-1", CustomerID: "c", UserID: "u", AgentInstanceID: "a", SessionID: "s", WorkflowDefinitionID: "wf-1",
+	})
+	if err == nil {
+		t.Fatalf("expected policy denial")
+	}
+	if store.states["process"].Status != "failed" || store.nodeState != "failed" {
+		t.Fatalf("states=%#v nodeState=%s", store.states, store.nodeState)
+	}
+}
+
+func TestExecuteGraphReadArtifactPrePolicyDenialMarksNodeFailed(t *testing.T) {
+	store := &fakeWorkflowStore{
+		policyRules: []db.PolicyRule{{
+			ID: "rule-1", PolicyPackID: "pack-1", RuleType: "deny", EnforcementMode: "pre_artifact_read", Action: "deny", InstructionText: "blocked artifact read",
+		}},
+		nodes:     []db.WorkflowNode{{NodeKey: "read", NodeType: "read_artifact", Config: json.RawMessage(`{"artifact_id":"art-1"}`)}},
+		artifacts: []db.Artifact{{ID: "art-1", Modality: "document", MediaType: "application/pdf", State: "processed"}},
+		reps:      []db.ArtifactRepresentation{{ArtifactID: "art-1", Type: "document_text", Summary: "text"}},
+	}
+	_, err := NewExecutor(store).ExecuteGraph(context.Background(), GraphRequest{
+		RunID: "run-1", CustomerID: "c", UserID: "u", AgentInstanceID: "a", SessionID: "s", WorkflowDefinitionID: "wf-1",
+	})
+	if err == nil {
+		t.Fatalf("expected policy denial")
+	}
+	if store.states["read"].Status != "failed" || store.nodeState != "failed" {
+		t.Fatalf("states=%#v nodeState=%s", store.states, store.nodeState)
 	}
 }
 

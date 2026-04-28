@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"os"
+	"sync"
 	"testing"
 	"time"
 )
@@ -292,5 +293,153 @@ func TestStoreSameSessionClaimSerializationPostgres(t *testing.T) {
 	}
 	if claimed == nil || claimed.ID != second.ID {
 		t.Fatalf("second claim=%#v want=%s", claimed, second.ID)
+	}
+}
+
+func TestStoreCreateBackgroundRunQuotaIsAtomicPostgres(t *testing.T) {
+	store, cleanup := integrationStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	suffix := time.Now().UTC().Format("20060102150405.000000000")
+	customerID := "c-bg-quota-" + suffix
+	one := 1
+	if _, err := store.UpsertAgentInstanceRuntimeLimits(ctx, RuntimeLimits{
+		CustomerID: customerID, AgentInstanceID: "a", MaxBackgroundRuns: &one,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := store.CreateBackgroundRun(ctx, ACPContext{
+				CustomerID: customerID, UserID: "u", AgentInstanceID: "a", SessionID: "s", RequestID: "r", IdempotencyKey: "bg-" + string(rune('0'+i)),
+			}, map[string]any{"text": "background"}, map[string]any{"state": "queued"})
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	successes := 0
+	quotaFailures := 0
+	for err := range errs {
+		if err == nil {
+			successes++
+			continue
+		}
+		if IsQuotaExceeded(err) {
+			quotaFailures++
+			continue
+		}
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if successes != 1 || quotaFailures != 1 {
+		t.Fatalf("successes=%d quotaFailures=%d", successes, quotaFailures)
+	}
+}
+
+func TestStoreQueueStatsPostgres(t *testing.T) {
+	store, cleanup := integrationStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	before, err := store.QueueStats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	suffix := time.Now().UTC().Format("20060102150405.000000000")
+	customerID := "c-queue-" + suffix
+	run, err := store.CreateRun(ctx, ACPContext{CustomerID: customerID, UserID: "u", AgentInstanceID: "a", SessionID: "s", RequestID: "r", IdempotencyKey: "i"}, map[string]any{"text": "queued"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.EnqueueOutbox(ctx, "topic", map[string]any{"run_id": run.ID}, time.Now().UTC().Add(-time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.EnqueueAsyncWrite(ctx, AsyncWriteSpec{CustomerID: customerID, RunID: run.ID, JobType: "observability_event", Payload: map[string]any{"event_type": "queued"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateSchedulerJob(ctx, SchedulerJobSpec{
+		CustomerID: customerID, UserID: "u", AgentInstanceID: "a", SessionID: "s", JobType: "cron", Schedule: "@once", NextRunAt: time.Now().UTC().Add(-time.Second),
+		Input: map[string]any{"text": "wake"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := store.QueueStats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.RunsQueued < before.RunsQueued+1 || after.OutboxPending < before.OutboxPending+1 || after.AsyncWriteQueued < before.AsyncWriteQueued+1 || after.SchedulerDue < before.SchedulerDue+1 {
+		t.Fatalf("before=%#v after=%#v", before, after)
+	}
+}
+
+func TestStoreKnowledgeScopeRetrievalPostgres(t *testing.T) {
+	store, cleanup := integrationStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	suffix := time.Now().UTC().Format("20060102150405.000000000")
+	customerID := "c-knowledge-" + suffix
+	otherCustomerID := "c-knowledge-other-" + suffix
+	customerDoc, err := store.CreateKnowledgeDocumentWithScope(ctx, customerID, "customer", "customer doc", "src", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sharedDoc, err := store.CreateKnowledgeDocumentWithScope(ctx, otherCustomerID, "shared", "shared doc", "src", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateOtherDoc, err := store.CreateKnowledgeDocumentWithScope(ctx, otherCustomerID, "customer", "private other", "src", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddKnowledgeChunk(ctx, customerDoc, customerID, 0, "duraclaw customer scoped durable fact", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddKnowledgeChunk(ctx, sharedDoc, otherCustomerID, 0, "duraclaw shared durable fact", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddKnowledgeChunk(ctx, privateOtherDoc, otherCustomerID, 0, "duraclaw private other fact", nil); err != nil {
+		t.Fatal(err)
+	}
+	chunks, err := store.SearchKnowledgeText(ctx, customerID, "duraclaw", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawCustomer, sawShared, sawPrivateOther bool
+	for _, chunk := range chunks {
+		if chunk.CustomerID == customerID && chunk.Scope == "customer" {
+			sawCustomer = true
+		}
+		if chunk.CustomerID == otherCustomerID && chunk.Scope == "shared" {
+			sawShared = true
+		}
+		if chunk.CustomerID == otherCustomerID && chunk.Scope == "customer" {
+			sawPrivateOther = true
+		}
+	}
+	if !sawCustomer || !sawShared || sawPrivateOther {
+		t.Fatalf("chunks=%#v", chunks)
+	}
+	docs, err := store.ListKnowledgeDocumentsByScope(ctx, customerID, "all", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawCustomerDoc, sawSharedDoc bool
+	for _, doc := range docs {
+		if doc.ID == customerDoc && doc.Scope == "customer" {
+			sawCustomerDoc = true
+		}
+		if doc.ID == sharedDoc && doc.Scope == "shared" {
+			sawSharedDoc = true
+		}
+	}
+	if !sawCustomerDoc || !sawSharedDoc {
+		t.Fatalf("docs=%#v", docs)
 	}
 }

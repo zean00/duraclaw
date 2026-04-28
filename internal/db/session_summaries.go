@@ -133,7 +133,7 @@ func (s *Store) CreateBackgroundRun(ctx context.Context, c ACPContext, input any
 			progressJSON = []byte(`{}`)
 		}
 		channelJSON, _ := json.Marshal(map[string]string{
-			"channel_type": c.ChannelType, "channel_user_id": c.ChannelUserID, "channel_conversation_id": c.ChannelConvID, "trace_id": c.TraceID,
+			"channel_type": c.ChannelType, "channel_user_id": c.ChannelUserID, "channel_conversation_id": c.ChannelConvID, "trace_id": c.TraceID, "traceparent": c.TraceParent,
 		})
 		var run Run
 		if err := tx.QueryRow(ctx, `

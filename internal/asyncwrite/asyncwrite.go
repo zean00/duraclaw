@@ -20,13 +20,15 @@ type Store interface {
 }
 
 type Writer struct {
-	store    Store
-	counters *observability.Counters
-	owner    string
-	limit    int
-	leaseFor time.Duration
-	retryFor time.Duration
-	queue    chan db.AsyncWriteSpec
+	store       Store
+	counters    *observability.Counters
+	otlp        observability.OTLPExporter
+	owner       string
+	limit       int
+	leaseFor    time.Duration
+	retryFor    time.Duration
+	maxAttempts int
+	queue       chan db.AsyncWriteSpec
 }
 
 func NewWriter(store Store, owner string, buffer int) *Writer {
@@ -36,11 +38,16 @@ func NewWriter(store Store, owner string, buffer int) *Writer {
 	if buffer <= 0 {
 		buffer = db.DefaultRuntimeLimits().AsyncBufferSize
 	}
-	return &Writer{store: store, owner: owner, limit: 50, leaseFor: time.Minute, retryFor: 30 * time.Second, queue: make(chan db.AsyncWriteSpec, buffer)}
+	return &Writer{store: store, owner: owner, limit: 50, leaseFor: time.Minute, retryFor: 30 * time.Second, maxAttempts: 5, queue: make(chan db.AsyncWriteSpec, buffer)}
 }
 
 func (w *Writer) WithCounters(counters *observability.Counters) *Writer {
 	w.counters = counters
+	return w
+}
+
+func (w *Writer) WithOTLPExporter(exporter observability.OTLPExporter) *Writer {
+	w.otlp = exporter
 	return w
 }
 
@@ -85,6 +92,12 @@ claim:
 	}
 	for _, job := range jobs {
 		if err := w.apply(ctx, job); err != nil {
+			if w.maxAttempts > 0 && job.Attempts >= w.maxAttempts {
+				msg := err.Error()
+				_ = w.store.CompleteAsyncWriteJob(context.Background(), job.ID, "failed", &msg)
+				w.inc("async_write_failed_terminal_total")
+				return flushed, err
+			}
 			_ = w.store.ReleaseAsyncWriteJob(context.Background(), job.ID, w.retryFor, err.Error())
 			w.inc("async_write_failed_total")
 			return flushed, err
@@ -166,6 +179,25 @@ func (w *Writer) apply(ctx context.Context, job db.AsyncWriteJob) error {
 			runID = *job.RunID
 		}
 		return w.store.AddObservabilityEvent(ctx, job.CustomerID, runID, payload.EventType, body)
+	case "otlp_event":
+		var payload struct {
+			Name       string         `json:"name"`
+			Attributes map[string]any `json:"attributes"`
+		}
+		if err := json.Unmarshal(job.Payload, &payload); err != nil {
+			return err
+		}
+		if payload.Name == "" {
+			payload.Name = "duraclaw.async_write"
+		}
+		if payload.Attributes == nil {
+			payload.Attributes = map[string]any{}
+		}
+		payload.Attributes["customer_id"] = job.CustomerID
+		if job.RunID != nil {
+			payload.Attributes["run_id"] = *job.RunID
+		}
+		return w.otlp.ExportEvent(ctx, payload.Name, payload.Attributes)
 	default:
 		return nil
 	}

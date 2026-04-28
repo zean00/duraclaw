@@ -12,12 +12,15 @@ import (
 
 	"duraclaw/internal/artifacts"
 	"duraclaw/internal/db"
+	"duraclaw/internal/embeddings"
 	"duraclaw/internal/mcp"
 	"duraclaw/internal/observability"
 	"duraclaw/internal/policy"
 	"duraclaw/internal/preferences"
 	"duraclaw/internal/providers"
 	"duraclaw/internal/tools"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 const defaultConcurrency = 4
@@ -50,6 +53,7 @@ type Store interface {
 	ListKnowledgeDocuments(ctx context.Context, customerID string, limit int) ([]db.KnowledgeDocument, error)
 	ListKnowledgeChunks(ctx context.Context, documentID string, limit int) ([]db.KnowledgeChunk, error)
 	SearchKnowledgeText(ctx context.Context, customerID, query string, limit int) ([]db.KnowledgeChunk, error)
+	SearchKnowledgeHybrid(ctx context.Context, customerID, query string, embedding []float32, limit int) ([]db.KnowledgeChunk, error)
 	ArtifactsForRun(ctx context.Context, runID string) ([]db.Artifact, error)
 	ArtifactRepresentations(ctx context.Context, customerID, artifactID string) ([]db.ArtifactRepresentation, error)
 	AttachArtifact(ctx context.Context, runID string, a db.Artifact) error
@@ -79,6 +83,7 @@ type Executor struct {
 	policy      *policy.Engine
 	processors  *artifacts.Registry
 	counters    *observability.Counters
+	embedder    embeddings.Provider
 	concurrency int
 }
 
@@ -107,6 +112,11 @@ func (e *Executor) WithCounters(counters *observability.Counters) *Executor {
 	return e
 }
 
+func (e *Executor) WithEmbedder(embedder embeddings.Provider) *Executor {
+	e.embedder = embedder
+	return e
+}
+
 func (e *Executor) WithPolicy(engine *policy.Engine) *Executor {
 	e.policy = engine
 	return e
@@ -124,6 +134,8 @@ type GraphRequest struct {
 	AgentInstanceID      string         `json:"agent_instance_id,omitempty"`
 	SessionID            string         `json:"session_id,omitempty"`
 	RequestID            string         `json:"request_id,omitempty"`
+	TraceID              string         `json:"trace_id,omitempty"`
+	TraceParent          string         `json:"traceparent,omitempty"`
 	WorkflowDefinitionID string         `json:"workflow_definition_id"`
 	Input                map[string]any `json:"input,omitempty"`
 }
@@ -145,6 +157,8 @@ type graphData struct {
 }
 
 func (e *Executor) ExecuteGraph(ctx context.Context, req GraphRequest) (*GraphResult, error) {
+	ctx, span := observability.StartSpan(ctx, "workflow_run", attribute.String("duraclaw.run_id", req.RunID), attribute.String("duraclaw.workflow_definition_id", req.WorkflowDefinitionID))
+	defer span.End()
 	if e.store == nil {
 		return nil, fmt.Errorf("workflow executor store is nil")
 	}
@@ -261,7 +275,7 @@ func supportedNodeType(typ string) bool {
 	switch typ {
 	case "start", "checkpoint", "message", "end", "ask_user", "split", "merge", "switch", "condition", "llm_condition", "tool", "mcp",
 		"tool_call", "mcp_call", "model_call", "retrieve_knowledge", "read_memory", "write_memory", "read_preference", "write_preference", "read_artifact", "process_artifact", "write_artifact",
-		"branch", "loop", "transform", "wait_timer", "emit_outbound_message", "create_background_job":
+		"branch", "loop", "transform", "wait_timer", "emit_outbound_message", "create_background_job", "mcp_list_resources", "mcp_read_resource", "mcp_subscribe_resource", "mcp_unsubscribe_resource", "mcp_list_prompts", "mcp_get_prompt":
 		return true
 	default:
 		return false
@@ -300,7 +314,12 @@ func (e *Executor) runReadyQueue(ctx context.Context, req GraphRequest, g *graph
 		if err != nil {
 			return nil, err
 		}
-		for key, state := range states {
+		for _, node := range g.nodes {
+			key := node.NodeKey
+			state, ok := states[key]
+			if !ok {
+				continue
+			}
 			if state.Status == "succeeded" && len(state.Output) > 0 {
 				var nodeOut map[string]any
 				_ = json.Unmarshal(state.Output, &nodeOut)
@@ -400,6 +419,8 @@ func (e *Executor) executeBatch(ctx context.Context, req GraphRequest, g *graphD
 }
 
 func (e *Executor) executeOne(ctx context.Context, req GraphRequest, node db.WorkflowNode, workflowRunID string, state db.WorkflowNodeState, previous map[string]any) nodeResult {
+	ctx, span := observability.StartSpan(ctx, "workflow_node", attribute.String("duraclaw.run_id", req.RunID), attribute.String("duraclaw.workflow_run_id", workflowRunID), attribute.String("duraclaw.workflow_node_key", node.NodeKey), attribute.String("duraclaw.workflow_node_type", node.NodeType))
+	defer span.End()
 	if _, err := e.policyEngine().Enforce(ctx, "pre_workflow_node", policy.Context{
 		CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID,
 		RunID: req.RunID, WorkflowRunID: workflowRunID, WorkflowNodeKey: node.NodeKey,
@@ -485,6 +506,18 @@ func (e *Executor) executeNode(ctx context.Context, req GraphRequest, node db.Wo
 		return e.executeToolNode(ctx, req, node, config)
 	case "mcp", "mcp_call":
 		return e.executeMCPNode(ctx, req, node, config)
+	case "mcp_list_resources":
+		return e.executeMCPListResources(ctx, req, config)
+	case "mcp_read_resource":
+		return e.executeMCPReadResource(ctx, req, config)
+	case "mcp_subscribe_resource":
+		return e.executeMCPResourceSubscription(ctx, req, config, true)
+	case "mcp_unsubscribe_resource":
+		return e.executeMCPResourceSubscription(ctx, req, config, false)
+	case "mcp_list_prompts":
+		return e.executeMCPListPrompts(ctx, req, config)
+	case "mcp_get_prompt":
+		return e.executeMCPGetPrompt(ctx, req, config)
 	case "retrieve_knowledge":
 		return e.executeRetrieveKnowledge(ctx, req, config, previous)
 	case "read_memory":
@@ -646,11 +679,154 @@ func (e *Executor) executeMCPNode(ctx context.Context, req GraphRequest, node db
 	args, _ := config["arguments"].(map[string]any)
 	result, err := mcp.NewExecutor(e.mcpManager, e.store).WithCounters(e.counters).CallTool(ctx, mcp.ExecutionContext{
 		CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID, RunID: req.RunID, RequestID: req.RequestID,
+		TraceID: req.TraceID, TraceParent: req.TraceParent,
 	}, serverName, toolName, args)
 	if err != nil {
 		return nil, "", err
 	}
 	return map[string]any{"server_name": serverName, "tool_name": toolName, "result": result}, "succeeded", nil
+}
+
+func (e *Executor) executeMCPListResources(ctx context.Context, req GraphRequest, config map[string]any) (map[string]any, string, error) {
+	if e.mcpManager == nil {
+		return nil, "", fmt.Errorf("mcp manager is not configured")
+	}
+	serverName, _ := config["server_name"].(string)
+	callID, err := e.store.StartMCPCall(ctx, req.RunID, serverName, "resources/list", map[string]any{"server_name": serverName})
+	if err != nil {
+		return nil, "", err
+	}
+	resources, err := e.mcpManager.ListResources(ctx, mcp.ExecutionContext{
+		CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID, RunID: req.RunID, RequestID: req.RequestID,
+		TraceID: req.TraceID, TraceParent: req.TraceParent,
+	}, serverName)
+	if err != nil {
+		msg := err.Error()
+		_ = e.store.CompleteMCPCall(context.Background(), callID, req.RunID, nil, &msg)
+		return nil, "", err
+	}
+	if err := e.store.CompleteMCPCall(ctx, callID, req.RunID, map[string]any{"resources": len(resources)}, nil); err != nil {
+		return nil, "", err
+	}
+	return map[string]any{"server_name": serverName, "resources": resources}, "succeeded", nil
+}
+
+func (e *Executor) executeMCPReadResource(ctx context.Context, req GraphRequest, config map[string]any) (map[string]any, string, error) {
+	if e.mcpManager == nil {
+		return nil, "", fmt.Errorf("mcp manager is not configured")
+	}
+	serverName, _ := config["server_name"].(string)
+	uri, _ := config["uri"].(string)
+	if uri == "" {
+		return nil, "", fmt.Errorf("mcp_read_resource requires uri")
+	}
+	callID, err := e.store.StartMCPCall(ctx, req.RunID, serverName, "resources/read", map[string]any{"server_name": serverName, "uri": uri})
+	if err != nil {
+		return nil, "", err
+	}
+	resource, err := e.mcpManager.ReadResource(ctx, mcp.ExecutionContext{
+		CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID, RunID: req.RunID, RequestID: req.RequestID,
+		TraceID: req.TraceID, TraceParent: req.TraceParent,
+	}, serverName, uri)
+	if err != nil {
+		msg := err.Error()
+		_ = e.store.CompleteMCPCall(context.Background(), callID, req.RunID, nil, &msg)
+		return nil, "", err
+	}
+	if err := e.store.CompleteMCPCall(ctx, callID, req.RunID, map[string]any{"uri": resource.URI, "mime_type": resource.MimeType, "text_length": len(resource.Text), "has_blob": resource.Blob != ""}, nil); err != nil {
+		return nil, "", err
+	}
+	return map[string]any{"server_name": serverName, "resource": resource}, "succeeded", nil
+}
+
+func (e *Executor) executeMCPResourceSubscription(ctx context.Context, req GraphRequest, config map[string]any, subscribe bool) (map[string]any, string, error) {
+	if e.mcpManager == nil {
+		return nil, "", fmt.Errorf("mcp manager is not configured")
+	}
+	serverName, _ := config["server_name"].(string)
+	uri, _ := config["uri"].(string)
+	if uri == "" {
+		return nil, "", fmt.Errorf("mcp resource subscription requires uri")
+	}
+	method := "resources/unsubscribe"
+	if subscribe {
+		method = "resources/subscribe"
+	}
+	callID, err := e.store.StartMCPCall(ctx, req.RunID, serverName, method, map[string]any{"server_name": serverName, "uri": uri})
+	if err != nil {
+		return nil, "", err
+	}
+	exec := mcp.ExecutionContext{
+		CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID, RunID: req.RunID, RequestID: req.RequestID,
+		TraceID: req.TraceID, TraceParent: req.TraceParent,
+	}
+	if subscribe {
+		err = e.mcpManager.SubscribeResource(ctx, exec, serverName, uri)
+	} else {
+		err = e.mcpManager.UnsubscribeResource(ctx, exec, serverName, uri)
+	}
+	if err != nil {
+		msg := err.Error()
+		_ = e.store.CompleteMCPCall(context.Background(), callID, req.RunID, nil, &msg)
+		return nil, "", err
+	}
+	if err := e.store.CompleteMCPCall(ctx, callID, req.RunID, map[string]any{"uri": uri, "subscribed": subscribe}, nil); err != nil {
+		return nil, "", err
+	}
+	return map[string]any{"server_name": serverName, "uri": uri, "subscribed": subscribe}, "succeeded", nil
+}
+
+func (e *Executor) executeMCPListPrompts(ctx context.Context, req GraphRequest, config map[string]any) (map[string]any, string, error) {
+	if e.mcpManager == nil {
+		return nil, "", fmt.Errorf("mcp manager is not configured")
+	}
+	serverName, _ := config["server_name"].(string)
+	callID, err := e.store.StartMCPCall(ctx, req.RunID, serverName, "prompts/list", map[string]any{"server_name": serverName})
+	if err != nil {
+		return nil, "", err
+	}
+	prompts, err := e.mcpManager.ListPrompts(ctx, mcp.ExecutionContext{
+		CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID, RunID: req.RunID, RequestID: req.RequestID,
+		TraceID: req.TraceID, TraceParent: req.TraceParent,
+	}, serverName)
+	if err != nil {
+		msg := err.Error()
+		_ = e.store.CompleteMCPCall(context.Background(), callID, req.RunID, nil, &msg)
+		return nil, "", err
+	}
+	if err := e.store.CompleteMCPCall(ctx, callID, req.RunID, map[string]any{"prompts": len(prompts)}, nil); err != nil {
+		return nil, "", err
+	}
+	return map[string]any{"server_name": serverName, "prompts": prompts}, "succeeded", nil
+}
+
+func (e *Executor) executeMCPGetPrompt(ctx context.Context, req GraphRequest, config map[string]any) (map[string]any, string, error) {
+	if e.mcpManager == nil {
+		return nil, "", fmt.Errorf("mcp manager is not configured")
+	}
+	serverName, _ := config["server_name"].(string)
+	name, _ := config["name"].(string)
+	if name == "" {
+		return nil, "", fmt.Errorf("mcp_get_prompt requires name")
+	}
+	args, _ := config["arguments"].(map[string]any)
+	callID, err := e.store.StartMCPCall(ctx, req.RunID, serverName, "prompts/get", map[string]any{"server_name": serverName, "name": name, "arguments": args})
+	if err != nil {
+		return nil, "", err
+	}
+	prompt, err := e.mcpManager.GetPrompt(ctx, mcp.ExecutionContext{
+		CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID, RunID: req.RunID, RequestID: req.RequestID,
+		TraceID: req.TraceID, TraceParent: req.TraceParent,
+	}, serverName, name, args)
+	if err != nil {
+		msg := err.Error()
+		_ = e.store.CompleteMCPCall(context.Background(), callID, req.RunID, nil, &msg)
+		return nil, "", err
+	}
+	if err := e.store.CompleteMCPCall(ctx, callID, req.RunID, map[string]any{"name": prompt.Name, "messages": len(prompt.Messages)}, nil); err != nil {
+		return nil, "", err
+	}
+	return map[string]any{"server_name": serverName, "prompt": prompt}, "succeeded", nil
 }
 
 func (e *Executor) executeReadMemory(ctx context.Context, req GraphRequest, config map[string]any) (map[string]any, string, error) {
@@ -724,11 +900,29 @@ func (e *Executor) executeRetrieveKnowledge(ctx context.Context, req GraphReques
 	if limit <= 0 {
 		limit = 5
 	}
+	if _, err := e.policyEngine().Enforce(ctx, "pre_knowledge_retrieval", policy.Context{
+		CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID, RunID: req.RunID, Content: query,
+	}); err != nil {
+		return nil, "", err
+	}
 	docs, err := e.store.ListKnowledgeDocuments(ctx, req.CustomerID, 50)
 	if err != nil {
 		return nil, "", err
 	}
 	query = strings.ToLower(query)
+	if e.embedder != nil && strings.TrimSpace(query) != "" {
+		embedding, err := e.embedder.Embed(ctx, query)
+		if err != nil {
+			return nil, "", err
+		}
+		chunks, err := e.store.SearchKnowledgeHybrid(ctx, req.CustomerID, query, embedding, limit)
+		if err != nil {
+			return nil, "", err
+		}
+		if len(chunks) > 0 {
+			return map[string]any{"chunks": chunks, "strategy": "hybrid_vector_text"}, "succeeded", nil
+		}
+	}
 	chunks, err := e.store.SearchKnowledgeText(ctx, req.CustomerID, query, limit)
 	if err != nil {
 		return nil, "", err
@@ -762,6 +956,16 @@ func (e *Executor) executeReadArtifact(ctx context.Context, req GraphRequest, co
 	for _, artifact := range artifactsForRun {
 		if artifactID != "" && artifact.ID != artifactID {
 			continue
+		}
+		if _, err := e.policyEngine().Enforce(ctx, "pre_artifact_read", policy.Context{
+			CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID, RunID: req.RunID,
+			ArtifactID: artifact.ID,
+			AdditionalFields: map[string]any{
+				"modality":   artifact.Modality,
+				"media_type": artifact.MediaType,
+			},
+		}); err != nil {
+			return nil, "", err
 		}
 		reps, err := e.store.ArtifactRepresentations(ctx, req.CustomerID, artifact.ID)
 		if err != nil {
@@ -802,7 +1006,7 @@ func (e *Executor) executeProcessArtifact(ctx context.Context, req GraphRequest,
 		}
 		reps, err := processor.Process(ctx, artifacts.ProcessorContext{
 			CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID, RunID: req.RunID,
-			ArtifactID: artifact.ID, RequestID: req.RequestID,
+			ArtifactID: artifact.ID, ProcessorCallID: callID, RequestID: req.RequestID, TraceParent: req.TraceParent,
 		}, pa)
 		if err != nil {
 			msg := err.Error()
@@ -810,6 +1014,15 @@ func (e *Executor) executeProcessArtifact(ctx context.Context, req GraphRequest,
 			return nil, "", err
 		}
 		for _, rep := range reps {
+			if _, err := e.policyEngine().Enforce(ctx, "post_artifact_process", policy.Context{
+				CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID, RunID: req.RunID,
+				ArtifactID: artifact.ID, Processor: processor.Name(), Content: rep.Summary,
+			}); err != nil {
+				msg := err.Error()
+				_ = e.store.CompleteProcessorCall(context.Background(), callID, req.RunID, nil, &msg)
+				_ = e.store.SetArtifactState(context.Background(), artifact.ID, "failed")
+				return nil, "", err
+			}
 			if err := e.store.InsertArtifactRepresentation(ctx, artifact.ID, rep.Type, rep.Summary, rep.Metadata); err != nil {
 				return nil, "", err
 			}
@@ -877,6 +1090,12 @@ func (e *Executor) executeEmitOutbound(ctx context.Context, req GraphRequest, co
 	if textKey, _ := config["text_key"].(string); textKey != "" {
 		payload["text"] = valueAt(previous, textKey)
 	}
+	if _, err := e.policyEngine().Enforce(ctx, "pre_outbound", policy.Context{
+		CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID, RunID: req.RunID,
+		Content: mustJSONString(payload),
+	}); err != nil {
+		return nil, "", err
+	}
 	runID := req.RunID
 	id, outboxID, err := e.store.CreateOutboundIntent(ctx, db.OutboundIntent{
 		CustomerID: req.CustomerID, UserID: req.UserID, SessionID: req.SessionID, RunID: &runID, Type: stringValue(config["intent_type"], "message"),
@@ -896,7 +1115,7 @@ func (e *Executor) executeCreateBackgroundJob(ctx context.Context, req GraphRequ
 	key := stringValue(config["idempotency_key"], "workflow-background:"+req.RunID+":"+fmt.Sprint(time.Now().UnixNano()))
 	run, err := e.store.CreateBackgroundRun(ctx, db.ACPContext{
 		CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID,
-		RequestID: req.RequestID + ":background", IdempotencyKey: key,
+		RequestID: req.RequestID + ":background", IdempotencyKey: key, TraceID: req.TraceID, TraceParent: req.TraceParent,
 	}, input, map[string]any{"state": "queued", "source_workflow_run_id": req.RunID})
 	if err != nil {
 		return nil, "", err

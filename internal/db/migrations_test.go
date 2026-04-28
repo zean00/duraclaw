@@ -177,3 +177,60 @@ func TestEighthMigrationContainsSummariesAndBackgroundSchema(t *testing.T) {
 		}
 	}
 }
+
+func TestNinthMigrationContainsRetrievalIndexes(t *testing.T) {
+	raw, err := migrationFS.ReadFile("migrations/0009_retrieval_policy_mcp_depth.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw)
+	for _, want := range []string{
+		"search_vector tsvector",
+		"knowledge_chunks_search_vector_idx",
+		"knowledge_chunks_embedding_ivfflat_idx",
+		"vector_l2_ops",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("migration missing %q", want)
+		}
+	}
+}
+
+func TestTenthMigrationContainsKnowledgeScope(t *testing.T) {
+	raw, err := migrationFS.ReadFile("migrations/0010_knowledge_scope.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw)
+	for _, want := range []string{
+		"knowledge_documents ADD COLUMN IF NOT EXISTS scope",
+		"knowledge_chunks ADD COLUMN IF NOT EXISTS scope",
+		"scope IN ('customer','shared')",
+		"knowledge_documents_scope_idx",
+		"knowledge_chunks_scope_idx",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("migration missing %q", want)
+		}
+	}
+}
+
+func TestEleventhMigrationContainsOutboundDeliveryStatuses(t *testing.T) {
+	raw, err := migrationFS.ReadFile("migrations/0011_outbound_delivery_statuses.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw)
+	for _, want := range []string{
+		"outbound_intents_status_check",
+		"broadcast_targets_status_check",
+		"broadcasts_status_check",
+		"sent_to_nexus",
+		"delivered",
+		"UPDATE outbound_intents SET status='sent_to_nexus' WHERE status='sent'",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("migration missing %q", want)
+		}
+	}
+}

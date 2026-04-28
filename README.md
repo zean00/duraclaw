@@ -18,6 +18,7 @@ docker compose up --build
 
 The service applies embedded SQL migrations on startup, starts the durable run worker, starts the scheduler loop, and exposes ACP routes under `/acp`.
 It also starts an async outbox worker with a placeholder sink; Nexus delivery can replace that sink without changing runtime persistence.
+`/readyz` verifies database connectivity and returns queue counts for queued/active runs, pending outbox rows, queued async writes, and due scheduler jobs.
 
 Provider configuration defaults to the built-in mock provider. To use an OpenAI-compatible `/chat/completions` endpoint:
 
@@ -29,6 +30,16 @@ DURACLAW_PROVIDER_MODEL=gpt-4.1-mini
 DURACLAW_PROVIDER_FALLBACKS=mock/duraclaw
 ```
 
+Knowledge ingestion and workflow retrieval default to a deterministic local hash embedder. To use an OpenAI-compatible `/embeddings` endpoint:
+
+```bash
+DURACLAW_EMBEDDING_PROVIDER=openai-compatible
+DURACLAW_EMBEDDING_BASE_URL=https://api.openai.com/v1
+DURACLAW_EMBEDDING_API_KEY=...
+DURACLAW_EMBEDDING_MODEL=text-embedding-3-small
+DURACLAW_EMBEDDING_DIMENSIONS=768
+```
+
 Outbox delivery defaults to a placeholder log sink. To push queued outbound intents to Nexus:
 
 ```bash
@@ -37,10 +48,43 @@ NEXUS_OUTBOUND_URL=http://nexus.internal/acp/outbound
 NEXUS_TOKEN=...
 ```
 
+Artifact processing defaults to the built-in mock processor. To use an HTTP processor for transcription, OCR, document extraction, or other media representation work:
+
+```bash
+DURACLAW_ARTIFACT_PROCESSOR_URL=http://processor.internal
+DURACLAW_ARTIFACT_PROCESSOR_TOKEN=...
+DURACLAW_ARTIFACT_PROCESSOR_NAME=media_processor
+DURACLAW_ARTIFACT_PROCESSOR_MODALITIES=audio,image,document
+DURACLAW_ARTIFACT_PROCESSOR_MEDIA_TYPES=audio/mpeg,image/png,application/pdf,text/plain
+DURACLAW_ARTIFACT_PROCESSOR_TIMEOUT_SECONDS=60
+DURACLAW_ARTIFACT_PROCESSOR_MAX_RESPONSE_BYTES=1048576
+DURACLAW_ARTIFACT_PROCESSOR_MAX_REPRESENTATIONS=16
+DURACLAW_ARTIFACT_PROCESSOR_RAW_MEDIA_ALLOWED=false
+DURACLAW_ARTIFACT_PROCESSOR_MAX_RETRIES=0
+```
+
 Admin endpoints are open by default for local development. Set this in shared or production environments:
 
 ```bash
 DURACLAW_ADMIN_TOKEN=...
+DURACLAW_ACP_TOKEN=...
+DURACLAW_REQUIRE_AUTH=true
+```
+
+Optional OTLP HTTP export can push lightweight trace events and counter snapshots to an OpenTelemetry collector:
+
+```bash
+DURACLAW_OTLP_ENDPOINT=http://otel-collector:4318
+DURACLAW_OTLP_HEADERS=Authorization=Bearer token
+DURACLAW_OTEL_SERVICE_NAME=duraclaw
+DURACLAW_OTEL_EXPORT_INTERVAL_SECONDS=10
+DURACLAW_OTEL_INSECURE=true
+```
+
+Global MCP servers can be configured for all runs; agent instance version `mcp_config` can still add per-version servers:
+
+```bash
+DURACLAW_MCP_CONFIG='{"servers":[{"name":"tools","transport":"http","base_url":"http://mcp.internal"}]}'
 ```
 
 PostgreSQL must have `pgcrypto` and `pgvector` available. The first migration runs:
@@ -62,6 +106,18 @@ Optional real PostgreSQL migration verification:
 TEST_DATABASE_URL=postgres://user:pass@localhost:5432/duraclaw_test?sslmode=disable \
 go test ./internal/db -run TestMigrateAgainstPostgres
 ```
+
+The GitHub Actions workflow runs the full suite with a `pgvector/pgvector:pg17` PostgreSQL service and `TEST_DATABASE_URL` configured.
+
+## Operations
+
+- `/readyz` reports queue depth for queued/active runs, pending outbound rows, queued async writes, and due scheduler jobs.
+- `/metrics` exposes in-process counters and duration histograms. Configure `DURACLAW_OTLP_ENDPOINT` to export OpenTelemetry SDK spans and metrics to an OTLP HTTP collector.
+- Use `GET /admin/observability/events?customer_id={customer_id}` for durable debug/audit events, including MCP notifications and policy decisions.
+- Use `GET /acp/runs/{run_id}/trace` with `X-Customer-ID` to inspect model, tool, MCP, processor, and run-step records for a single run.
+- Failed artifact processors leave failed processor-call records and set the artifact state to `failed`; oversized processor payloads may be degraded according to configured limits.
+- Outbound failures remain in `async_outbox` for retry and are visible through queue depth and outbound-intent status.
+- `POST /admin/retention/run` can clean old artifacts, run events, outbox rows, async write jobs, observability events, and terminal broadcasts.
 
 ## ACP Routes
 
@@ -112,6 +168,13 @@ go test ./internal/db -run TestMigrateAgainstPostgres
 - `GET /admin/observability/events?customer_id={customer_id}`
 - `GET /admin/outbound-intents?customer_id={customer_id}`
 - `GET /admin/background-runs?customer_id={customer_id}`
+- `GET /admin/mcp/servers`
+- `GET /admin/mcp/servers/{server_name}/tools`
+- `GET /admin/mcp/servers/{server_name}/resources`
+- `GET /admin/mcp/servers/{server_name}/resources/read?uri={uri}`
+- `GET /admin/mcp/servers/{server_name}/prompts`
+- `POST /admin/mcp/servers/{server_name}/prompts/{prompt_name}/get`
+- `POST /admin/mcp/notifications`
 - `POST /admin/broadcasts`
 - `GET /admin/broadcasts?customer_id={customer_id}`
 - `GET /admin/broadcasts/{broadcast_id}/targets?customer_id={customer_id}`
@@ -135,11 +198,12 @@ go test ./internal/db -run TestMigrateAgainstPostgres
 
 Write requests require customer execution context headers. Existing-run write requests also require `X-Run-ID` matching the route run id.
 Run status, event, trace, artifact, and representation reads require `X-Customer-ID` for tenant scoping.
-Outbound intent status callbacks also require `X-Customer-ID`.
+Outbound intent status callbacks also require `X-Customer-ID` and accept `sent_to_nexus`, `delivered`, `failed`, or `cancelled` (`sent` is accepted as a compatibility alias for `sent_to_nexus`).
+Retention cleanup accepts `artifact_days`, `event_days`, `outbox_days`, `async_write_days`, `observability_days`, and `broadcast_days`.
 Run input may include `text` and a `parts` array. Supported part types are `text`, `artifact_ref`, `location`, and `structured_data`; `artifact_ref` parts must include `data.artifact_id`.
 Run input may also include `workflow_id` or `workflow_definition_id` to execute an assigned workflow graph before the normal agent loop.
 
-Workflow graph execution v1 is a durable DAG runner. It persists node states and edge activations, runs dependency-ready nodes concurrently with a default limit of 4, and treats merge nodes as `all_active` joins.
+Workflow graph execution v1 is a durable DAG runner. It persists node states and edge activations, runs dependency-ready nodes concurrently with a default limit of 4, treats merge nodes as `all_active` joins, and supports retry/timeout policies on nodes.
 
 Supported node types:
 
@@ -151,11 +215,13 @@ Supported node types:
 - `llm_condition`: persists a model call and requires JSON output containing `route`.
 - `tool` and `tool_call`: execute a local durable tool and persist tool intent/result.
 - `mcp` and `mcp_call`: execute an MCP tool and persist MCP intent/result.
+- `mcp_list_resources`, `mcp_read_resource`, `mcp_subscribe_resource`, and `mcp_unsubscribe_resource`: list, read, subscribe, or unsubscribe MCP resources and persist MCP intent/result summaries.
+- `mcp_list_prompts` and `mcp_get_prompt`: list or fetch MCP prompt templates and persist MCP intent/result summaries.
 - `model_call`: executes a provider model call and can require strict JSON output.
-- `retrieve_knowledge`: reads matching customer knowledge chunks.
+- `retrieve_knowledge`: reads matching customer knowledge chunks with text search and hybrid vector/text retrieval when embeddings are available.
 - `read_memory` and `write_memory`: read or persist stable user facts; writes pass policy enforcement.
 - `read_preference` and `write_preference`: read or persist conditional preferences with condition metadata.
-- `read_artifact`, `process_artifact`, and `write_artifact`: operate on durable artifact metadata and representations.
+- `read_artifact`, `process_artifact`, and `write_artifact`: operate on durable artifact metadata and representations with artifact read/process policy enforcement.
 - `branch`: emits a route from a configured key.
 - `transform`: maps constants and prior output values into a new output object.
 - `loop`: performs bounded node-internal iteration over an array.
@@ -226,30 +292,30 @@ The persistence layer also includes:
 - Durable session summaries and text-matched customer knowledge are included in model context.
 - Latest session transfer note included in model context after reassignment.
 - Context compaction for bounded prompt history.
-- Artifact attachment policy checks for size, allowed media types, and raw payload metadata fields.
+- Artifact attachment/read/process policy checks for size, allowed media types, raw payload metadata fields, and representation reuse in prompt context.
 - Memory tools: `remember` and `list_memories` for stable facts.
 - Preference tools: `save_preference` and `list_preferences` for conditional preferences.
 - Non-retryable tool metadata for write-like tools, with recovery query helpers.
 - Admin text knowledge ingestion into deterministic chunks.
-- Optional embedding provider seam for knowledge chunk embeddings, with deterministic hash embeddings for tests/local use.
-- Artifact processor provider-adapter seam for OCR/transcription/document extraction adapters.
+- Optional embedding provider seam for customer and shared knowledge chunk embeddings, with deterministic hash embeddings for tests/local use.
+- Artifact processor HTTP contract for OCR/transcription/document extraction adapters, with processor-call context, trace propagation, response limits, degradation, and raw-payload validation.
 - Retention maintenance hooks for old events, completed outbox rows, and artifact expiry.
 - Retention maintenance hooks for observability events and terminal broadcasts.
 - Lease extension and cancellation checks during worker execution.
 - Retry release/backoff for failed async outbox delivery.
 - Provider registry and model fallback attempts with persisted model-call records per attempt.
 - Artifact processor registry for modality-specific processor selection.
-- MCP manager registration now tracks transport metadata, opt-in retry attempts, per-server status, max-concurrency limits, HTTP/stdio transports, bounded tool discovery, and MCP call metrics.
-- Durable observability events are written for model, tool, MCP, and processor call lifecycle transitions.
+- MCP manager registration now tracks transport metadata, opt-in retry attempts, per-server status, max-concurrency limits, HTTP/stdio transports, bounded tool/resource/prompt discovery, resource subscribe/unsubscribe calls, admin status/discovery routes, and MCP call metrics.
+- Durable observability events are written for model, tool, MCP, processor, and MCP notification lifecycle transitions.
 - Model usage is persisted in model-call summaries and exposed through token counters when providers report usage.
 - Agent instance version `tool_config`, `mcp_config`, `workflow_config`, and `policy_config` are validated and applied during run execution, including model-loop and per-turn tool-call limits.
 - Database-managed runtime limits hard-fail run, workflow, and background-job creation when configured quotas are exceeded.
 - Async write jobs provide a bounded non-critical sidecar pipeline with degrade/drop metrics for oversized debug and observability payloads.
-- Checkpoints carry trace metadata when Nexus supplies `X-Trace-ID`; background runs expose status APIs and progress storage.
-- MCP supports SSE request negotiation and opt-in long-lived stdio JSON-RPC clients.
+- Checkpoints carry trace metadata when Nexus supplies `traceparent` or `X-Trace-ID`; background runs expose status APIs and progress storage.
+- MCP supports SSE request negotiation, global `DURACLAW_MCP_CONFIG`, notification ingestion, and opt-in long-lived stdio JSON-RPC clients.
 - Policy conditions support composite `all`/`any`/`not`, membership, prefix/suffix, and regex matching.
 - Artifact processors include a generic HTTP processor adapter for OCR/transcription/document extraction services.
 - Internal model-visible control tools: `duraclaw.run_workflow` and `duraclaw.ask_user`.
 - Optional admin bearer-token protection.
 - Graceful SIGINT/SIGTERM shutdown.
-- Basic in-process counters exposed on `/metrics`, including HTTP status counters from access logging.
+- Basic in-process counters exposed on `/metrics`, including HTTP status counters from access logging, plus OpenTelemetry SDK spans/metrics export when configured.

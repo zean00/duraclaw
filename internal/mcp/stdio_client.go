@@ -61,6 +61,116 @@ func (c StdioClient) ListTools(ctx context.Context, execCtx ExecutionContext, se
 	return decodeToolList(result)
 }
 
+func (c StdioClient) ListResources(ctx context.Context, execCtx ExecutionContext, serverName string) ([]ResourceInfo, error) {
+	session, err := c.open(ctx, execCtx)
+	if err != nil {
+		return nil, err
+	}
+	defer session.close()
+	if err := session.initialize(); err != nil {
+		return nil, err
+	}
+	if err := session.write(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "resources/list",
+		"params":  map[string]any{},
+	}); err != nil {
+		return nil, err
+	}
+	result, err := session.readResult(2)
+	if err != nil {
+		return nil, err
+	}
+	return decodeResourceList(result)
+}
+
+func (c StdioClient) ReadResource(ctx context.Context, execCtx ExecutionContext, serverName, uri string) (*ResourceContent, error) {
+	session, err := c.open(ctx, execCtx)
+	if err != nil {
+		return nil, err
+	}
+	defer session.close()
+	if err := session.initialize(); err != nil {
+		return nil, err
+	}
+	if err := session.write(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "resources/read",
+		"params":  map[string]any{"uri": uri},
+	}); err != nil {
+		return nil, err
+	}
+	result, err := session.readResult(2)
+	if err != nil {
+		return nil, err
+	}
+	return decodeResourceContent(result)
+}
+
+func (c StdioClient) SubscribeResource(ctx context.Context, execCtx ExecutionContext, serverName, uri string) error {
+	return c.resourceSubscription(ctx, execCtx, "resources/subscribe", uri)
+}
+
+func (c StdioClient) UnsubscribeResource(ctx context.Context, execCtx ExecutionContext, serverName, uri string) error {
+	return c.resourceSubscription(ctx, execCtx, "resources/unsubscribe", uri)
+}
+
+func (c StdioClient) resourceSubscription(ctx context.Context, execCtx ExecutionContext, method, uri string) error {
+	session, err := c.open(ctx, execCtx)
+	if err != nil {
+		return err
+	}
+	defer session.close()
+	if err := session.initialize(); err != nil {
+		return err
+	}
+	if err := session.write(map[string]any{"jsonrpc": "2.0", "id": 2, "method": method, "params": map[string]any{"uri": uri}}); err != nil {
+		return err
+	}
+	_, err = session.readResult(2)
+	return err
+}
+
+func (c StdioClient) ListPrompts(ctx context.Context, execCtx ExecutionContext, serverName string) ([]PromptInfo, error) {
+	session, err := c.open(ctx, execCtx)
+	if err != nil {
+		return nil, err
+	}
+	defer session.close()
+	if err := session.initialize(); err != nil {
+		return nil, err
+	}
+	if err := session.write(map[string]any{"jsonrpc": "2.0", "id": 2, "method": "prompts/list", "params": map[string]any{}}); err != nil {
+		return nil, err
+	}
+	result, err := session.readResult(2)
+	if err != nil {
+		return nil, err
+	}
+	return decodePromptList(result)
+}
+
+func (c StdioClient) GetPrompt(ctx context.Context, execCtx ExecutionContext, serverName, promptName string, arguments map[string]any) (*PromptContent, error) {
+	session, err := c.open(ctx, execCtx)
+	if err != nil {
+		return nil, err
+	}
+	defer session.close()
+	if err := session.initialize(); err != nil {
+		return nil, err
+	}
+	if err := session.write(map[string]any{"jsonrpc": "2.0", "id": 2, "method": "prompts/get", "params": map[string]any{"name": promptName, "arguments": arguments}}); err != nil {
+		return nil, err
+	}
+	result, err := session.readResult(2)
+	if err != nil {
+		return nil, err
+	}
+	return decodePromptContent(result)
+}
+
 type stdioSession struct {
 	cmd     *exec.Cmd
 	stdin   io.WriteCloser
@@ -196,4 +306,59 @@ func decodeToolList(result map[string]any) ([]ToolInfo, error) {
 		return nil, err
 	}
 	return tools, nil
+}
+
+func decodeResourceList(result map[string]any) ([]ResourceInfo, error) {
+	raw, _ := json.Marshal(result["resources"])
+	var resources []ResourceInfo
+	if err := json.Unmarshal(raw, &resources); err != nil {
+		return nil, err
+	}
+	return resources, nil
+}
+
+func decodeResourceContent(result map[string]any) (*ResourceContent, error) {
+	if rawContent, ok := result["resource"]; ok {
+		raw, _ := json.Marshal(rawContent)
+		var resource ResourceContent
+		if err := json.Unmarshal(raw, &resource); err != nil {
+			return nil, err
+		}
+		return &resource, nil
+	}
+	rawContents, _ := json.Marshal(result["contents"])
+	var contents []ResourceContent
+	if err := json.Unmarshal(rawContents, &contents); err != nil {
+		return nil, err
+	}
+	if len(contents) == 0 {
+		return &ResourceContent{}, nil
+	}
+	return &contents[0], nil
+}
+
+func decodePromptList(result map[string]any) ([]PromptInfo, error) {
+	raw, _ := json.Marshal(result["prompts"])
+	var prompts []PromptInfo
+	if err := json.Unmarshal(raw, &prompts); err != nil {
+		return nil, err
+	}
+	return prompts, nil
+}
+
+func decodePromptContent(result map[string]any) (*PromptContent, error) {
+	if rawPrompt, ok := result["prompt"]; ok {
+		raw, _ := json.Marshal(rawPrompt)
+		var prompt PromptContent
+		if err := json.Unmarshal(raw, &prompt); err != nil {
+			return nil, err
+		}
+		return &prompt, nil
+	}
+	raw, _ := json.Marshal(result)
+	var prompt PromptContent
+	if err := json.Unmarshal(raw, &prompt); err != nil {
+		return nil, err
+	}
+	return &prompt, nil
 }

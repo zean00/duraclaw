@@ -27,6 +27,10 @@ func (s *fakeKnowledgeStore) CreateKnowledgeDocument(context.Context, string, st
 	return "doc-1", nil
 }
 
+func (s *fakeKnowledgeStore) CreateKnowledgeDocumentWithScope(context.Context, string, string, string, string, any) (string, error) {
+	return "doc-1", nil
+}
+
 func (s *fakeKnowledgeStore) AddKnowledgeChunk(context.Context, string, string, int, string, any) (string, error) {
 	s.chunks++
 	return "chunk", nil

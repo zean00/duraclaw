@@ -29,3 +29,15 @@ func TestCountersPrometheusDuration(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestCountersRecordWithOTelRecorder(t *testing.T) {
+	c := NewCounters()
+	c.Add("test_counter_total", 2)
+	c.ObserveDuration("test_duration_seconds", time.Millisecond)
+	if c.Snapshot()["test_counter_total"] != 2 {
+		t.Fatalf("snapshot=%#v", c.Snapshot())
+	}
+	if c.DurationSnapshot()["test_duration_seconds"].Count != 1 {
+		t.Fatalf("durations=%#v", c.DurationSnapshot())
+	}
+}

@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"duraclaw/internal/observability"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type CallStore interface {
@@ -32,6 +34,8 @@ func (e *Executor) WithCounters(counters *observability.Counters) *Executor {
 }
 
 func (e *Executor) CallTool(ctx context.Context, exec ExecutionContext, serverName, toolName string, arguments map[string]any) (map[string]any, error) {
+	ctx, span := observability.StartSpan(ctx, "mcp_call", attribute.String("duraclaw.run_id", exec.RunID), attribute.String("duraclaw.mcp_server", serverName), attribute.String("duraclaw.mcp_tool", toolName))
+	defer span.End()
 	start := time.Now()
 	if e.store == nil {
 		return nil, fmt.Errorf("mcp executor store is nil")

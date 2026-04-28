@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -17,6 +19,7 @@ type fakeStore struct {
 	enqueued  []db.AsyncWriteSpec
 	claimed   []db.AsyncWriteJob
 	completed []string
+	released  []int64
 	events    []string
 }
 
@@ -36,7 +39,8 @@ func (s *fakeStore) CompleteAsyncWriteJob(_ context.Context, _ int64, state stri
 	return nil
 }
 
-func (s *fakeStore) ReleaseAsyncWriteJob(context.Context, int64, time.Duration, string) error {
+func (s *fakeStore) ReleaseAsyncWriteJob(_ context.Context, id int64, _ time.Duration, _ string) error {
+	s.released = append(s.released, id)
 	return nil
 }
 
@@ -114,6 +118,36 @@ func TestWriterAppliesClaimedObservabilityJob(t *testing.T) {
 	}
 }
 
+func TestWriterAppliesClaimedOTLPJob(t *testing.T) {
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer server.Close()
+	payload, _ := json.Marshal(map[string]any{"name": "async.trace", "attributes": map[string]any{"trace_id": "abc"}})
+	store := &fakeStore{claimed: []db.AsyncWriteJob{{ID: 1, CustomerID: "c", JobType: "otlp_event", Payload: payload}}}
+	writer := NewWriter(store, "test", 1).WithOTLPExporter(observability.OTLPExporter{Endpoint: server.URL})
+	if _, err := writer.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 1 || paths[0] != "/v1/traces" || len(store.completed) != 1 || store.completed[0] != "completed" {
+		t.Fatalf("paths=%#v completed=%#v", paths, store.completed)
+	}
+}
+
+func TestWriterOTLPJobNoopsWhenExporterDisabled(t *testing.T) {
+	payload, _ := json.Marshal(map[string]any{"name": "async.trace"})
+	store := &fakeStore{claimed: []db.AsyncWriteJob{{ID: 1, CustomerID: "c", JobType: "otlp_event", Payload: payload}}}
+	writer := NewWriter(store, "test", 1)
+	if _, err := writer.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.completed) != 1 || store.completed[0] != "completed" {
+		t.Fatalf("completed=%#v", store.completed)
+	}
+}
+
 func TestWriterCompletesDegradedJobsAsDegraded(t *testing.T) {
 	payload, _ := json.Marshal(map[string]any{"event_type": "async_write_degraded", "payload": map[string]any{"degraded": true}})
 	store := &fakeStore{claimed: []db.AsyncWriteJob{{ID: 1, CustomerID: "c", JobType: "observability_event", TargetTable: "degraded", Payload: payload}}}
@@ -123,6 +157,32 @@ func TestWriterCompletesDegradedJobsAsDegraded(t *testing.T) {
 	}
 	if len(store.completed) != 1 || store.completed[0] != "degraded" {
 		t.Fatalf("completed=%#v", store.completed)
+	}
+}
+
+func TestWriterStopsRetryingAfterMaxAttempts(t *testing.T) {
+	store := &fakeStore{claimed: []db.AsyncWriteJob{{ID: 1, CustomerID: "c", JobType: "observability_event", Payload: json.RawMessage(`{bad`), Attempts: 5}}}
+	counters := observability.NewCounters()
+	writer := NewWriter(store, "test", 1).WithCounters(counters)
+	if _, err := writer.RunOnce(context.Background()); err == nil {
+		t.Fatal("expected apply error")
+	}
+	if len(store.completed) != 1 || store.completed[0] != "failed" || len(store.released) != 0 {
+		t.Fatalf("completed=%#v released=%#v", store.completed, store.released)
+	}
+	if counters.Snapshot()["async_write_failed_terminal_total"] != 1 {
+		t.Fatalf("counters=%#v", counters.Snapshot())
+	}
+}
+
+func TestWriterReleasesBeforeMaxAttempts(t *testing.T) {
+	store := &fakeStore{claimed: []db.AsyncWriteJob{{ID: 1, CustomerID: "c", JobType: "observability_event", Payload: json.RawMessage(`{bad`), Attempts: 1}}}
+	writer := NewWriter(store, "test", 1)
+	if _, err := writer.RunOnce(context.Background()); err == nil {
+		t.Fatal("expected apply error")
+	}
+	if len(store.released) != 1 || len(store.completed) != 0 {
+		t.Fatalf("completed=%#v released=%#v", store.completed, store.released)
 	}
 }
 
