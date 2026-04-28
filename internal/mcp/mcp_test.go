@@ -122,6 +122,42 @@ func TestManagerWithConfigRegistersStdioServers(t *testing.T) {
 	}
 }
 
+func TestManagerWithConfigRegistersLongLivedStdioServers(t *testing.T) {
+	manager := NewManager()
+	configured, err := manager.WithConfig([]byte(`{"servers":[{"name":"local","transport":"stdio","command":"sh","args":["-c","cat"],"long_lived":true}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, ok := configured.Client("local")
+	if !ok {
+		t.Fatal("missing configured client")
+	}
+	managed, ok := client.(*managedClient)
+	if !ok {
+		t.Fatalf("client=%T", client)
+	}
+	if _, ok := managed.client.(*PersistentStdioClient); !ok {
+		t.Fatalf("client=%T", managed.client)
+	}
+}
+
+func TestManagerWithConfigRegistersSSEClient(t *testing.T) {
+	manager := NewManager()
+	configured, err := manager.WithConfig([]byte(`{"servers":[{"name":"events","transport":"sse","base_url":"http://example.test"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, ok := configured.Client("events")
+	if !ok {
+		t.Fatal("missing configured client")
+	}
+	managed := client.(*managedClient)
+	httpClient, ok := managed.client.(HTTPClient)
+	if !ok || !httpClient.SSE {
+		t.Fatalf("client=%T %#v", managed.client, managed.client)
+	}
+}
+
 func TestManagerListToolsDelegates(t *testing.T) {
 	manager := NewManager()
 	manager.Register("srv", listingClient{})

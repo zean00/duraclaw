@@ -223,6 +223,40 @@ func TestStoreHasAsyncWriteClaimQueries(t *testing.T) {
 	}
 }
 
+func TestStoreHasSessionSummaryBackgroundAndTraceQueries(t *testing.T) {
+	summaryRaw, err := os.ReadFile("session_summaries.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	storeRaw, err := os.ReadFile("store.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	knowledgeRaw, err := os.ReadFile("memory_knowledge.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(summaryRaw) + string(storeRaw) + string(knowledgeRaw)
+	for _, want := range []string{
+		"UpsertSessionSummary",
+		"SessionSummary",
+		"CreateBackgroundRun",
+		"pg_advisory_xact_lock",
+		"enforceBackgroundQuotaTx",
+		"'background'",
+		"MarkRunBackground",
+		"BackgroundRuns",
+		"withTraceCheckpoint",
+		"trace_id",
+		"SearchKnowledgeText",
+		"ILIKE '%' || $2 || '%'",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("store missing %q", want)
+		}
+	}
+}
+
 func TestStoreWritesDurableObservabilityForExecutionCalls(t *testing.T) {
 	raw, err := os.ReadFile("store.go")
 	if err != nil {

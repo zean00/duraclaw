@@ -159,3 +159,21 @@ func TestSeventhMigrationContainsRuntimeLimitsAndAsyncWrites(t *testing.T) {
 		}
 	}
 }
+
+func TestEighthMigrationContainsSummariesAndBackgroundSchema(t *testing.T) {
+	raw, err := migrationFS.ReadFile("migrations/0008_summaries_and_background.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw)
+	for _, want := range []string{
+		"CREATE TABLE IF NOT EXISTS session_summaries",
+		"ALTER TABLE runs ADD COLUMN IF NOT EXISTS run_mode",
+		"ALTER TABLE runs ADD COLUMN IF NOT EXISTS progress",
+		"CREATE INDEX IF NOT EXISTS runs_background_idx",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("migration missing %q", want)
+		}
+	}
+}

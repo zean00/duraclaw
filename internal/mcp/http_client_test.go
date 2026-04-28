@@ -44,3 +44,53 @@ func TestHTTPClientListsTools(t *testing.T) {
 		t.Fatalf("run=%q tools=%#v", sawRunID, tools)
 	}
 }
+
+func TestHTTPClientSSESetsAcceptHeader(t *testing.T) {
+	var sawAccept string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawAccept = r.Header.Get("Accept")
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"result\":{\"ok\":true}}\n\n"))
+	}))
+	defer server.Close()
+	_, err := (HTTPClient{BaseURL: server.URL, SSE: true}).CallTool(context.Background(), ExecutionContext{}, "srv", "tool", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sawAccept != "text/event-stream" {
+		t.Fatalf("accept=%q", sawAccept)
+	}
+}
+
+func TestHTTPClientSSEParsesEventData(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: message\n"))
+		_, _ = w.Write([]byte("data: {\"result\":{\"ok\":true}}\n\n"))
+	}))
+	defer server.Close()
+	got, err := (HTTPClient{BaseURL: server.URL, SSE: true}).CallTool(context.Background(), ExecutionContext{}, "srv", "tool", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["ok"] != true {
+		t.Fatalf("got=%#v", got)
+	}
+}
+
+func TestHTTPClientSSEParsesToolListEventData(t *testing.T) {
+	var sawAccept string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawAccept = r.Header.Get("Accept")
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"tools\":[{\"name\":\"lookup\",\"description\":\"Lookup\"}]}\n\n"))
+	}))
+	defer server.Close()
+	tools, err := (HTTPClient{BaseURL: server.URL, SSE: true}).ListTools(context.Background(), ExecutionContext{}, "srv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sawAccept != "text/event-stream" || len(tools) != 1 || tools[0].Name != "lookup" {
+		t.Fatalf("accept=%q tools=%#v", sawAccept, tools)
+	}
+}

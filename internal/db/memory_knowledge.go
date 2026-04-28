@@ -353,6 +353,36 @@ func (s *Store) SearchKnowledgeChunks(ctx context.Context, customerID string, em
 	return out, rows.Err()
 }
 
+func (s *Store) SearchKnowledgeText(ctx context.Context, customerID, query string, limit int) ([]KnowledgeChunk, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 10
+	}
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT id::text, document_id::text, customer_id, chunk_index, content, metadata
+		FROM knowledge_chunks
+		WHERE customer_id=$1
+		AND content ILIKE '%' || $2 || '%'
+		ORDER BY chunk_index ASC
+		LIMIT $3`, customerID, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []KnowledgeChunk
+	for rows.Next() {
+		var k KnowledgeChunk
+		if err := rows.Scan(&k.ID, &k.DocumentID, &k.CustomerID, &k.ChunkIndex, &k.Content, &k.Metadata); err != nil {
+			return nil, err
+		}
+		out = append(out, k)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) ListKnowledgeChunks(ctx context.Context, documentID string, limit int) ([]KnowledgeChunk, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100

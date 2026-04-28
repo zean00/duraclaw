@@ -119,6 +119,15 @@ func TestListSchedulerJobsRequiresCustomer(t *testing.T) {
 	}
 }
 
+func TestListBackgroundRunsRequiresCustomer(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/admin/background-runs", nil)
+	rec := httptest.NewRecorder()
+	NewHandler(nil).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "customer_id") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestUpdateSchedulerJobRequiresEnabled(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPatch, "/admin/scheduler/jobs/job-1", strings.NewReader(`{"customer_id":"c"}`))
 	rec := httptest.NewRecorder()

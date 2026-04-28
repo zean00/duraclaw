@@ -72,3 +72,27 @@ func TestPromptInstructionsReturnsMatchedInstructions(t *testing.T) {
 		t.Fatalf("got=%#v", got)
 	}
 }
+
+func TestRuleMatchesCompositeConditions(t *testing.T) {
+	condition := json.RawMessage(`{"all":[{"prefix":{"key":"tool_name","value":"duraclaw."}},{"in":{"key":"workflow_id","values":["wf-1","wf-2"]}},{"not":{"contains":{"key":"content","value":"blocked"}}}]}`)
+	store := &fakeRuleStore{rules: []db.PolicyRule{{ID: "r", PolicyPackID: "p", RuleType: "deny", EnforcementMode: "pre_tool", Action: "deny", Condition: condition}}}
+	decision, err := NewEngine(store).Evaluate(context.Background(), "pre_tool", Context{ToolName: "duraclaw.run_workflow", WorkflowID: "wf-1", Content: "ok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Action != "deny" {
+		t.Fatalf("decision=%#v", decision)
+	}
+}
+
+func TestRuleMatchesRegexCondition(t *testing.T) {
+	condition := json.RawMessage(`{"matches":{"key":"content","pattern":"invoice-[0-9]+"}}`)
+	store := &fakeRuleStore{rules: []db.PolicyRule{{ID: "r", PolicyPackID: "p", RuleType: "modify", EnforcementMode: "prompt", Action: "modify", Condition: condition}}}
+	decision, err := NewEngine(store).Evaluate(context.Background(), "prompt", Context{Content: "invoice-123"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Action != "modify" {
+		t.Fatalf("decision=%#v", decision)
+	}
+}

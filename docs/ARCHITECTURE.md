@@ -651,7 +651,7 @@ X-Request-ID
 
 MCP tool arguments should remain domain-specific. Customer context should not be duplicated into tool arguments unless a specific MCP server requires it.
 
-Implementation status: Duraclaw's MCP manager tracks registered server specs, transport type, opt-in retry settings, max-concurrency limits, last-use status, last error, call/failure counts, and bounded tool discovery. HTTP clients propagate Duraclaw context headers, stdio clients speak MCP JSON-RPC and inject context into the command environment, and MCP calls persist intent/result records before and after execution. Agent instance version `mcp_config` can register per-version MCP servers.
+Implementation status: Duraclaw's MCP manager tracks registered server specs, transport type, opt-in retry settings, max-concurrency limits, last-use status, last error, call/failure counts, and bounded tool discovery. HTTP clients propagate Duraclaw context headers, SSE clients negotiate `text/event-stream`, stdio clients speak MCP JSON-RPC and inject context into the command environment, opt-in long-lived stdio clients can reuse a JSON-RPC process, and MCP calls persist intent/result records before and after execution. Agent instance version `mcp_config` can register per-version MCP servers.
 
 ## Knowledge, Preferences, and Memory
 
@@ -681,6 +681,8 @@ Retrieval should combine:
 - Customer knowledge.
 - Shared knowledge.
 - Active run state.
+
+Implementation status: prompt context now includes recent messages, durable session summaries, stable memories, conditional preferences, text-matched customer knowledge, workflow manifests, MCP tool manifests, transfer notes, and policy prompt instructions.
 
 ## Database Architecture
 
@@ -1277,7 +1279,7 @@ Duraclaw should support OpenTelemetry-compatible tracing and metrics. PostgreSQL
 
 The `observability_events` table is for durable audit/debug events that are too important to exist only in logs.
 
-Implementation status: model, tool, MCP, and artifact processor call starts/completions write both run events and durable observability events. In-process metrics expose counters plus duration count/sum/bucket series through `/metrics`, including run queue lag, run duration, model token usage, async write drop/degrade/flush counts, and model/tool/MCP/artifact processor/workflow-node durations. Non-critical observability sidecars can flow through `async_write_jobs` with degradation and drop accounting.
+Implementation status: model, tool, MCP, and artifact processor call starts/completions write both run events and durable observability events. In-process metrics expose counters plus duration count/sum/bucket series through `/metrics`, including run queue lag, run duration, model token usage, async write drop/degrade/flush counts, and model/tool/MCP/artifact processor/workflow-node durations. Non-critical observability sidecars can flow through `async_write_jobs` with degradation and drop accounting. Checkpoints include trace metadata when inbound ACP context provides `X-Trace-ID`.
 
 Example event types:
 
@@ -1306,7 +1308,7 @@ Concurrency rules:
 - Use workflow concurrency limits.
 - Use background-job concurrency limits.
 
-Implementation status: database-managed customer and agent-instance runtime limits can hard-fail run, workflow, and background-job creation when configured quotas are exceeded.
+Implementation status: database-managed customer and agent-instance runtime limits can hard-fail run, workflow, and background-job creation when configured quotas are exceeded. Background runs are marked distinctly, can store progress, and are exposed through admin/status APIs while reusing the durable run worker.
 
 PostgreSQL patterns:
 

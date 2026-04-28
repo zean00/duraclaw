@@ -116,6 +116,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("PATCH /admin/scheduler/jobs/{job_id}", h.requireAdmin(h.updateSchedulerJob))
 	mux.HandleFunc("GET /admin/observability/events", h.requireAdmin(h.listObservabilityEvents))
 	mux.HandleFunc("GET /admin/outbound-intents", h.requireAdmin(h.listOutboundIntents))
+	mux.HandleFunc("GET /admin/background-runs", h.requireAdmin(h.listBackgroundRuns))
 	mux.HandleFunc("POST /admin/broadcasts", h.requireAdmin(h.createBroadcast))
 	mux.HandleFunc("GET /admin/broadcasts", h.requireAdmin(h.listBroadcasts))
 	mux.HandleFunc("GET /admin/broadcasts/{broadcast_id}/targets", h.requireAdmin(h.listBroadcastTargets))
@@ -130,6 +131,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /acp/artifacts/{artifact_id}/representations", h.requireACP(h.listArtifactRepresentations))
 	mux.HandleFunc("GET /acp/runs/{run_id}", h.requireACP(h.runStatus))
 	mux.HandleFunc("GET /acp/runs/{run_id}/trace", h.requireACP(h.runTrace))
+	mux.HandleFunc("GET /acp/runs/{run_id}/background-status", h.requireACP(h.backgroundStatus))
 	mux.HandleFunc("GET /acp/runs/{run_id}/events", h.requireACP(h.events))
 	mux.HandleFunc("POST /acp/runs/{run_id}/resume", h.requireACP(h.resume))
 	mux.HandleFunc("POST /acp/runs/{run_id}/cancel", h.requireACP(h.cancel))
@@ -1067,6 +1069,20 @@ func (h *Handler) listOutboundIntents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"outbound_intents": intents})
 }
 
+func (h *Handler) listBackgroundRuns(w http.ResponseWriter, r *http.Request) {
+	customerID := r.URL.Query().Get("customer_id")
+	if customerID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id is required"))
+		return
+	}
+	runs, err := h.store.BackgroundRuns(r.Context(), customerID, r.URL.Query().Get("agent_instance_id"), queryLimit(r, 100))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"background_runs": runs})
+}
+
 func (h *Handler) createBroadcast(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
 		CustomerID string                   `json:"customer_id"`
@@ -1390,6 +1406,29 @@ func (h *Handler) runTrace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, trace)
+}
+
+func (h *Handler) backgroundStatus(w http.ResponseWriter, r *http.Request) {
+	c, ok := existingRunContext(w, r)
+	if !ok {
+		return
+	}
+	run, ok := h.requireRunAccess(w, r, c)
+	if !ok {
+		return
+	}
+	progress, _ := h.store.RunProgress(r.Context(), run.ID)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"run_id":            run.ID,
+		"state":             run.State,
+		"progress":          json.RawMessage(progress),
+		"agent_instance_id": run.AgentInstanceID,
+		"session_id":        run.SessionID,
+		"created_at":        run.CreatedAt,
+		"updated_at":        run.UpdatedAt,
+		"completed_at":      run.CompletedAt,
+		"error":             run.Error,
+	})
 }
 
 func (h *Handler) events(w http.ResponseWriter, r *http.Request) {

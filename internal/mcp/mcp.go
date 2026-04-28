@@ -138,6 +138,7 @@ func (m *Manager) WithConfig(raw json.RawMessage) (*Manager, error) {
 			Command       string            `json:"command"`
 			Args          []string          `json:"args"`
 			Env           map[string]string `json:"env"`
+			LongLived     bool              `json:"long_lived"`
 			MaxRetries    int               `json:"max_retries"`
 			RetryDelayMS  int               `json:"retry_delay_ms"`
 			MaxConcurrent int               `json:"max_concurrent"`
@@ -158,10 +159,16 @@ func (m *Manager) WithConfig(raw json.RawMessage) (*Manager, error) {
 			MaxConcurrent: server.MaxConcurrent, Metadata: server.Metadata,
 		}
 		switch transport {
-		case "http", "sse":
+		case "http":
 			next.RegisterWithSpec(spec, HTTPClient{BaseURL: server.BaseURL, Token: server.Token})
+		case "sse":
+			next.RegisterWithSpec(spec, HTTPClient{BaseURL: server.BaseURL, Token: server.Token, SSE: true})
 		case "stdio":
-			next.RegisterWithSpec(spec, StdioClient{Command: server.Command, Args: server.Args, Env: server.Env})
+			if server.LongLived {
+				next.RegisterWithSpec(spec, &PersistentStdioClient{Command: server.Command, Args: server.Args, Env: server.Env})
+			} else {
+				next.RegisterWithSpec(spec, StdioClient{Command: server.Command, Args: server.Args, Env: server.Env})
+			}
 		default:
 			return nil, fmt.Errorf("unsupported mcp transport %q for server %q", transport, server.Name)
 		}

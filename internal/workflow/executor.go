@@ -49,6 +49,7 @@ type Store interface {
 	AddPreference(ctx context.Context, customerID, userID, sessionID, category, content string, condition, metadata any) (string, error)
 	ListKnowledgeDocuments(ctx context.Context, customerID string, limit int) ([]db.KnowledgeDocument, error)
 	ListKnowledgeChunks(ctx context.Context, documentID string, limit int) ([]db.KnowledgeChunk, error)
+	SearchKnowledgeText(ctx context.Context, customerID, query string, limit int) ([]db.KnowledgeChunk, error)
 	ArtifactsForRun(ctx context.Context, runID string) ([]db.Artifact, error)
 	ArtifactRepresentations(ctx context.Context, customerID, artifactID string) ([]db.ArtifactRepresentation, error)
 	AttachArtifact(ctx context.Context, runID string, a db.Artifact) error
@@ -58,7 +59,10 @@ type Store interface {
 	CompleteProcessorCall(ctx context.Context, callID, runID string, response any, errText *string) error
 	CreateOutboundIntent(ctx context.Context, intent db.OutboundIntent) (string, int64, error)
 	CreateRun(ctx context.Context, c db.ACPContext, input any) (*db.Run, error)
+	CreateBackgroundRun(ctx context.Context, c db.ACPContext, input any, progress any) (*db.Run, error)
 	EnforceBackgroundQuota(ctx context.Context, customerID, agentInstanceID string) error
+	MarkRunBackground(ctx context.Context, runID string) error
+	SetRunProgress(ctx context.Context, runID string, progress any) error
 	CreateSchedulerJob(ctx context.Context, spec db.SchedulerJobSpec) (*db.SchedulerJob, error)
 	PolicyRulesForScope(ctx context.Context, customerID, agentInstanceID, enforcementMode string) ([]db.PolicyRule, error)
 	RecordPolicyEvaluation(ctx context.Context, ev db.PolicyEvaluation) error
@@ -725,7 +729,13 @@ func (e *Executor) executeRetrieveKnowledge(ctx context.Context, req GraphReques
 		return nil, "", err
 	}
 	query = strings.ToLower(query)
-	var chunks []db.KnowledgeChunk
+	chunks, err := e.store.SearchKnowledgeText(ctx, req.CustomerID, query, limit)
+	if err != nil {
+		return nil, "", err
+	}
+	if len(chunks) >= limit {
+		return map[string]any{"chunks": chunks[:limit], "strategy": "text_search"}, "succeeded", nil
+	}
 	for _, doc := range docs {
 		docChunks, err := e.store.ListKnowledgeChunks(ctx, doc.ID, 100)
 		if err != nil {
@@ -740,7 +750,7 @@ func (e *Executor) executeRetrieveKnowledge(ctx context.Context, req GraphReques
 			}
 		}
 	}
-	return map[string]any{"chunks": chunks}, "succeeded", nil
+	return map[string]any{"chunks": chunks, "strategy": "hybrid_text_scan"}, "succeeded", nil
 }
 
 func (e *Executor) executeReadArtifact(ctx context.Context, req GraphRequest, config map[string]any) (map[string]any, string, error) {
@@ -884,13 +894,10 @@ func (e *Executor) executeCreateBackgroundJob(ctx context.Context, req GraphRequ
 		input = previous
 	}
 	key := stringValue(config["idempotency_key"], "workflow-background:"+req.RunID+":"+fmt.Sprint(time.Now().UnixNano()))
-	if err := e.store.EnforceBackgroundQuota(ctx, req.CustomerID, req.AgentInstanceID); err != nil {
-		return nil, "", err
-	}
-	run, err := e.store.CreateRun(ctx, db.ACPContext{
+	run, err := e.store.CreateBackgroundRun(ctx, db.ACPContext{
 		CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID,
 		RequestID: req.RequestID + ":background", IdempotencyKey: key,
-	}, input)
+	}, input, map[string]any{"state": "queued", "source_workflow_run_id": req.RunID})
 	if err != nil {
 		return nil, "", err
 	}

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -408,9 +409,33 @@ func (s *Store) CompleteRunWithMessage(ctx context.Context, runID, messageID str
 }
 
 func (s *Store) Checkpoint(ctx context.Context, runID, key string, state any) error {
+	state = s.withTraceCheckpoint(ctx, runID, key, state)
 	b, _ := json.Marshal(state)
 	_, err := s.pool.Exec(ctx, `INSERT INTO checkpoints(run_id,checkpoint_key,state) VALUES($1,$2,$3)`, runID, key, b)
 	return err
+}
+
+func (s *Store) withTraceCheckpoint(ctx context.Context, runID, key string, state any) any {
+	payload, ok := state.(map[string]any)
+	if !ok {
+		payload = map[string]any{"value": state}
+	}
+	if _, ok := payload["span_name"]; !ok {
+		payload["span_name"] = key
+	}
+	if _, ok := payload["trace_id"]; ok {
+		return payload
+	}
+	var channel []byte
+	if err := s.pool.QueryRow(ctx, `SELECT channel_context FROM runs WHERE id=$1`, runID).Scan(&channel); err != nil {
+		return payload
+	}
+	var ctxPayload map[string]any
+	_ = json.Unmarshal(channel, &ctxPayload)
+	if traceID, _ := ctxPayload["trace_id"].(string); strings.TrimSpace(traceID) != "" {
+		payload["trace_id"] = traceID
+	}
+	return payload
 }
 
 func (s *Store) StartRunStep(ctx context.Context, runID, kind string, input any) (string, error) {

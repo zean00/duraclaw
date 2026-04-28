@@ -58,12 +58,7 @@ func (c StdioClient) ListTools(ctx context.Context, execCtx ExecutionContext, se
 	if err != nil {
 		return nil, err
 	}
-	raw, _ := json.Marshal(result["tools"])
-	var tools []ToolInfo
-	if err := json.Unmarshal(raw, &tools); err != nil {
-		return nil, err
-	}
-	return tools, nil
+	return decodeToolList(result)
 }
 
 type stdioSession struct {
@@ -192,4 +187,13 @@ func jsonRPCIDMatches(raw any, want int) bool {
 	default:
 		return false
 	}
+}
+
+func decodeToolList(result map[string]any) ([]ToolInfo, error) {
+	raw, _ := json.Marshal(result["tools"])
+	var tools []ToolInfo
+	if err := json.Unmarshal(raw, &tools); err != nil {
+		return nil, err
+	}
+	return tools, nil
 }

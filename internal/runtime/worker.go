@@ -321,6 +321,7 @@ func (w *Worker) process(ctx context.Context, run *db.Run) error {
 		if err := w.store.Checkpoint(ctx, run.ID, "tools_complete", map[string]any{"tool_calls": len(toolResults)}); err != nil {
 			return err
 		}
+		w.enqueueAsyncObservability(ctx, run, "checkpoint.tools_complete", map[string]any{"tool_results": toolResults, "iteration": iteration})
 		if iteration == maxIterations {
 			return fmt.Errorf("agent loop exceeded %d iterations", maxIterations)
 		}
@@ -338,6 +339,7 @@ func (w *Worker) process(ctx context.Context, run *db.Run) error {
 	if err := w.emitFinalOutbound(ctx, run, msgID, resp.Content); err != nil {
 		return err
 	}
+	_ = w.updateSessionSummary(ctx, run, resp.Content)
 	return w.store.CompleteRunWithMessage(ctx, run.ID, msgID)
 }
 
@@ -483,6 +485,20 @@ func (w *Worker) providerMessages(ctx context.Context, run *db.Run, currentText 
 	if strings.TrimSpace(workflowManifest) != "" {
 		promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: workflowManifest})
 	}
+	sessionSummary, err := w.sessionSummaryContext(ctx, run)
+	if err != nil {
+		return nil, err
+	}
+	if sessionSummary != "" {
+		promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: sessionSummary})
+	}
+	knowledgeContext, err := w.knowledgeContext(ctx, run, currentText)
+	if err != nil {
+		return nil, err
+	}
+	if knowledgeContext != "" {
+		promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: knowledgeContext})
+	}
 	mcpManifest, err := w.mcpToolManifest(ctx, run)
 	if err != nil {
 		return nil, err
@@ -540,6 +556,63 @@ func (w *Worker) agentInstanceVersionInstructions(ctx context.Context, run *db.R
 		return "", err
 	}
 	return strings.TrimSpace(version.SystemInstructions), nil
+}
+
+func (w *Worker) sessionSummaryContext(ctx context.Context, run *db.Run) (string, error) {
+	summary, err := w.store.SessionSummary(ctx, run.CustomerID, run.SessionID)
+	if err != nil || summary == nil || strings.TrimSpace(summary.Summary) == "" {
+		return "", nil
+	}
+	return "Durable session summary:\n" + strings.TrimSpace(summary.Summary), nil
+}
+
+func (w *Worker) knowledgeContext(ctx context.Context, run *db.Run, query string) (string, error) {
+	chunks, err := w.store.SearchKnowledgeText(ctx, run.CustomerID, query, 5)
+	if err != nil || len(chunks) == 0 {
+		return "", err
+	}
+	var lines []string
+	for _, chunk := range chunks {
+		if text := strings.TrimSpace(chunk.Content); text != "" {
+			lines = append(lines, "- "+text)
+		}
+	}
+	if len(lines) == 0 {
+		return "", nil
+	}
+	return "Relevant customer knowledge:\n" + strings.Join(lines, "\n"), nil
+}
+
+func (w *Worker) updateSessionSummary(ctx context.Context, run *db.Run, assistantText string) error {
+	history, err := w.store.RecentMessages(ctx, run.CustomerID, run.SessionID, 12)
+	if err != nil {
+		return err
+	}
+	var lines []string
+	for _, msg := range history {
+		text := trimForSummary(messageText(msg.Content))
+		if text != "" {
+			lines = append(lines, msg.Role+": "+text)
+		}
+	}
+	if text := trimForSummary(assistantText); text != "" {
+		lines = append(lines, "assistant: "+text)
+	}
+	if len(lines) == 0 {
+		return nil
+	}
+	if len(lines) > 10 {
+		lines = lines[len(lines)-10:]
+	}
+	return w.store.UpsertSessionSummary(ctx, run.CustomerID, run.SessionID, run.ID, strings.Join(lines, "\n"), map[string]any{"strategy": "recent_message_rollup"})
+}
+
+func trimForSummary(text string) string {
+	text = strings.TrimSpace(text)
+	if len(text) > 240 {
+		return text[:240]
+	}
+	return text
 }
 
 func (w *Worker) modelConfigForRun(ctx context.Context, run *db.Run) (providers.ModelConfig, error) {
@@ -1210,6 +1283,7 @@ func (w *Worker) processArtifacts(ctx context.Context, run *db.Run) ([]string, e
 		if err := w.store.Checkpoint(ctx, run.ID, "artifacts_processed", map[string]any{"representations": len(summaries)}); err != nil {
 			return nil, err
 		}
+		w.enqueueAsyncObservability(ctx, run, "checkpoint.artifacts_processed", map[string]any{"representations": summaries})
 	}
 	return summaries, nil
 }

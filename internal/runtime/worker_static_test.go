@@ -55,6 +55,9 @@ func TestWorkerAppliesVersionRuntimeConfig(t *testing.T) {
 		"WithAsyncWriter",
 		"enqueueAsyncObservability",
 		"EnforceRunStartQuota",
+		"sessionSummaryContext",
+		"knowledgeContext",
+		"updateSessionSummary",
 		"policyConfigInstructions",
 	} {
 		if !strings.Contains(src, want) {

@@ -269,7 +269,7 @@ func (s *Store) EnforceBackgroundQuota(ctx context.Context, customerID, agentIns
 		FROM runs
 		WHERE customer_id=$1
 		AND agent_instance_id=$2
-		AND request_id LIKE '%:background'
+		AND run_mode='background'
 		AND state IN ('queued','leased','running','running_workflow','awaiting_user')`, customerID, agentInstanceID).Scan(&count)
 	if err != nil {
 		return err

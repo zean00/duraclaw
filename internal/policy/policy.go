@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"duraclaw/internal/db"
@@ -204,7 +205,64 @@ func ruleMatches(rule db.PolicyRule, pc Context) bool {
 		needle := strings.ToLower(fmt.Sprint(raw["value"]))
 		return needle != "" && strings.Contains(strings.ToLower(fmt.Sprint(valueAt(pc, key))), needle)
 	}
+	if raw, ok := condition["prefix"].(map[string]any); ok {
+		key, _ := raw["key"].(string)
+		return strings.HasPrefix(fmt.Sprint(valueAt(pc, key)), fmt.Sprint(raw["value"]))
+	}
+	if raw, ok := condition["suffix"].(map[string]any); ok {
+		key, _ := raw["key"].(string)
+		return strings.HasSuffix(fmt.Sprint(valueAt(pc, key)), fmt.Sprint(raw["value"]))
+	}
+	if raw, ok := condition["in"].(map[string]any); ok {
+		key, _ := raw["key"].(string)
+		value := fmt.Sprint(valueAt(pc, key))
+		if list, ok := raw["values"].([]any); ok {
+			for _, candidate := range list {
+				if value == fmt.Sprint(candidate) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	if raw, ok := condition["matches"].(map[string]any); ok {
+		key, _ := raw["key"].(string)
+		pattern, _ := raw["pattern"].(string)
+		if pattern == "" {
+			return false
+		}
+		matched, err := regexp.MatchString(pattern, fmt.Sprint(valueAt(pc, key)))
+		return err == nil && matched
+	}
+	if raw, ok := condition["all"].([]any); ok {
+		for _, item := range raw {
+			if !conditionMapMatches(item, pc) {
+				return false
+			}
+		}
+		return true
+	}
+	if raw, ok := condition["any"].([]any); ok {
+		for _, item := range raw {
+			if conditionMapMatches(item, pc) {
+				return true
+			}
+		}
+		return false
+	}
+	if raw, ok := condition["not"]; ok {
+		return !conditionMapMatches(raw, pc)
+	}
 	return true
+}
+
+func conditionMapMatches(raw any, pc Context) bool {
+	condition, ok := raw.(map[string]any)
+	if !ok {
+		return false
+	}
+	b, _ := json.Marshal(condition)
+	return ruleMatches(db.PolicyRule{Condition: b}, pc)
 }
 
 func valueAt(pc Context, key string) any {

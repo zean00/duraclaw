@@ -185,6 +185,10 @@ func (s *fakeWorkflowStore) ListKnowledgeChunks(context.Context, string, int) ([
 	return s.knowledge, nil
 }
 
+func (s *fakeWorkflowStore) SearchKnowledgeText(context.Context, string, string, int) ([]db.KnowledgeChunk, error) {
+	return nil, nil
+}
+
 func (s *fakeWorkflowStore) ArtifactsForRun(context.Context, string) ([]db.Artifact, error) {
 	return s.artifacts, nil
 }
@@ -222,7 +226,19 @@ func (s *fakeWorkflowStore) CreateRun(context.Context, db.ACPContext, any) (*db.
 	return &db.Run{ID: "run-background"}, nil
 }
 
+func (s *fakeWorkflowStore) CreateBackgroundRun(context.Context, db.ACPContext, any, any) (*db.Run, error) {
+	return &db.Run{ID: "run-background"}, nil
+}
+
 func (s *fakeWorkflowStore) EnforceBackgroundQuota(context.Context, string, string) error {
+	return nil
+}
+
+func (s *fakeWorkflowStore) MarkRunBackground(context.Context, string) error {
+	return nil
+}
+
+func (s *fakeWorkflowStore) SetRunProgress(context.Context, string, any) error {
 	return nil
 }
 

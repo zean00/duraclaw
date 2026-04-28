@@ -111,6 +111,7 @@ go test ./internal/db -run TestMigrateAgainstPostgres
 - `PATCH /admin/scheduler/jobs/{job_id}`
 - `GET /admin/observability/events?customer_id={customer_id}`
 - `GET /admin/outbound-intents?customer_id={customer_id}`
+- `GET /admin/background-runs?customer_id={customer_id}`
 - `POST /admin/broadcasts`
 - `GET /admin/broadcasts?customer_id={customer_id}`
 - `GET /admin/broadcasts/{broadcast_id}/targets?customer_id={customer_id}`
@@ -124,6 +125,7 @@ go test ./internal/db -run TestMigrateAgainstPostgres
 - `GET /acp/artifacts/{artifact_id}/representations`
 - `GET /acp/runs/{run_id}`
 - `GET /acp/runs/{run_id}/trace`
+- `GET /acp/runs/{run_id}/background-status`
 - `GET /acp/runs/{run_id}/events`
 - `POST /acp/runs/{run_id}/resume`
 - `POST /acp/runs/{run_id}/cancel`
@@ -221,6 +223,7 @@ The persistence layer also includes:
 - Outbound intents queued through `async_outbox` for Nexus-owned delivery.
 - Broadcast creation creates per-target outbound intents for Nexus-owned delivery.
 - Recent session message history used by the worker when composing model context.
+- Durable session summaries and text-matched customer knowledge are included in model context.
 - Latest session transfer note included in model context after reassignment.
 - Context compaction for bounded prompt history.
 - Artifact attachment policy checks for size, allowed media types, and raw payload metadata fields.
@@ -242,6 +245,9 @@ The persistence layer also includes:
 - Agent instance version `tool_config`, `mcp_config`, `workflow_config`, and `policy_config` are validated and applied during run execution, including model-loop and per-turn tool-call limits.
 - Database-managed runtime limits hard-fail run, workflow, and background-job creation when configured quotas are exceeded.
 - Async write jobs provide a bounded non-critical sidecar pipeline with degrade/drop metrics for oversized debug and observability payloads.
+- Checkpoints carry trace metadata when Nexus supplies `X-Trace-ID`; background runs expose status APIs and progress storage.
+- MCP supports SSE request negotiation and opt-in long-lived stdio JSON-RPC clients.
+- Policy conditions support composite `all`/`any`/`not`, membership, prefix/suffix, and regex matching.
 - Artifact processors include a generic HTTP processor adapter for OCR/transcription/document extraction services.
 - Internal model-visible control tools: `duraclaw.run_workflow` and `duraclaw.ask_user`.
 - Optional admin bearer-token protection.
