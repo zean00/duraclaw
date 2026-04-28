@@ -2,6 +2,7 @@ package main
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"duraclaw/internal/artifacts"
@@ -94,6 +95,19 @@ func TestBuildArtifactRegistryAddsHTTPProcessor(t *testing.T) {
 	})
 	processor, ok := registry.ProcessorFor(artifacts.Artifact{Modality: "image", MediaType: "image/png"})
 	if !ok || processor.Name() != "ocr" {
+		t.Fatalf("processor=%#v ok=%v", processor, ok)
+	}
+}
+
+func TestBuildArtifactRegistryAddsProviderProcessor(t *testing.T) {
+	registry := buildArtifactRegistry(config{
+		ArtifactProcessorProvider:   "openrouter",
+		ArtifactProcessorModel:      "openai/gpt-4.1-mini",
+		ArtifactProcessorAPIKey:     "key",
+		ArtifactProcessorModalities: []string{"image"},
+	})
+	processor, ok := registry.ProcessorFor(artifacts.Artifact{Modality: "image", MediaType: "image/png", StorageRef: "https://example.test/image.png"})
+	if !ok || !strings.Contains(processor.Name(), "openrouter") {
 		t.Fatalf("processor=%#v ok=%v", processor, ok)
 	}
 }

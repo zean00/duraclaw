@@ -7,7 +7,20 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"duraclaw/internal/providers"
 )
+
+type fakeLLMProvider struct {
+	messages []providers.Message
+}
+
+func (p *fakeLLMProvider) GetDefaultModel() string { return "fake/model" }
+
+func (p *fakeLLMProvider) Chat(_ context.Context, messages []providers.Message, _ []providers.ToolDefinition, _ string, _ map[string]any) (*providers.LLMResponse, error) {
+	p.messages = messages
+	return &providers.LLMResponse{Content: "extracted text", FinishReason: "stop"}, nil
+}
 
 func TestRegistrySelectsProcessor(t *testing.T) {
 	reg := NewRegistry(MockProcessor{})
@@ -34,6 +47,71 @@ func TestProviderAdapterFiltersByModalityAndMediaType(t *testing.T) {
 	}
 	if p.CanProcess(Artifact{Modality: "audio", MediaType: "audio/wav"}) {
 		t.Fatalf("unexpected adapter match")
+	}
+}
+
+func TestProviderProcessorProcessesImage(t *testing.T) {
+	provider := &fakeLLMProvider{}
+	processor := ProviderProcessor{Provider: provider, Model: "vision", Modalities: map[string]bool{"image": true}}
+	reps, err := processor.Process(context.Background(), ProcessorContext{}, Artifact{
+		ID: "img-1", Modality: "image", MediaType: "image/png", StorageRef: "https://example.test/image.png",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reps) != 1 || reps[0].Type != "vision_summary" || reps[0].Summary != "extracted text" {
+		t.Fatalf("reps=%#v", reps)
+	}
+	if len(provider.messages) != 1 || len(provider.messages[0].ContentParts) != 2 || provider.messages[0].ContentParts[1].ImageURL == nil {
+		t.Fatalf("messages=%#v", provider.messages)
+	}
+}
+
+func TestProviderProcessorProcessesAudioTranscript(t *testing.T) {
+	provider := &fakeLLMProvider{}
+	processor := ProviderProcessor{Provider: provider, Model: "audio"}
+	reps, err := processor.Process(context.Background(), ProcessorContext{}, Artifact{
+		ID: "aud-1", Modality: "audio", MediaType: "audio/mpeg", Metadata: map[string]any{"base64": "abc", "format": "mp3"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reps) != 1 || reps[0].Type != "transcript" {
+		t.Fatalf("reps=%#v", reps)
+	}
+	if provider.messages[0].ContentParts[1].InputAudio == nil {
+		t.Fatalf("messages=%#v", provider.messages)
+	}
+}
+
+func TestProviderProcessorRejectsDocumentURLAsFileData(t *testing.T) {
+	provider := &fakeLLMProvider{}
+	processor := ProviderProcessor{Provider: provider, Model: "document"}
+	_, err := processor.Process(context.Background(), ProcessorContext{}, Artifact{
+		ID: "doc-1", Modality: "document", MediaType: "application/pdf", StorageRef: "https://example.test/doc.pdf",
+	})
+	if err == nil || !strings.Contains(err.Error(), "requires inline") {
+		t.Fatalf("err=%v", err)
+	}
+	if len(provider.messages) != 0 {
+		t.Fatalf("provider should not be called: %#v", provider.messages)
+	}
+}
+
+func TestProviderProcessorProcessesDocumentDataURI(t *testing.T) {
+	provider := &fakeLLMProvider{}
+	processor := ProviderProcessor{Provider: provider, Model: "document"}
+	reps, err := processor.Process(context.Background(), ProcessorContext{}, Artifact{
+		ID: "doc-1", Modality: "document", MediaType: "application/pdf", StorageRef: "data:application/pdf;base64,abc",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reps) != 1 || reps[0].Type != "document_text" {
+		t.Fatalf("reps=%#v", reps)
+	}
+	if provider.messages[0].ContentParts[1].File == nil || provider.messages[0].ContentParts[1].File.FileData == "" {
+		t.Fatalf("messages=%#v", provider.messages)
 	}
 }
 

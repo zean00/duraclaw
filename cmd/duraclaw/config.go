@@ -34,6 +34,10 @@ type config struct {
 	OTelExportInterval          time.Duration
 	OTelInsecure                bool
 	MCPConfig                   json.RawMessage
+	ArtifactProcessorProvider   string
+	ArtifactProcessorModel      string
+	ArtifactProcessorBaseURL    string
+	ArtifactProcessorAPIKey     string
 	ArtifactProcessorURL        string
 	ArtifactProcessorToken      string
 	ArtifactProcessorName       string
@@ -78,6 +82,10 @@ func loadConfig() (config, error) {
 		OTelExportInterval:          time.Duration(envInt("DURACLAW_OTEL_EXPORT_INTERVAL_SECONDS", 10)) * time.Second,
 		OTelInsecure:                envBool("DURACLAW_OTEL_INSECURE", false),
 		MCPConfig:                   json.RawMessage(os.Getenv("DURACLAW_MCP_CONFIG")),
+		ArtifactProcessorProvider:   os.Getenv("DURACLAW_ARTIFACT_PROCESSOR_PROVIDER"),
+		ArtifactProcessorModel:      os.Getenv("DURACLAW_ARTIFACT_PROCESSOR_MODEL"),
+		ArtifactProcessorBaseURL:    os.Getenv("DURACLAW_ARTIFACT_PROCESSOR_BASE_URL"),
+		ArtifactProcessorAPIKey:     os.Getenv("DURACLAW_ARTIFACT_PROCESSOR_API_KEY"),
 		ArtifactProcessorURL:        os.Getenv("DURACLAW_ARTIFACT_PROCESSOR_URL"),
 		ArtifactProcessorToken:      os.Getenv("DURACLAW_ARTIFACT_PROCESSOR_TOKEN"),
 		ArtifactProcessorName:       envDefault("DURACLAW_ARTIFACT_PROCESSOR_NAME", "http_processor"),

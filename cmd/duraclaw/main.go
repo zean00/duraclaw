@@ -193,6 +193,9 @@ func buildMCPManager(cfg config) *mcp.Manager {
 
 func buildArtifactRegistry(cfg config) *artifacts.Registry {
 	registry := artifacts.NewRegistry()
+	if processor := buildProviderArtifactProcessor(cfg); processor != nil {
+		registry.Register(processor)
+	}
 	if strings.TrimSpace(cfg.ArtifactProcessorURL) != "" {
 		registry.Register(artifacts.HTTPProcessor{
 			NameValue:          cfg.ArtifactProcessorName,
@@ -210,6 +213,44 @@ func buildArtifactRegistry(cfg config) *artifacts.Registry {
 	}
 	registry.Register(artifacts.MockProcessor{})
 	return registry
+}
+
+func buildProviderArtifactProcessor(cfg config) artifacts.Processor {
+	providerName := providers.NormalizeProvider(cfg.ArtifactProcessorProvider)
+	if providerName == "" {
+		return nil
+	}
+	model := cfg.ArtifactProcessorModel
+	if strings.TrimSpace(model) == "" {
+		model = cfg.ProviderModel
+	}
+	apiKey := cfg.ArtifactProcessorAPIKey
+	if strings.TrimSpace(apiKey) == "" {
+		apiKey = cfg.ProviderAPIKey
+	}
+	baseURL := cfg.ArtifactProcessorBaseURL
+	if strings.TrimSpace(baseURL) == "" {
+		baseURL = cfg.ProviderBaseURL
+	}
+	var provider providers.LLMProvider
+	switch providerName {
+	case "openai":
+		provider = providers.OpenAIProvider{BaseURL: baseURL, APIKey: apiKey, DefaultModel: model}
+	case "openrouter":
+		provider = providers.OpenRouterProvider{BaseURL: baseURL, APIKey: apiKey, DefaultModel: model, Referer: cfg.ProviderReferer, Title: cfg.ProviderTitle}
+	case "openai-compatible":
+		provider = providers.OpenAICompatibleProvider{BaseURL: baseURL, APIKey: apiKey, DefaultModel: model}
+	default:
+		return nil
+	}
+	return artifacts.ProviderProcessor{
+		NameValue:       "provider_" + providerName + "_artifact_processor",
+		Provider:        provider,
+		Model:           model,
+		Modalities:      stringSet(cfg.ArtifactProcessorModalities),
+		MediaTypes:      stringSet(cfg.ArtifactProcessorMediaTypes),
+		MaxSummaryBytes: cfg.ArtifactProcessorMaxBytes,
+	}
 }
 
 func buildEmbeddingProvider(cfg config) embeddings.Provider {

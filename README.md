@@ -95,6 +95,25 @@ DURACLAW_ARTIFACT_PROCESSOR_RAW_MEDIA_ALLOWED=false
 DURACLAW_ARTIFACT_PROCESSOR_MAX_RETRIES=0
 ```
 
+To use a built-in provider-backed processor through OpenAI, OpenRouter, or an OpenAI-compatible/local multimodal endpoint:
+
+```bash
+DURACLAW_ARTIFACT_PROCESSOR_PROVIDER=openai
+DURACLAW_ARTIFACT_PROCESSOR_API_KEY=...
+DURACLAW_ARTIFACT_PROCESSOR_MODEL=gpt-4.1-mini
+DURACLAW_ARTIFACT_PROCESSOR_MODALITIES=audio,image,document,video
+```
+
+For OpenRouter:
+
+```bash
+DURACLAW_ARTIFACT_PROCESSOR_PROVIDER=openrouter
+DURACLAW_ARTIFACT_PROCESSOR_API_KEY=...
+DURACLAW_ARTIFACT_PROCESSOR_MODEL=openai/gpt-4.1-mini
+```
+
+Provider processors use multimodal chat input parts and persist standard artifact representations such as `vision_summary`, `document_text`, `transcript`, and `video_summary`.
+
 Admin endpoints are open by default for local development. Set this in shared or production environments:
 
 ```bash
