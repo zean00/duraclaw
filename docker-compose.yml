@@ -1,0 +1,26 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: duraclaw
+      POSTGRES_PASSWORD: duraclaw
+      POSTGRES_DB: duraclaw
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U duraclaw -d duraclaw"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  duraclaw:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://duraclaw:duraclaw@postgres:5432/duraclaw?sslmode=disable
+      ADDR: :8080
+      DURACLAW_PROVIDER: mock
+    ports:
+      - "8080:8080"

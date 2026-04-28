@@ -1,0 +1,52 @@
+package scheduler
+
+import (
+	"context"
+	"encoding/json"
+	"testing"
+	"time"
+
+	"duraclaw/internal/db"
+)
+
+type fakeSchedulerStore struct {
+	jobs      []db.SchedulerJob
+	runCtx    db.ACPContext
+	completed bool
+}
+
+func (s *fakeSchedulerStore) ClaimDueSchedulerJobs(context.Context, string, int, time.Duration) ([]db.SchedulerJob, error) {
+	return s.jobs, nil
+}
+
+func (s *fakeSchedulerStore) CompleteSchedulerJob(_ context.Context, _ string, _, _ time.Time) error {
+	s.completed = true
+	return nil
+}
+
+func (s *fakeSchedulerStore) CreateRun(_ context.Context, c db.ACPContext, _ any) (*db.Run, error) {
+	s.runCtx = c
+	return &db.Run{ID: "run-1"}, nil
+}
+
+func TestServiceCreatesRunWithDeterministicIdempotencyKey(t *testing.T) {
+	payload, _ := json.Marshal(map[string]any{
+		"user_id": "u", "agent_instance_id": "a", "session_id": "s",
+		"input": map[string]any{"text": "tick"},
+	})
+	fireAt := time.Date(2026, 4, 28, 10, 0, 0, 0, time.UTC)
+	store := &fakeSchedulerStore{jobs: []db.SchedulerJob{{
+		ID: "job-1", CustomerID: "c", Schedule: "*/5 * * * *", NextRunAt: fireAt, Payload: payload,
+	}}}
+	count, err := NewService(store, "owner").RunOnce(context.Background(), fireAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || !store.completed {
+		t.Fatalf("count=%d completed=%v", count, store.completed)
+	}
+	wantKey := IdempotencyKey("job-1", fireAt)
+	if store.runCtx.IdempotencyKey != wantKey || store.runCtx.CustomerID != "c" || store.runCtx.UserID != "u" {
+		t.Fatalf("run ctx=%#v want key %s", store.runCtx, wantKey)
+	}
+}

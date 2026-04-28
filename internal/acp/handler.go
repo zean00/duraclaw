@@ -1,0 +1,1211 @@
+package acp
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"duraclaw/internal/db"
+	"duraclaw/internal/knowledge"
+	"duraclaw/internal/observability"
+	"duraclaw/internal/policy"
+	"duraclaw/internal/scheduler"
+	"duraclaw/internal/workflow"
+)
+
+const maxJSONBodyBytes = 2 << 20
+
+type Handler struct {
+	store          *db.Store
+	workflow       *workflow.Executor
+	artifactPolicy policy.ArtifactRule
+	adminToken     string
+	acpToken       string
+	counters       *observability.Counters
+	logger         *slog.Logger
+}
+
+func NewHandler(store *db.Store) *Handler {
+	return &Handler{
+		store:    store,
+		workflow: workflow.NewExecutor(store),
+		counters: observability.NewCounters(),
+		logger:   observability.Logger(),
+		artifactPolicy: policy.ArtifactRule{
+			MaxSizeBytes: 100 << 20,
+			MediaTypes: map[string]bool{
+				"audio/mpeg": true, "audio/ogg": true, "audio/wav": true,
+				"image/jpeg": true, "image/png": true, "image/webp": true,
+				"application/pdf": true, "text/plain": true,
+			},
+		},
+	}
+}
+
+func (h *Handler) WithAdminToken(token string) *Handler {
+	h.adminToken = token
+	return h
+}
+
+func (h *Handler) WithACPToken(token string) *Handler {
+	h.acpToken = token
+	return h
+}
+
+func (h *Handler) WithCounters(counters *observability.Counters) *Handler {
+	h.counters = counters
+	return h
+}
+
+func (h *Handler) WithLogger(logger *slog.Logger) *Handler {
+	if logger != nil {
+		h.logger = logger
+	}
+	return h
+}
+
+func (h *Handler) Routes() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", h.healthz)
+	mux.HandleFunc("GET /readyz", h.readyz)
+	mux.HandleFunc("GET /metrics", h.metrics)
+	mux.HandleFunc("POST /admin/workflows", h.requireAdmin(h.createWorkflow))
+	mux.HandleFunc("GET /admin/workflows", h.requireAdmin(h.listWorkflows))
+	mux.HandleFunc("GET /admin/workflows/{workflow_id}/nodes", h.requireAdmin(h.listWorkflowNodes))
+	mux.HandleFunc("PUT /admin/workflows/{workflow_id}/nodes/{node_key}", h.requireAdmin(h.upsertWorkflowNode))
+	mux.HandleFunc("GET /admin/workflows/{workflow_id}/edges", h.requireAdmin(h.listWorkflowEdges))
+	mux.HandleFunc("PUT /admin/workflows/{workflow_id}/edges", h.requireAdmin(h.upsertWorkflowEdge))
+	mux.HandleFunc("POST /admin/workflows/{workflow_id}/assignments", h.requireAdmin(h.assignWorkflow))
+	mux.HandleFunc("PUT /admin/agent-policies", h.requireAdmin(h.upsertAgentPolicy))
+	mux.HandleFunc("GET /admin/agent-policies", h.requireAdmin(h.getAgentPolicy))
+	mux.HandleFunc("POST /admin/knowledge/text", h.requireAdmin(h.ingestKnowledgeText))
+	mux.HandleFunc("GET /admin/knowledge/documents", h.requireAdmin(h.listKnowledgeDocuments))
+	mux.HandleFunc("GET /admin/knowledge/documents/{document_id}/chunks", h.requireAdmin(h.listKnowledgeChunks))
+	mux.HandleFunc("DELETE /admin/knowledge/documents/{document_id}", h.requireAdmin(h.deleteKnowledgeDocument))
+	mux.HandleFunc("POST /admin/memories", h.requireAdmin(h.createMemory))
+	mux.HandleFunc("GET /admin/memories", h.requireAdmin(h.listMemories))
+	mux.HandleFunc("PUT /admin/memories/{memory_id}", h.requireAdmin(h.updateMemory))
+	mux.HandleFunc("DELETE /admin/memories/{memory_id}", h.requireAdmin(h.deleteMemory))
+	mux.HandleFunc("POST /admin/scheduler/jobs", h.requireAdmin(h.createSchedulerJob))
+	mux.HandleFunc("GET /admin/scheduler/jobs", h.requireAdmin(h.listSchedulerJobs))
+	mux.HandleFunc("PATCH /admin/scheduler/jobs/{job_id}", h.requireAdmin(h.updateSchedulerJob))
+	mux.HandleFunc("GET /admin/observability/events", h.requireAdmin(h.listObservabilityEvents))
+	mux.HandleFunc("GET /admin/outbound-intents", h.requireAdmin(h.listOutboundIntents))
+	mux.HandleFunc("POST /admin/broadcasts", h.requireAdmin(h.createBroadcast))
+	mux.HandleFunc("GET /admin/broadcasts", h.requireAdmin(h.listBroadcasts))
+	mux.HandleFunc("GET /admin/broadcasts/{broadcast_id}/targets", h.requireAdmin(h.listBroadcastTargets))
+	mux.HandleFunc("POST /admin/broadcasts/{broadcast_id}/cancel", h.requireAdmin(h.cancelBroadcast))
+	mux.HandleFunc("POST /admin/retention/run", h.requireAdmin(h.runRetention))
+	mux.HandleFunc("GET /acp/agents", h.requireACP(h.agents))
+	mux.HandleFunc("PUT /acp/sessions/{session_id}", h.requireACP(h.ensureSession))
+	mux.HandleFunc("POST /acp/runs", h.requireACP(h.startRun))
+	mux.HandleFunc("POST /acp/runs/{run_id}/artifacts", h.requireACP(h.attachArtifacts))
+	mux.HandleFunc("GET /acp/runs/{run_id}/artifacts", h.requireACP(h.listRunArtifacts))
+	mux.HandleFunc("GET /acp/artifacts/{artifact_id}/representations", h.requireACP(h.listArtifactRepresentations))
+	mux.HandleFunc("GET /acp/runs/{run_id}", h.requireACP(h.runStatus))
+	mux.HandleFunc("GET /acp/runs/{run_id}/trace", h.requireACP(h.runTrace))
+	mux.HandleFunc("GET /acp/runs/{run_id}/events", h.requireACP(h.events))
+	mux.HandleFunc("POST /acp/runs/{run_id}/resume", h.requireACP(h.resume))
+	mux.HandleFunc("POST /acp/runs/{run_id}/cancel", h.requireACP(h.cancel))
+	mux.HandleFunc("POST /acp/outbound-intents/{intent_id}/status", h.requireACP(h.updateOutboundIntentStatus))
+	mux.HandleFunc("GET /acp/sessions/{session_id}/runs/latest", h.requireACP(h.latest))
+	mux.HandleFunc("GET /acp/sessions/{session_id}/runs/by-idempotency-key/{key}", h.requireACP(h.byKey))
+	return h.accessLog(h.withRequestHeaders(mux))
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+	bytes  int
+}
+
+func (r *statusRecorder) WriteHeader(status int) {
+	r.status = status
+	r.ResponseWriter.WriteHeader(status)
+}
+
+func (r *statusRecorder) Write(b []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	n, err := r.ResponseWriter.Write(b)
+	r.bytes += n
+	return n, err
+}
+
+func (h *Handler) accessLog(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w}
+		next.ServeHTTP(rec, r)
+		if rec.status == 0 {
+			rec.status = http.StatusOK
+		}
+		if h.counters != nil {
+			h.counters.Inc(fmt.Sprintf("http_status_%d", rec.status))
+		}
+		if h.logger != nil {
+			h.logger.InfoContext(r.Context(), "http request",
+				"method", r.Method,
+				"path", r.URL.Path,
+				"status", rec.status,
+				"bytes", rec.bytes,
+				"duration_ms", time.Since(start).Milliseconds(),
+				"request_id", r.Header.Get("X-Request-ID"),
+			)
+		}
+	})
+}
+
+func (h *Handler) metrics(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+	if h.counters == nil {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	_, _ = w.Write([]byte(h.counters.PrometheusText()))
+}
+
+func (h *Handler) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if h.adminToken != "" {
+			want := "Bearer " + h.adminToken
+			if r.Header.Get("Authorization") != want {
+				writeError(w, http.StatusUnauthorized, fmt.Errorf("admin authorization required"))
+				return
+			}
+		}
+		next(w, r)
+	}
+}
+
+func (h *Handler) requireACP(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if h.acpToken != "" {
+			want := "Bearer " + h.acpToken
+			if r.Header.Get("Authorization") != want {
+				writeError(w, http.StatusUnauthorized, fmt.Errorf("acp authorization required"))
+				return
+			}
+		}
+		next(w, r)
+	}
+}
+
+func (h *Handler) withRequestHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if reqID := r.Header.Get("X-Request-ID"); reqID != "" {
+			w.Header().Set("X-Request-ID", reqID)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+}
+
+func (h *Handler) readyz(w http.ResponseWriter, r *http.Request) {
+	if h.store == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "database": "not_configured"})
+		return
+	}
+	if err := h.store.Ping(r.Context()); err != nil {
+		writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "database": "ok"})
+}
+
+func (h *Handler) createWorkflow(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		Name         string         `json:"name"`
+		Version      int            `json:"version"`
+		Description  string         `json:"description"`
+		WhenToUse    string         `json:"when_to_use"`
+		InputSchema  map[string]any `json:"input_schema"`
+		OutputSchema map[string]any `json:"output_schema"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if payload.Name == "" || payload.Version <= 0 {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("name and positive version are required"))
+		return
+	}
+	id, err := h.store.CreateWorkflowDefinition(r.Context(), payload.Name, payload.Version, payload.Description, payload.WhenToUse, payload.InputSchema, payload.OutputSchema)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"workflow_id": id})
+}
+
+func (h *Handler) listWorkflows(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	defs, err := h.store.ListWorkflowDefinitions(r.Context(), limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"workflows": defs})
+}
+
+func (h *Handler) assignWorkflow(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		CustomerID      string `json:"customer_id"`
+		AgentInstanceID string `json:"agent_instance_id"`
+		Enabled         *bool  `json:"enabled"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if payload.CustomerID == "" || payload.AgentInstanceID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id and agent_instance_id are required"))
+		return
+	}
+	enabled := true
+	if payload.Enabled != nil {
+		enabled = *payload.Enabled
+	}
+	if err := h.store.AssignWorkflow(r.Context(), r.PathValue("workflow_id"), payload.CustomerID, payload.AgentInstanceID, enabled); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"workflow_id": r.PathValue("workflow_id"), "enabled": enabled})
+}
+
+func (h *Handler) upsertWorkflowNode(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		NodeType      string         `json:"node_type"`
+		Config        map[string]any `json:"config"`
+		RetryPolicy   map[string]any `json:"retry_policy"`
+		TimeoutPolicy map[string]any `json:"timeout_policy"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if r.PathValue("workflow_id") == "" || r.PathValue("node_key") == "" || payload.NodeType == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("workflow_id, node_key, and node_type are required"))
+		return
+	}
+	if payload.Config == nil {
+		payload.Config = map[string]any{}
+	}
+	if payload.RetryPolicy == nil {
+		payload.RetryPolicy = map[string]any{}
+	}
+	if payload.TimeoutPolicy == nil {
+		payload.TimeoutPolicy = map[string]any{}
+	}
+	if err := h.store.UpsertWorkflowNode(r.Context(), r.PathValue("workflow_id"), r.PathValue("node_key"), payload.NodeType, payload.Config, payload.RetryPolicy, payload.TimeoutPolicy); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"workflow_id": r.PathValue("workflow_id"), "node_key": r.PathValue("node_key")})
+}
+
+func (h *Handler) listWorkflowNodes(w http.ResponseWriter, r *http.Request) {
+	if r.PathValue("workflow_id") == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("workflow_id is required"))
+		return
+	}
+	nodes, err := h.store.WorkflowNodes(r.Context(), r.PathValue("workflow_id"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"nodes": nodes})
+}
+
+func (h *Handler) upsertWorkflowEdge(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		FromNodeKey string         `json:"from_node_key"`
+		ToNodeKey   string         `json:"to_node_key"`
+		Condition   map[string]any `json:"condition"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if r.PathValue("workflow_id") == "" || payload.FromNodeKey == "" || payload.ToNodeKey == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("workflow_id, from_node_key, and to_node_key are required"))
+		return
+	}
+	if payload.Condition == nil {
+		payload.Condition = map[string]any{}
+	}
+	if err := h.store.UpsertWorkflowEdge(r.Context(), r.PathValue("workflow_id"), payload.FromNodeKey, payload.ToNodeKey, payload.Condition); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"workflow_id": r.PathValue("workflow_id"), "from_node_key": payload.FromNodeKey, "to_node_key": payload.ToNodeKey})
+}
+
+func (h *Handler) listWorkflowEdges(w http.ResponseWriter, r *http.Request) {
+	if r.PathValue("workflow_id") == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("workflow_id is required"))
+		return
+	}
+	edges, err := h.store.WorkflowEdges(r.Context(), r.PathValue("workflow_id"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"edges": edges})
+}
+
+func (h *Handler) upsertAgentPolicy(w http.ResponseWriter, r *http.Request) {
+	var payload db.AgentPolicy
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if payload.CustomerID == "" || payload.AgentInstanceID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id and agent_instance_id are required"))
+		return
+	}
+	if payload.ArtifactMaxSizeBytes <= 0 {
+		payload.ArtifactMaxSizeBytes = h.artifactPolicy.MaxSizeBytes
+	}
+	if err := h.store.UpsertAgentPolicy(r.Context(), payload); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, payload)
+}
+
+func (h *Handler) getAgentPolicy(w http.ResponseWriter, r *http.Request) {
+	customerID := r.URL.Query().Get("customer_id")
+	agentInstanceID := r.URL.Query().Get("agent_instance_id")
+	if customerID == "" || agentInstanceID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id and agent_instance_id are required"))
+		return
+	}
+	policy, err := h.store.AgentPolicy(r.Context(), customerID, agentInstanceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if policy == nil {
+		writeError(w, http.StatusNotFound, fmt.Errorf("agent policy not found"))
+		return
+	}
+	writeJSON(w, http.StatusOK, policy)
+}
+
+func (h *Handler) ingestKnowledgeText(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		CustomerID string         `json:"customer_id"`
+		Title      string         `json:"title"`
+		SourceRef  string         `json:"source_ref"`
+		Text       string         `json:"text"`
+		Metadata   map[string]any `json:"metadata"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if payload.CustomerID == "" || strings.TrimSpace(payload.Text) == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id and text are required"))
+		return
+	}
+	docID, chunks, err := knowledge.NewIngester(h.store).IngestText(r.Context(), payload.CustomerID, payload.Title, payload.SourceRef, payload.Text, payload.Metadata)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"document_id": docID, "chunks": chunks})
+}
+
+func (h *Handler) listKnowledgeDocuments(w http.ResponseWriter, r *http.Request) {
+	customerID := r.URL.Query().Get("customer_id")
+	if customerID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id is required"))
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	documents, err := h.store.ListKnowledgeDocuments(r.Context(), customerID, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"documents": documents})
+}
+
+func (h *Handler) listKnowledgeChunks(w http.ResponseWriter, r *http.Request) {
+	if r.PathValue("document_id") == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("document_id is required"))
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	chunks, err := h.store.ListKnowledgeChunks(r.Context(), r.PathValue("document_id"), limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"chunks": chunks})
+}
+
+func (h *Handler) deleteKnowledgeDocument(w http.ResponseWriter, r *http.Request) {
+	customerID := r.URL.Query().Get("customer_id")
+	if r.PathValue("document_id") == "" || customerID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("document_id and customer_id are required"))
+		return
+	}
+	if err := h.store.DeleteKnowledgeDocument(r.Context(), r.PathValue("document_id"), customerID); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"document_id": r.PathValue("document_id"), "deleted": true})
+}
+
+func (h *Handler) createMemory(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		CustomerID string         `json:"customer_id"`
+		UserID     string         `json:"user_id"`
+		SessionID  string         `json:"session_id"`
+		Type       string         `json:"memory_type"`
+		Content    string         `json:"content"`
+		Metadata   map[string]any `json:"metadata"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if payload.CustomerID == "" || payload.UserID == "" || strings.TrimSpace(payload.Content) == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id, user_id, and content are required"))
+		return
+	}
+	if payload.Type == "" {
+		payload.Type = "note"
+	}
+	id, err := h.store.AddMemory(r.Context(), payload.CustomerID, payload.UserID, payload.SessionID, payload.Type, payload.Content, payload.Metadata)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"memory_id": id})
+}
+
+func (h *Handler) listMemories(w http.ResponseWriter, r *http.Request) {
+	customerID := r.URL.Query().Get("customer_id")
+	userID := r.URL.Query().Get("user_id")
+	if customerID == "" || userID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id and user_id are required"))
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	memories, err := h.store.ListMemories(r.Context(), customerID, userID, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"memories": memories})
+}
+
+func (h *Handler) updateMemory(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		CustomerID string         `json:"customer_id"`
+		UserID     string         `json:"user_id"`
+		Type       string         `json:"memory_type"`
+		Content    string         `json:"content"`
+		Metadata   map[string]any `json:"metadata"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if r.PathValue("memory_id") == "" || payload.CustomerID == "" || payload.UserID == "" || strings.TrimSpace(payload.Content) == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("memory_id, customer_id, user_id, and content are required"))
+		return
+	}
+	if payload.Type == "" {
+		payload.Type = "note"
+	}
+	if err := h.store.UpdateMemory(r.Context(), r.PathValue("memory_id"), payload.CustomerID, payload.UserID, payload.Type, payload.Content, payload.Metadata); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"memory_id": r.PathValue("memory_id"), "updated": true})
+}
+
+func (h *Handler) deleteMemory(w http.ResponseWriter, r *http.Request) {
+	customerID := r.URL.Query().Get("customer_id")
+	userID := r.URL.Query().Get("user_id")
+	if r.PathValue("memory_id") == "" || customerID == "" || userID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("memory_id, customer_id, and user_id are required"))
+		return
+	}
+	if err := h.store.DeleteMemory(r.Context(), r.PathValue("memory_id"), customerID, userID); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"memory_id": r.PathValue("memory_id"), "deleted": true})
+}
+
+func (h *Handler) createSchedulerJob(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		CustomerID      string         `json:"customer_id"`
+		UserID          string         `json:"user_id"`
+		AgentInstanceID string         `json:"agent_instance_id"`
+		SessionID       string         `json:"session_id"`
+		Schedule        string         `json:"schedule"`
+		NextRunAt       time.Time      `json:"next_run_at"`
+		Input           map[string]any `json:"input"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if payload.CustomerID == "" || payload.UserID == "" || payload.AgentInstanceID == "" || payload.SessionID == "" || payload.Schedule == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id, user_id, agent_instance_id, session_id, and schedule are required"))
+		return
+	}
+	if payload.Input == nil {
+		payload.Input = map[string]any{"text": "Scheduled job fired."}
+	}
+	if err := validateRunInput(payload.Input); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if payload.NextRunAt.IsZero() {
+		next, err := scheduler.Next(payload.Schedule, time.Now().UTC())
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		payload.NextRunAt = next
+	} else if _, err := scheduler.Next(payload.Schedule, payload.NextRunAt.Add(-time.Second)); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	job, err := h.store.CreateSchedulerJob(r.Context(), db.SchedulerJobSpec{
+		CustomerID:      payload.CustomerID,
+		UserID:          payload.UserID,
+		AgentInstanceID: payload.AgentInstanceID,
+		SessionID:       payload.SessionID,
+		Schedule:        payload.Schedule,
+		NextRunAt:       payload.NextRunAt,
+		Input:           payload.Input,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, job)
+}
+
+func (h *Handler) listSchedulerJobs(w http.ResponseWriter, r *http.Request) {
+	customerID := r.URL.Query().Get("customer_id")
+	if customerID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id is required"))
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	jobs, err := h.store.ListSchedulerJobs(r.Context(), customerID, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"scheduler_jobs": jobs})
+}
+
+func (h *Handler) updateSchedulerJob(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		CustomerID string `json:"customer_id"`
+		Enabled    *bool  `json:"enabled"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if r.PathValue("job_id") == "" || payload.CustomerID == "" || payload.Enabled == nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("job_id, customer_id, and enabled are required"))
+		return
+	}
+	if err := h.store.SetSchedulerJobEnabled(r.Context(), r.PathValue("job_id"), payload.CustomerID, *payload.Enabled); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"job_id": r.PathValue("job_id"), "enabled": *payload.Enabled})
+}
+
+func (h *Handler) listObservabilityEvents(w http.ResponseWriter, r *http.Request) {
+	customerID := r.URL.Query().Get("customer_id")
+	if customerID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id is required"))
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	events, err := h.store.ListObservabilityEvents(r.Context(), customerID, r.URL.Query().Get("run_id"), limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"events": events})
+}
+
+func (h *Handler) listOutboundIntents(w http.ResponseWriter, r *http.Request) {
+	customerID := r.URL.Query().Get("customer_id")
+	if customerID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id is required"))
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	intents, err := h.store.ListOutboundIntents(r.Context(), customerID, r.URL.Query().Get("status"), limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"outbound_intents": intents})
+}
+
+func (h *Handler) createBroadcast(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		CustomerID string                   `json:"customer_id"`
+		Title      string                   `json:"title"`
+		Payload    map[string]any           `json:"payload"`
+		Targets    []db.BroadcastTargetSpec `json:"targets"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if payload.CustomerID == "" || strings.TrimSpace(payload.Title) == "" || len(payload.Targets) == 0 {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id, title, and targets are required"))
+		return
+	}
+	id, count, err := h.store.CreateBroadcast(r.Context(), payload.CustomerID, payload.Title, payload.Payload, payload.Targets)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"broadcast_id": id, "targets": count})
+}
+
+func (h *Handler) listBroadcasts(w http.ResponseWriter, r *http.Request) {
+	customerID := r.URL.Query().Get("customer_id")
+	if customerID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id is required"))
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	broadcasts, err := h.store.ListBroadcasts(r.Context(), customerID, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"broadcasts": broadcasts})
+}
+
+func (h *Handler) listBroadcastTargets(w http.ResponseWriter, r *http.Request) {
+	customerID := r.URL.Query().Get("customer_id")
+	if customerID == "" || r.PathValue("broadcast_id") == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id and broadcast_id are required"))
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	targets, err := h.store.ListBroadcastTargets(r.Context(), customerID, r.PathValue("broadcast_id"), limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"targets": targets})
+}
+
+func (h *Handler) cancelBroadcast(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		CustomerID string `json:"customer_id"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if payload.CustomerID == "" || r.PathValue("broadcast_id") == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id and broadcast_id are required"))
+		return
+	}
+	if err := h.store.CancelBroadcast(r.Context(), payload.CustomerID, r.PathValue("broadcast_id")); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"broadcast_id": r.PathValue("broadcast_id"), "status": "cancelled"})
+}
+
+func (h *Handler) runRetention(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		ArtifactDays      int `json:"artifact_days"`
+		EventDays         int `json:"event_days"`
+		OutboxDays        int `json:"outbox_days"`
+		ObservabilityDays int `json:"observability_days"`
+		BroadcastDays     int `json:"broadcast_days"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	now := time.Now().UTC()
+	result := map[string]int64{}
+	if payload.ArtifactDays > 0 {
+		n, err := h.store.ExpireArtifactsOlderThan(r.Context(), now.AddDate(0, 0, -payload.ArtifactDays))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		result["artifacts_expired"] = n
+	}
+	if payload.EventDays > 0 {
+		n, err := h.store.DeleteRunEventsOlderThan(r.Context(), now.AddDate(0, 0, -payload.EventDays))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		result["events_deleted"] = n
+	}
+	if payload.OutboxDays > 0 {
+		n, err := h.store.DeleteCompletedOutboxOlderThan(r.Context(), now.AddDate(0, 0, -payload.OutboxDays))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		result["outbox_deleted"] = n
+	}
+	if payload.ObservabilityDays > 0 {
+		n, err := h.store.DeleteObservabilityEventsOlderThan(r.Context(), now.AddDate(0, 0, -payload.ObservabilityDays))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		result["observability_events_deleted"] = n
+	}
+	if payload.BroadcastDays > 0 {
+		n, err := h.store.DeleteTerminalBroadcastsOlderThan(r.Context(), now.AddDate(0, 0, -payload.BroadcastDays))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		result["broadcasts_deleted"] = n
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) agents(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"agents": []map[string]any{{"id": "duraclaw", "name": "Duraclaw", "capabilities": []string{"runs", "events", "artifacts", "resume"}}}})
+}
+
+func (h *Handler) ensureSession(w http.ResponseWriter, r *http.Request) {
+	c, ok := requiredContext(w, r, false)
+	if !ok {
+		return
+	}
+	c.SessionID = r.PathValue("session_id")
+	if err := h.store.EnsureSession(r.Context(), c); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"session_id": c.SessionID, "state": "ready"})
+}
+
+func (h *Handler) startRun(w http.ResponseWriter, r *http.Request) {
+	c, ok := requiredContext(w, r, true)
+	if !ok {
+		return
+	}
+	var payload map[string]any
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := validateRunInput(payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	run, err := h.store.CreateRun(r.Context(), c, payload)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	_ = h.store.AddObservabilityEvent(r.Context(), c.CustomerID, run.ID, "acp_run_created", map[string]any{"request_id": c.RequestID})
+	writeJSON(w, http.StatusAccepted, run)
+}
+
+func (h *Handler) attachArtifacts(w http.ResponseWriter, r *http.Request) {
+	c, ok := existingRunContext(w, r)
+	if !ok {
+		return
+	}
+	if _, ok := h.requireRunAccess(w, r, c); !ok {
+		return
+	}
+	var payload struct {
+		Artifacts []db.Artifact `json:"artifacts"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	artifactRule := h.artifactRule(r, c)
+	for _, a := range payload.Artifacts {
+		if a.State == "" {
+			a.State = "available"
+		}
+		if err := policy.AllowArtifact(a.SizeBytes, a.MediaType, artifactRule); err != nil {
+			writeError(w, http.StatusForbidden, err)
+			return
+		}
+		if err := policy.RejectRawArtifactMetadata(a.Metadata); err != nil {
+			writeError(w, http.StatusForbidden, err)
+			return
+		}
+		if err := h.store.AttachArtifact(r.Context(), r.PathValue("run_id"), a); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+	}
+	_ = h.store.AddEvent(r.Context(), r.PathValue("run_id"), "artifacts.attached", map[string]any{"count": len(payload.Artifacts)})
+	_ = h.store.AddObservabilityEvent(r.Context(), c.CustomerID, r.PathValue("run_id"), "artifacts_attached", map[string]any{"count": len(payload.Artifacts)})
+	writeJSON(w, http.StatusOK, map[string]any{"attached": len(payload.Artifacts)})
+}
+
+func (h *Handler) listRunArtifacts(w http.ResponseWriter, r *http.Request) {
+	c, ok := existingRunContext(w, r)
+	if !ok {
+		return
+	}
+	if _, ok := h.requireRunAccess(w, r, c); !ok {
+		return
+	}
+	artifacts, err := h.store.ArtifactsForRun(r.Context(), r.PathValue("run_id"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"artifacts": artifacts})
+}
+
+func (h *Handler) listArtifactRepresentations(w http.ResponseWriter, r *http.Request) {
+	customerID := r.Header.Get("X-Customer-ID")
+	if r.PathValue("artifact_id") == "" || customerID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("artifact_id and X-Customer-ID are required"))
+		return
+	}
+	reps, err := h.store.ArtifactRepresentations(r.Context(), customerID, r.PathValue("artifact_id"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"representations": reps})
+}
+
+func (h *Handler) artifactRule(r *http.Request, c db.ACPContext) policy.ArtifactRule {
+	rule := h.artifactPolicy
+	if h.store == nil {
+		return rule
+	}
+	p, err := h.store.AgentPolicy(r.Context(), c.CustomerID, c.AgentInstanceID)
+	if err != nil || p == nil {
+		return rule
+	}
+	if p.ArtifactMaxSizeBytes > 0 {
+		rule.MaxSizeBytes = p.ArtifactMaxSizeBytes
+	}
+	if len(p.ArtifactMediaTypes) > 0 {
+		rule.MediaTypes = map[string]bool{}
+		for _, mediaType := range p.ArtifactMediaTypes {
+			rule.MediaTypes[mediaType] = true
+		}
+	}
+	return rule
+}
+
+func (h *Handler) runStatus(w http.ResponseWriter, r *http.Request) {
+	customerID := r.Header.Get("X-Customer-ID")
+	if customerID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("missing required header X-Customer-ID"))
+		return
+	}
+	run, err := h.store.GetRun(r.Context(), r.PathValue("run_id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	if run.CustomerID != customerID {
+		writeError(w, http.StatusNotFound, fmt.Errorf("run not found"))
+		return
+	}
+	writeJSON(w, http.StatusOK, run)
+}
+
+func (h *Handler) runTrace(w http.ResponseWriter, r *http.Request) {
+	c, ok := existingRunContext(w, r)
+	if !ok {
+		return
+	}
+	if _, ok := h.requireRunAccess(w, r, c); !ok {
+		return
+	}
+	trace, err := h.store.RunTrace(r.Context(), r.PathValue("run_id"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, trace)
+}
+
+func (h *Handler) events(w http.ResponseWriter, r *http.Request) {
+	customerID := r.Header.Get("X-Customer-ID")
+	if customerID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("missing required header X-Customer-ID"))
+		return
+	}
+	run, err := h.store.GetRun(r.Context(), r.PathValue("run_id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	if run.CustomerID != customerID {
+		writeError(w, http.StatusNotFound, fmt.Errorf("run not found"))
+		return
+	}
+	after, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	events, err := h.store.EventsPage(r.Context(), r.PathValue("run_id"), after, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, e := range events {
+			fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", e.ID, e.Type, e.Payload)
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"events": events})
+}
+
+func (h *Handler) resume(w http.ResponseWriter, r *http.Request) {
+	c, ok := existingRunContext(w, r)
+	if !ok {
+		return
+	}
+	run, ok := h.requireRunAccess(w, r, c)
+	if !ok {
+		return
+	}
+	if run.State != "awaiting_user" {
+		writeError(w, http.StatusConflict, fmt.Errorf("run is %s, only awaiting_user can resume", run.State))
+		return
+	}
+	var payload struct {
+		WorkflowRunID string         `json:"workflow_run_id"`
+		NodeKey       string         `json:"node_key"`
+		Response      map[string]any `json:"response"`
+	}
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := decodeJSON(w, r, &payload); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+	}
+	var err error
+	if payload.WorkflowRunID != "" {
+		err = h.workflow.ResumeAwaitingUser(r.Context(), workflow.ResumeRequest{
+			RunID: run.ID, WorkflowRunID: payload.WorkflowRunID, NodeKey: payload.NodeKey, Response: payload.Response,
+		})
+	} else {
+		err = h.store.SetRunState(r.Context(), run.ID, "queued", nil)
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": run.ID, "state": "queued"})
+}
+
+func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
+	c, ok := existingRunContext(w, r)
+	if !ok {
+		return
+	}
+	if _, ok := h.requireRunAccess(w, r, c); !ok {
+		return
+	}
+	if err := h.store.SetRunState(r.Context(), r.PathValue("run_id"), "cancelled", nil); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": r.PathValue("run_id"), "state": "cancelled"})
+}
+
+func (h *Handler) updateOutboundIntentStatus(w http.ResponseWriter, r *http.Request) {
+	customerID := r.Header.Get("X-Customer-ID")
+	if customerID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("missing required header X-Customer-ID"))
+		return
+	}
+	var payload struct {
+		Status string `json:"status"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if r.PathValue("intent_id") == "" || payload.Status == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("intent_id and status are required"))
+		return
+	}
+	if err := h.store.SetOutboundIntentStatus(r.Context(), r.PathValue("intent_id"), customerID, payload.Status); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"outbound_intent_id": r.PathValue("intent_id"), "status": payload.Status})
+}
+
+func (h *Handler) latest(w http.ResponseWriter, r *http.Request) {
+	run, err := h.store.LatestRun(r.Context(), r.Header.Get("X-Customer-ID"), r.PathValue("session_id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, run)
+}
+
+func (h *Handler) byKey(w http.ResponseWriter, r *http.Request) {
+	run, err := h.store.RunByIdempotencyKey(r.Context(), r.Header.Get("X-Customer-ID"), r.PathValue("session_id"), r.PathValue("key"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, run)
+}
+
+func requiredContext(w http.ResponseWriter, r *http.Request, requireIdempotency bool) (db.ACPContext, bool) {
+	c := db.ACPContext{
+		CustomerID: r.Header.Get("X-Customer-ID"), UserID: r.Header.Get("X-User-ID"), AgentInstanceID: r.Header.Get("X-Agent-Instance-ID"),
+		SessionID: r.Header.Get("X-Session-ID"), RequestID: r.Header.Get("X-Request-ID"), IdempotencyKey: r.Header.Get("X-Idempotency-Key"),
+		ChannelType: r.Header.Get("X-Channel-Type"), ChannelUserID: r.Header.Get("X-Channel-User-ID"), ChannelConvID: r.Header.Get("X-Channel-Conversation-ID"), TraceID: r.Header.Get("X-Trace-ID"),
+	}
+	required := []struct {
+		name string
+		val  string
+	}{
+		{"X-Customer-ID", c.CustomerID},
+		{"X-User-ID", c.UserID},
+		{"X-Agent-Instance-ID", c.AgentInstanceID},
+		{"X-Session-ID", c.SessionID},
+		{"X-Request-ID", c.RequestID},
+	}
+	if requireIdempotency {
+		required = append(required, struct {
+			name string
+			val  string
+		}{"X-Idempotency-Key", c.IdempotencyKey})
+	}
+	for _, item := range required {
+		if strings.TrimSpace(item.val) == "" {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("missing required header %s", item.name))
+			return c, false
+		}
+	}
+	return c, true
+}
+
+func validateRunInput(payload map[string]any) error {
+	if payload == nil {
+		return fmt.Errorf("request body is required")
+	}
+	parts, ok := payload["parts"]
+	if !ok {
+		return nil
+	}
+	partList, ok := parts.([]any)
+	if !ok {
+		return fmt.Errorf("parts must be an array")
+	}
+	for i, raw := range partList {
+		part, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("parts[%d] must be an object", i)
+		}
+		typ, _ := part["type"].(string)
+		switch typ {
+		case "text", "artifact_ref", "location", "structured_data":
+		default:
+			return fmt.Errorf("parts[%d] has unsupported type %q", i, typ)
+		}
+		if typ == "artifact_ref" {
+			data, _ := part["data"].(map[string]any)
+			artifactID, _ := data["artifact_id"].(string)
+			if strings.TrimSpace(artifactID) == "" {
+				return fmt.Errorf("parts[%d] artifact_ref requires data.artifact_id", i)
+			}
+		}
+	}
+	return nil
+}
+
+func existingRunContext(w http.ResponseWriter, r *http.Request) (db.ACPContext, bool) {
+	c, ok := requiredContext(w, r, false)
+	if !ok {
+		return c, false
+	}
+	c.RunID = r.Header.Get("X-Run-ID")
+	if strings.TrimSpace(c.RunID) == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("missing required header X-Run-ID"))
+		return c, false
+	}
+	if c.RunID != r.PathValue("run_id") {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("X-Run-ID does not match route run id"))
+		return c, false
+	}
+	return c, true
+}
+
+func (h *Handler) requireRunAccess(w http.ResponseWriter, r *http.Request, c db.ACPContext) (*db.Run, bool) {
+	run, err := h.store.GetRun(r.Context(), r.PathValue("run_id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return nil, false
+	}
+	if run.CustomerID != c.CustomerID || run.SessionID != c.SessionID || run.AgentInstanceID != c.AgentInstanceID || run.UserID != c.UserID {
+		writeError(w, http.StatusNotFound, fmt.Errorf("run not found"))
+		return nil, false
+	}
+	return run, true
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
+	if r.Body == nil {
+		return fmt.Errorf("request body is required")
+	}
+	limited := http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
+	dec := json.NewDecoder(limited)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		return fmt.Errorf("request body must contain a single JSON value")
+	}
+	return nil
+}
+
+func writeError(w http.ResponseWriter, status int, err error) {
+	writeJSON(w, status, map[string]string{"error": err.Error()})
+}
