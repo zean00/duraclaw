@@ -232,9 +232,10 @@ The persistence layer also includes:
 - Retry release/backoff for failed async outbox delivery.
 - Provider registry and model fallback attempts with persisted model-call records per attempt.
 - Artifact processor registry for modality-specific processor selection.
-- MCP manager registration now tracks transport metadata, opt-in retry attempts, per-server status, max-concurrency limits, HTTP/stdio transports, tool discovery, and MCP call metrics.
+- MCP manager registration now tracks transport metadata, opt-in retry attempts, per-server status, max-concurrency limits, HTTP/stdio transports, bounded tool discovery, and MCP call metrics.
 - Durable observability events are written for model, tool, MCP, and processor call lifecycle transitions.
-- Agent instance version `tool_config`, `mcp_config`, `workflow_config`, and `policy_config` are validated and applied during run execution.
+- Model usage is persisted in model-call summaries and exposed through token counters when providers report usage.
+- Agent instance version `tool_config`, `mcp_config`, `workflow_config`, and `policy_config` are validated and applied during run execution, including model-loop and per-turn tool-call limits.
 - Artifact processors include a generic HTTP processor adapter for OCR/transcription/document extraction services.
 - Internal model-visible control tools: `duraclaw.run_workflow` and `duraclaw.ask_user`.
 - Optional admin bearer-token protection.

@@ -227,15 +227,16 @@ func (m *Manager) Statuses() []ServerStatus {
 }
 
 func (m *Manager) ListTools(ctx context.Context, exec ExecutionContext, serverName string) ([]ToolInfo, error) {
-	client, ok := m.Client(serverName)
+	if m == nil {
+		return nil, fmt.Errorf("mcp server %q not found", serverName)
+	}
+	m.mu.RLock()
+	client, ok := m.clients[serverName]
+	m.mu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("mcp server %q not found", serverName)
 	}
-	lister, ok := client.(ToolLister)
-	if !ok {
-		return nil, fmt.Errorf("mcp server %q does not support tool discovery", serverName)
-	}
-	return lister.ListTools(ctx, exec, serverName)
+	return client.ListTools(ctx, exec, serverName)
 }
 
 func (c *managedClient) CallTool(ctx context.Context, exec ExecutionContext, serverName, toolName string, arguments map[string]any) (map[string]any, error) {
@@ -286,9 +287,31 @@ func (c *managedClient) CallTool(ctx context.Context, exec ExecutionContext, ser
 }
 
 func (c *managedClient) ListTools(ctx context.Context, exec ExecutionContext, serverName string) ([]ToolInfo, error) {
+	if c.sem != nil {
+		select {
+		case c.sem <- struct{}{}:
+			defer func() { <-c.sem }()
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	lister, ok := c.client.(ToolLister)
 	if !ok {
 		return nil, fmt.Errorf("mcp server %q does not support tool discovery", serverName)
 	}
-	return lister.ListTools(ctx, exec, serverName)
+	now := time.Now().UTC()
+	c.mu.Lock()
+	c.status.LastUsedAt = &now
+	c.status.CallCount++
+	c.mu.Unlock()
+	tools, err := lister.ListTools(ctx, exec, serverName)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err != nil {
+		c.status.LastError = err.Error()
+		c.status.FailureCount++
+		return nil, err
+	}
+	c.status.LastError = ""
+	return tools, nil
 }

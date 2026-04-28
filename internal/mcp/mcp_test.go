@@ -132,6 +132,10 @@ func TestManagerListToolsDelegates(t *testing.T) {
 	if len(tools) != 1 || tools[0].Name != "lookup" {
 		t.Fatalf("tools=%#v", tools)
 	}
+	status, ok := manager.Status("srv")
+	if !ok || status.CallCount != 1 || status.LastUsedAt == nil || status.LastError != "" {
+		t.Fatalf("status=%#v ok=%v", status, ok)
+	}
 }
 
 type listingClient struct{}

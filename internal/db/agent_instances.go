@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -202,7 +204,10 @@ func validateAgentInstanceVersionSpec(spec AgentInstanceVersionSpec) error {
 	if err := validateObjectConfig("model_config", spec.ModelConfig, []string{"primary", "model", "fallbacks"}); err != nil {
 		return err
 	}
-	if err := validateObjectConfig("tool_config", spec.ToolConfig, []string{"allowed_tools", "disabled_tools"}); err != nil {
+	if err := validateObjectConfig("tool_config", spec.ToolConfig, []string{"allowed_tools", "disabled_tools", "max_iterations", "max_tool_calls_per_run"}); err != nil {
+		return err
+	}
+	if err := validateToolConfigValues(spec.ToolConfig); err != nil {
 		return err
 	}
 	if err := validateObjectConfig("workflow_config", spec.WorkflowConfig, []string{"allowed_workflows", "disabled_workflows"}); err != nil {
@@ -211,7 +216,14 @@ func validateAgentInstanceVersionSpec(spec AgentInstanceVersionSpec) error {
 	if err := validateObjectConfig("policy_config", spec.PolicyConfig, []string{"instructions", "blocked_terms"}); err != nil {
 		return err
 	}
-	return validateObjectConfig("mcp_config", spec.MCPConfig, []string{"servers"})
+	if err := validateObjectConfig("mcp_config", spec.MCPConfig, []string{"servers"}); err != nil {
+		return err
+	}
+	return validateMCPConfigValues(spec.MCPConfig)
+}
+
+func ValidateAgentInstanceVersionSpecForTest(spec AgentInstanceVersionSpec) error {
+	return validateAgentInstanceVersionSpec(spec)
 }
 
 func validateObjectConfig(name string, value any, allowed []string) error {
@@ -231,6 +243,113 @@ func validateObjectConfig(name string, value any, allowed []string) error {
 		if !allowedSet[key] {
 			return fmt.Errorf("%s contains unsupported key %q", name, key)
 		}
+	}
+	return nil
+}
+
+func decodeConfigObject(name string, value any) (map[string]any, error) {
+	b := jsonObject(value)
+	if string(b) == "{}" {
+		return nil, nil
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(b, &obj); err != nil {
+		return nil, fmt.Errorf("%s must be a JSON object: %w", name, err)
+	}
+	return obj, nil
+}
+
+func validateToolConfigValues(value any) error {
+	obj, err := decodeConfigObject("tool_config", value)
+	if err != nil || obj == nil {
+		return err
+	}
+	for _, key := range []string{"allowed_tools", "disabled_tools"} {
+		if raw, ok := obj[key]; ok {
+			if err := validateStringArray("tool_config."+key, raw); err != nil {
+				return err
+			}
+		}
+	}
+	for _, key := range []string{"max_iterations", "max_tool_calls_per_run"} {
+		if raw, ok := obj[key]; ok {
+			if err := validateNonNegativeInteger("tool_config."+key, raw); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateMCPConfigValues(value any) error {
+	obj, err := decodeConfigObject("mcp_config", value)
+	if err != nil || obj == nil {
+		return err
+	}
+	rawServers, ok := obj["servers"]
+	if !ok {
+		return nil
+	}
+	servers, ok := rawServers.([]any)
+	if !ok {
+		return fmt.Errorf("mcp_config.servers must be an array")
+	}
+	for i, raw := range servers {
+		server, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("mcp_config.servers[%d] must be an object", i)
+		}
+		name, _ := server["name"].(string)
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("mcp_config.servers[%d].name is required", i)
+		}
+		transport, _ := server["transport"].(string)
+		transport = strings.TrimSpace(transport)
+		if transport == "" {
+			transport = "http"
+		}
+		switch transport {
+		case "http", "sse":
+			baseURL, _ := server["base_url"].(string)
+			if strings.TrimSpace(baseURL) == "" {
+				return fmt.Errorf("mcp_config.servers[%d].base_url is required for %s transport", i, transport)
+			}
+		case "stdio":
+			command, _ := server["command"].(string)
+			if strings.TrimSpace(command) == "" {
+				return fmt.Errorf("mcp_config.servers[%d].command is required for stdio transport", i)
+			}
+		default:
+			return fmt.Errorf("mcp_config.servers[%d].transport %q is unsupported", i, transport)
+		}
+		for _, key := range []string{"max_retries", "retry_delay_ms", "max_concurrent"} {
+			if raw, ok := server[key]; ok {
+				if err := validateNonNegativeInteger(fmt.Sprintf("mcp_config.servers[%d].%s", i, key), raw); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func validateStringArray(name string, raw any) error {
+	values, ok := raw.([]any)
+	if !ok {
+		return fmt.Errorf("%s must be an array of strings", name)
+	}
+	for i, value := range values {
+		if _, ok := value.(string); !ok {
+			return fmt.Errorf("%s[%d] must be a string", name, i)
+		}
+	}
+	return nil
+}
+
+func validateNonNegativeInteger(name string, raw any) error {
+	value, ok := raw.(float64)
+	if !ok || math.Trunc(value) != value || value < 0 {
+		return fmt.Errorf("%s must be a non-negative integer", name)
 	}
 	return nil
 }

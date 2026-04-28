@@ -46,6 +46,12 @@ func TestWorkerAppliesVersionRuntimeConfig(t *testing.T) {
 		"toolAllowedForRun",
 		"workflowAllowedForRun",
 		"mcpManagerForRun",
+		"mcpToolManifest",
+		"maxIterationsForRun",
+		"maxToolCallsForRun",
+		"ToolCallCount",
+		"plannedToolExecutions",
+		"recordModelUsage",
 		"policyConfigInstructions",
 	} {
 		if !strings.Contains(src, want) {

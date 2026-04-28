@@ -102,8 +102,15 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 	if err != nil || run == nil {
 		return false, err
 	}
+	if w.counters != nil {
+		w.counters.ObserveDuration("run_queue_lag_seconds", time.Since(run.CreatedAt))
+	}
+	started := time.Now()
 	if err := w.process(ctx, run); err != nil {
 		w.inc("worker_runs_failed")
+		if w.counters != nil {
+			w.counters.ObserveDuration("run_duration_seconds", time.Since(started))
+		}
 		var stopped runStoppedError
 		if !errors.As(err, &stopped) {
 			msg := err.Error()
@@ -112,6 +119,9 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 		return true, err
 	}
 	w.inc("worker_runs_completed")
+	if w.counters != nil {
+		w.counters.ObserveDuration("run_duration_seconds", time.Since(started))
+	}
 	return true, nil
 }
 
@@ -243,7 +253,11 @@ func (w *Worker) process(ctx context.Context, run *db.Run) error {
 		return err
 	}
 	var resp *providers.LLMResponse
-	for iteration := 1; iteration <= w.maxIterations; iteration++ {
+	maxIterations, err := w.maxIterationsForRun(ctx, run)
+	if err != nil {
+		return err
+	}
+	for iteration := 1; iteration <= maxIterations; iteration++ {
 		modelStepID, err := w.store.StartRunStep(ctx, run.ID, "model_call", map[string]any{"messages": len(messages), "tools": len(toolDefs), "iteration": iteration})
 		if err != nil {
 			return err
@@ -291,8 +305,8 @@ func (w *Worker) process(ctx context.Context, run *db.Run) error {
 		if err := w.store.Checkpoint(ctx, run.ID, "tools_complete", map[string]any{"tool_calls": len(toolResults)}); err != nil {
 			return err
 		}
-		if iteration == w.maxIterations {
-			return fmt.Errorf("agent loop exceeded %d iterations", w.maxIterations)
+		if iteration == maxIterations {
+			return fmt.Errorf("agent loop exceeded %d iterations", maxIterations)
 		}
 	}
 	if err := w.store.Checkpoint(ctx, run.ID, "provider_complete", map[string]any{"finish_reason": resp.FinishReason}); err != nil {
@@ -354,7 +368,8 @@ func (w *Worker) chat(ctx context.Context, run *db.Run, messages []providers.Mes
 				w.counters.ObserveDuration("model_call_duration_seconds", time.Since(started))
 			}
 			if err == nil {
-				if completeErr := w.store.CompleteModelCall(ctx, callID, run.ID, map[string]any{"finish_reason": resp.FinishReason, "content_length": len(resp.Content)}, nil); completeErr != nil {
+				w.recordModelUsage(resp.Usage)
+				if completeErr := w.store.CompleteModelCall(ctx, callID, run.ID, map[string]any{"finish_reason": resp.FinishReason, "content_length": len(resp.Content), "usage": resp.Usage}, nil); completeErr != nil {
 					return nil, completeErr
 				}
 				return resp, nil
@@ -371,6 +386,21 @@ func (w *Worker) chat(ctx context.Context, run *db.Run, messages []providers.Mes
 		lastErr = fmt.Errorf("no provider candidates configured")
 	}
 	return nil, lastErr
+}
+
+func (w *Worker) recordModelUsage(usage providers.UsageInfo) {
+	if w.counters == nil {
+		return
+	}
+	if usage.InputTokens > 0 {
+		w.counters.Add("model_token_input_total", int64(usage.InputTokens))
+	}
+	if usage.OutputTokens > 0 {
+		w.counters.Add("model_token_output_total", int64(usage.OutputTokens))
+	}
+	if usage.TotalTokens > 0 {
+		w.counters.Add("model_token_total", int64(usage.TotalTokens))
+	}
 }
 
 func (w *Worker) ensureRunnable(ctx context.Context, runID string) error {
@@ -419,6 +449,13 @@ func (w *Worker) providerMessages(ctx context.Context, run *db.Run, currentText 
 	}
 	if strings.TrimSpace(workflowManifest) != "" {
 		promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: workflowManifest})
+	}
+	mcpManifest, err := w.mcpToolManifest(ctx, run)
+	if err != nil {
+		return nil, err
+	}
+	if mcpManifest != "" {
+		promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: mcpManifest})
 	}
 	transferNote, err := w.sessionTransferNote(ctx, run)
 	if err != nil {
@@ -538,6 +575,41 @@ func (w *Worker) toolAllowedForRun(ctx context.Context, run *db.Run, name string
 	return nil
 }
 
+func (w *Worker) maxIterationsForRun(ctx context.Context, run *db.Run) (int, error) {
+	limit := w.maxIterations
+	if limit <= 0 {
+		limit = defaultMaxIterations
+	}
+	version, err := w.store.AgentInstanceVersion(ctx, run.AgentInstanceVersionID)
+	if err != nil || version == nil || len(version.ToolConfig) == 0 {
+		return limit, err
+	}
+	var cfg struct {
+		MaxIterations int `json:"max_iterations"`
+	}
+	if err := json.Unmarshal(version.ToolConfig, &cfg); err != nil {
+		return limit, err
+	}
+	if cfg.MaxIterations > 0 {
+		limit = cfg.MaxIterations
+	}
+	return limit, nil
+}
+
+func (w *Worker) maxToolCallsForRun(ctx context.Context, run *db.Run) (int, error) {
+	version, err := w.store.AgentInstanceVersion(ctx, run.AgentInstanceVersionID)
+	if err != nil || version == nil || len(version.ToolConfig) == 0 {
+		return 0, err
+	}
+	var cfg struct {
+		MaxToolCallsPerRun int `json:"max_tool_calls_per_run"`
+	}
+	if err := json.Unmarshal(version.ToolConfig, &cfg); err != nil {
+		return 0, err
+	}
+	return cfg.MaxToolCallsPerRun, nil
+}
+
 func (w *Worker) workflowAllowedForRun(ctx context.Context, run *db.Run, workflowID string) error {
 	version, err := w.store.AgentInstanceVersion(ctx, run.AgentInstanceVersionID)
 	if err != nil || version == nil || len(version.WorkflowConfig) == 0 {
@@ -571,6 +643,39 @@ func (w *Worker) mcpManagerForRun(ctx context.Context, run *db.Run) (*mcp.Manage
 		manager = mcp.NewManager()
 	}
 	return manager.WithConfig(version.MCPConfig)
+}
+
+func (w *Worker) mcpToolManifest(ctx context.Context, run *db.Run) (string, error) {
+	manager, err := w.mcpManagerForRun(ctx, run)
+	if err != nil || manager == nil {
+		return "", err
+	}
+	var lines []string
+	for _, status := range manager.Statuses() {
+		discoveryCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		tools, err := manager.ListTools(discoveryCtx, mcp.ExecutionContext{
+			CustomerID: run.CustomerID, UserID: run.UserID, AgentInstanceID: run.AgentInstanceID, SessionID: run.SessionID, RunID: run.ID, RequestID: run.RequestID,
+		}, status.Name)
+		cancel()
+		if err != nil {
+			continue
+		}
+		for _, tool := range tools {
+			name := strings.TrimSpace(tool.Name)
+			if name == "" {
+				continue
+			}
+			line := "- " + status.Name + "." + name
+			if strings.TrimSpace(tool.Description) != "" {
+				line += ": " + strings.TrimSpace(tool.Description)
+			}
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) == 0 {
+		return "", nil
+	}
+	return "Available MCP tools:\n" + strings.Join(lines, "\n"), nil
 }
 
 func (w *Worker) policyConfigInstructions(ctx context.Context, run *db.Run) (string, error) {
@@ -763,9 +868,23 @@ func (w *Worker) executeToolCalls(ctx context.Context, run *db.Run, stepID strin
 	if err != nil {
 		return nil, err
 	}
+	maxToolCalls, err := w.maxToolCallsForRun(ctx, run)
+	if err != nil {
+		return nil, err
+	}
 	completed, err := w.completedNonRetryableTools(ctx, run.ID)
 	if err != nil {
 		return nil, err
+	}
+	if maxToolCalls > 0 {
+		existing, err := w.store.ToolCallCount(ctx, run.ID)
+		if err != nil {
+			return nil, err
+		}
+		planned := w.plannedToolExecutions(toolRegistry, completed, calls)
+		if existing+planned > maxToolCalls {
+			return nil, fmt.Errorf("tool call count %d exceeds configured limit %d", existing+planned, maxToolCalls)
+		}
 	}
 	results := make([]string, 0, len(calls))
 	for _, call := range calls {
@@ -828,6 +947,28 @@ func (w *Worker) executeToolCalls(ctx context.Context, run *db.Run, stepID strin
 		results = append(results, call.Function.Name+": "+result.ForLLM)
 	}
 	return results, nil
+}
+
+func (w *Worker) plannedToolExecutions(toolRegistry *tools.Registry, completed map[string]db.ToolCallRecord, calls []providers.ToolCall) int {
+	planned := 0
+	for _, call := range calls {
+		if w.isInternalTool(call.Function.Name) {
+			planned++
+			continue
+		}
+		retryable := true
+		if toolRegistry != nil {
+			retryable = toolRegistry.Retryable(call.Function.Name)
+		}
+		if !retryable {
+			argsHash := db.StableArgsHash(call.Function.Name, call.Function.Arguments)
+			if _, ok := completed[call.Function.Name+":"+argsHash]; ok {
+				continue
+			}
+		}
+		planned++
+	}
+	return planned
 }
 
 func internalToolDefinitions() []providers.ToolDefinition {

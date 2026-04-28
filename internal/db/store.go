@@ -641,6 +641,12 @@ func (s *Store) CompletedNonRetryableToolCalls(ctx context.Context, runID string
 	return out, rows.Err()
 }
 
+func (s *Store) ToolCallCount(ctx context.Context, runID string) (int, error) {
+	var count int
+	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM tool_calls WHERE run_id=$1`, runID).Scan(&count)
+	return count, err
+}
+
 func StableArgsHash(toolName string, args any) string {
 	normalized := normalizeJSON(args)
 	b, _ := json.Marshal(normalized)

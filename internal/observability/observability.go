@@ -33,9 +33,16 @@ func (c *Counters) Inc(name string) {
 	if c == nil {
 		return
 	}
+	c.Add(name, 1)
+}
+
+func (c *Counters) Add(name string, delta int64) {
+	if c == nil || delta == 0 {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.values[name]++
+	c.values[name] += delta
 }
 
 func (c *Counters) ObserveDuration(name string, d time.Duration) {

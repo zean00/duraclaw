@@ -9,8 +9,12 @@ import (
 func TestCountersPrometheusText(t *testing.T) {
 	c := NewCounters()
 	c.Inc("worker.completed")
+	c.Add("model_token_input_total", 3)
 	got := c.PrometheusText()
 	if !strings.Contains(got, "duraclaw_worker_completed 1") {
+		t.Fatalf("got %q", got)
+	}
+	if !strings.Contains(got, "duraclaw_model_token_input_total 3") {
 		t.Fatalf("got %q", got)
 	}
 }
