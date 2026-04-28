@@ -250,3 +250,47 @@ func TestStoreWorkflowTimerResumePostgres(t *testing.T) {
 		t.Fatalf("states=%#v", states)
 	}
 }
+
+func TestStoreSameSessionClaimSerializationPostgres(t *testing.T) {
+	store, cleanup := integrationStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	suffix := time.Now().UTC().Format("20060102150405.000000000")
+	customerID := "c-serialize-" + suffix
+	first, err := store.CreateRun(ctx, ACPContext{CustomerID: customerID, UserID: "u", AgentInstanceID: "a", SessionID: "s", RequestID: "r1", IdempotencyKey: "i1"}, map[string]any{"text": "one"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.CreateRun(ctx, ACPContext{CustomerID: customerID, UserID: "u", AgentInstanceID: "a", SessionID: "s", RequestID: "r2", IdempotencyKey: "i2"}, map[string]any{"text": "two"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := store.ClaimRun(ctx, "worker-1", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed == nil || claimed.ID != first.ID {
+		t.Fatalf("first claim=%#v want=%s second=%s", claimed, first.ID, second.ID)
+	}
+	blocked, err := store.ClaimRun(ctx, "worker-2", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blocked != nil {
+		t.Fatalf("same-session second run should not be claimed while first active: %#v", blocked)
+	}
+	msgID, err := store.InsertMessage(ctx, first.CustomerID, first.SessionID, first.ID, "assistant", map[string]any{"text": "done"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CompleteRunWithMessage(ctx, first.ID, msgID); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err = store.ClaimRun(ctx, "worker-2", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed == nil || claimed.ID != second.ID {
+		t.Fatalf("second claim=%#v want=%s", claimed, second.ID)
+	}
+}

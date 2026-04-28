@@ -58,3 +58,23 @@ printf '{"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"boom"}}\n'
 		t.Fatal("expected json-rpc error")
 	}
 }
+
+func TestStdioClientListsTools(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "server.sh")
+	if err := os.WriteFile(script, []byte(`#!/bin/sh
+IFS= read init
+printf '{"jsonrpc":"2.0","id":1,"result":{}}\n'
+IFS= read initialized
+IFS= read list
+printf '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"lookup","description":"Lookup"}]}}\n'
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tools, err := (StdioClient{Command: script}).ListTools(context.Background(), ExecutionContext{}, "srv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tools) != 1 || tools[0].Name != "lookup" {
+		t.Fatalf("tools=%#v", tools)
+	}
+}

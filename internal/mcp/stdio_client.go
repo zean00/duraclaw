@@ -18,6 +18,61 @@ type StdioClient struct {
 }
 
 func (c StdioClient) CallTool(ctx context.Context, execCtx ExecutionContext, serverName, toolName string, arguments map[string]any) (map[string]any, error) {
+	session, err := c.open(ctx, execCtx)
+	if err != nil {
+		return nil, err
+	}
+	defer session.close()
+	if err := session.initialize(); err != nil {
+		return nil, err
+	}
+	if err := session.write(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "tools/call",
+		"params":  map[string]any{"name": toolName, "arguments": arguments},
+	}); err != nil {
+		return nil, err
+	}
+	return session.readResult(2)
+}
+
+func (c StdioClient) ListTools(ctx context.Context, execCtx ExecutionContext, serverName string) ([]ToolInfo, error) {
+	session, err := c.open(ctx, execCtx)
+	if err != nil {
+		return nil, err
+	}
+	defer session.close()
+	if err := session.initialize(); err != nil {
+		return nil, err
+	}
+	if err := session.write(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "tools/list",
+		"params":  map[string]any{},
+	}); err != nil {
+		return nil, err
+	}
+	result, err := session.readResult(2)
+	if err != nil {
+		return nil, err
+	}
+	raw, _ := json.Marshal(result["tools"])
+	var tools []ToolInfo
+	if err := json.Unmarshal(raw, &tools); err != nil {
+		return nil, err
+	}
+	return tools, nil
+}
+
+type stdioSession struct {
+	cmd     *exec.Cmd
+	stdin   io.WriteCloser
+	scanner *bufio.Scanner
+}
+
+func (c StdioClient) open(ctx context.Context, execCtx ExecutionContext) (*stdioSession, error) {
 	if strings.TrimSpace(c.Command) == "" {
 		return nil, fmt.Errorf("mcp stdio command is required")
 	}
@@ -43,15 +98,19 @@ func (c StdioClient) CallTool(ctx context.Context, execCtx ExecutionContext, ser
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	defer func() {
-		_ = stdin.Close()
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-		}
-		_ = cmd.Wait()
-	}()
-	reader := bufio.NewScanner(stdout)
-	if err := writeJSONRPC(stdin, map[string]any{
+	return &stdioSession{cmd: cmd, stdin: stdin, scanner: bufio.NewScanner(stdout)}, nil
+}
+
+func (s *stdioSession) close() {
+	_ = s.stdin.Close()
+	if s.cmd.Process != nil {
+		_ = s.cmd.Process.Kill()
+	}
+	_ = s.cmd.Wait()
+}
+
+func (s *stdioSession) initialize() error {
+	if err := s.write(map[string]any{
 		"jsonrpc": "2.0",
 		"id":      1,
 		"method":  "initialize",
@@ -61,26 +120,23 @@ func (c StdioClient) CallTool(ctx context.Context, execCtx ExecutionContext, ser
 			"clientInfo":      map[string]any{"name": "duraclaw", "version": "dev"},
 		},
 	}); err != nil {
-		return nil, err
+		return err
 	}
-	if _, err := readJSONRPCResult(reader, 1); err != nil {
-		return nil, err
+	if _, err := s.readResult(1); err != nil {
+		return err
 	}
-	if err := writeJSONRPC(stdin, map[string]any{
+	return s.write(map[string]any{
 		"jsonrpc": "2.0",
 		"method":  "notifications/initialized",
-	}); err != nil {
-		return nil, err
-	}
-	if err := writeJSONRPC(stdin, map[string]any{
-		"jsonrpc": "2.0",
-		"id":      2,
-		"method":  "tools/call",
-		"params":  map[string]any{"name": toolName, "arguments": arguments},
-	}); err != nil {
-		return nil, err
-	}
-	return readJSONRPCResult(reader, 2)
+	})
+}
+
+func (s *stdioSession) write(payload map[string]any) error {
+	return writeJSONRPC(s.stdin, payload)
+}
+
+func (s *stdioSession) readResult(id int) (map[string]any, error) {
+	return readJSONRPCResult(s.scanner, id)
 }
 
 func envName(header string) string {

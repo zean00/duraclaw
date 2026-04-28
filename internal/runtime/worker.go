@@ -228,6 +228,9 @@ func (w *Worker) process(ctx context.Context, run *db.Run) error {
 	if err := w.ensureRunnable(ctx, run.ID); err != nil {
 		return err
 	}
+	if err := w.enforcePolicyConfigForRun(ctx, run, text); err != nil {
+		return err
+	}
 	if _, err := w.policyEngine().Enforce(ctx, "pre_run", w.policyContext(run, "", "", text)); err != nil {
 		return err
 	}
@@ -345,7 +348,11 @@ func (w *Worker) chat(ctx context.Context, run *db.Run, messages []providers.Mes
 			err = fmt.Errorf("provider %q is not registered", candidate.Provider)
 		} else {
 			var resp *providers.LLMResponse
+			started := time.Now()
 			resp, err = provider.Chat(ctx, messages, toolDefs, candidate.Model, nil)
+			if w.counters != nil {
+				w.counters.ObserveDuration("model_call_duration_seconds", time.Since(started))
+			}
 			if err == nil {
 				if completeErr := w.store.CompleteModelCall(ctx, callID, run.ID, map[string]any{"finish_reason": resp.FinishReason, "content_length": len(resp.Content)}, nil); completeErr != nil {
 					return nil, completeErr
@@ -589,6 +596,27 @@ func (w *Worker) policyConfigInstructions(ctx context.Context, run *db.Run) (str
 	return "Agent policy configuration:\n- " + strings.Join(lines, "\n- "), nil
 }
 
+func (w *Worker) enforcePolicyConfigForRun(ctx context.Context, run *db.Run, content string) error {
+	version, err := w.store.AgentInstanceVersion(ctx, run.AgentInstanceVersionID)
+	if err != nil || version == nil || len(version.PolicyConfig) == 0 {
+		return err
+	}
+	var cfg struct {
+		BlockedTerms []string `json:"blocked_terms"`
+	}
+	if err := json.Unmarshal(version.PolicyConfig, &cfg); err != nil {
+		return err
+	}
+	lower := strings.ToLower(content)
+	for _, term := range cfg.BlockedTerms {
+		term = strings.TrimSpace(strings.ToLower(term))
+		if term != "" && strings.Contains(lower, term) {
+			return fmt.Errorf("run content blocked by agent instance policy_config")
+		}
+	}
+	return nil
+}
+
 func stringSet(values []string) map[string]bool {
 	out := map[string]bool{}
 	for _, value := range values {
@@ -770,9 +798,13 @@ func (w *Worker) executeToolCalls(ctx context.Context, run *db.Run, stepID strin
 		if err != nil {
 			return nil, err
 		}
+		started := time.Now()
 		result := toolRegistry.Execute(ctx, tools.ExecutionContext{
 			CustomerID: run.CustomerID, UserID: run.UserID, AgentInstanceID: run.AgentInstanceID, SessionID: run.SessionID, RunID: run.ID, ToolCallID: callID, RequestID: run.RequestID,
 		}, call.Function.Name, call.Function.Arguments)
+		if w.counters != nil {
+			w.counters.ObserveDuration("tool_call_duration_seconds", time.Since(started))
+		}
 		var errText *string
 		if result.IsError {
 			msg := result.ForLLM
@@ -958,9 +990,13 @@ func (w *Worker) processArtifacts(ctx context.Context, run *db.Run) ([]string, e
 			_ = w.store.CompleteRunStep(context.Background(), run.ID, stepID, "failed", nil, &msg)
 			return nil, err
 		}
+		started := time.Now()
 		reps, err := processor.Process(ctx, artifacts.ProcessorContext{
 			CustomerID: run.CustomerID, UserID: run.UserID, AgentInstanceID: run.AgentInstanceID, SessionID: run.SessionID, RunID: run.ID, ArtifactID: a.ID, RequestID: run.RequestID,
 		}, pa)
+		if w.counters != nil {
+			w.counters.ObserveDuration("artifact_processor_duration_seconds", time.Since(started))
+		}
 		if err != nil {
 			msg := err.Error()
 			_ = w.store.CompleteProcessorCall(context.Background(), callID, run.ID, nil, &msg)

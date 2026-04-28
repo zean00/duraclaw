@@ -31,6 +31,16 @@ type Client interface {
 	CallTool(ctx context.Context, exec ExecutionContext, serverName, toolName string, arguments map[string]any) (map[string]any, error)
 }
 
+type ToolLister interface {
+	ListTools(ctx context.Context, exec ExecutionContext, serverName string) ([]ToolInfo, error)
+}
+
+type ToolInfo struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	InputSchema map[string]any `json:"input_schema,omitempty"`
+}
+
 type ServerSpec struct {
 	Name          string            `json:"name"`
 	Transport     string            `json:"transport"`
@@ -216,6 +226,18 @@ func (m *Manager) Statuses() []ServerStatus {
 	return out
 }
 
+func (m *Manager) ListTools(ctx context.Context, exec ExecutionContext, serverName string) ([]ToolInfo, error) {
+	client, ok := m.Client(serverName)
+	if !ok {
+		return nil, fmt.Errorf("mcp server %q not found", serverName)
+	}
+	lister, ok := client.(ToolLister)
+	if !ok {
+		return nil, fmt.Errorf("mcp server %q does not support tool discovery", serverName)
+	}
+	return lister.ListTools(ctx, exec, serverName)
+}
+
 func (c *managedClient) CallTool(ctx context.Context, exec ExecutionContext, serverName, toolName string, arguments map[string]any) (map[string]any, error) {
 	if c.sem != nil {
 		select {
@@ -261,4 +283,12 @@ func (c *managedClient) CallTool(ctx context.Context, exec ExecutionContext, ser
 		}
 	}
 	return nil, lastErr
+}
+
+func (c *managedClient) ListTools(ctx context.Context, exec ExecutionContext, serverName string) ([]ToolInfo, error) {
+	lister, ok := c.client.(ToolLister)
+	if !ok {
+		return nil, fmt.Errorf("mcp server %q does not support tool discovery", serverName)
+	}
+	return lister.ListTools(ctx, exec, serverName)
 }

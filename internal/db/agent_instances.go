@@ -45,6 +45,9 @@ func (s *Store) CreateAgentInstanceVersion(ctx context.Context, spec AgentInstan
 	if spec.CustomerID == "" || spec.AgentInstanceID == "" {
 		return nil, fmt.Errorf("customer_id and agent_instance_id are required")
 	}
+	if err := validateAgentInstanceVersionSpec(spec); err != nil {
+		return nil, err
+	}
 	var out AgentInstanceVersion
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `INSERT INTO customers(id) VALUES($1) ON CONFLICT DO NOTHING`, spec.CustomerID); err != nil {
@@ -193,4 +196,41 @@ func jsonObject(v any) []byte {
 		return []byte(`{}`)
 	}
 	return b
+}
+
+func validateAgentInstanceVersionSpec(spec AgentInstanceVersionSpec) error {
+	if err := validateObjectConfig("model_config", spec.ModelConfig, []string{"primary", "model", "fallbacks"}); err != nil {
+		return err
+	}
+	if err := validateObjectConfig("tool_config", spec.ToolConfig, []string{"allowed_tools", "disabled_tools"}); err != nil {
+		return err
+	}
+	if err := validateObjectConfig("workflow_config", spec.WorkflowConfig, []string{"allowed_workflows", "disabled_workflows"}); err != nil {
+		return err
+	}
+	if err := validateObjectConfig("policy_config", spec.PolicyConfig, []string{"instructions", "blocked_terms"}); err != nil {
+		return err
+	}
+	return validateObjectConfig("mcp_config", spec.MCPConfig, []string{"servers"})
+}
+
+func validateObjectConfig(name string, value any, allowed []string) error {
+	b := jsonObject(value)
+	if string(b) == "{}" {
+		return nil
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(b, &obj); err != nil {
+		return fmt.Errorf("%s must be a JSON object: %w", name, err)
+	}
+	allowedSet := map[string]bool{}
+	for _, key := range allowed {
+		allowedSet[key] = true
+	}
+	for key := range obj {
+		if !allowedSet[key] {
+			return fmt.Errorf("%s contains unsupported key %q", name, key)
+		}
+	}
+	return nil
 }

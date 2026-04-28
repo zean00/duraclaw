@@ -57,3 +57,40 @@ func (c HTTPClient) CallTool(ctx context.Context, exec ExecutionContext, serverN
 	}
 	return payload.Result, nil
 }
+
+func (c HTTPClient) ListTools(ctx context.Context, exec ExecutionContext, serverName string) ([]ToolInfo, error) {
+	if strings.TrimSpace(c.BaseURL) == "" {
+		return nil, fmt.Errorf("mcp http base url is required")
+	}
+	client := c.HTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: 30 * time.Second}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(c.BaseURL, "/")+"/tools/list?server_name="+serverName, nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+	for key, value := range exec.Headers() {
+		if value != "" {
+			req.Header.Set(key, value)
+		}
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("mcp http list tools failed with status %d", resp.StatusCode)
+	}
+	var payload struct {
+		Tools []ToolInfo `json:"tools"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+	return payload.Tools, nil
+}

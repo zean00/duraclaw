@@ -28,3 +28,19 @@ func TestHTTPClientPropagatesHeaders(t *testing.T) {
 		t.Fatalf("headers run=%q tool=%q auth=%q got=%#v", sawRunID, sawToolCallID, sawAuth, got)
 	}
 }
+
+func TestHTTPClientListsTools(t *testing.T) {
+	var sawRunID string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawRunID = r.Header.Get("X-Run-ID")
+		_ = json.NewEncoder(w).Encode(map[string]any{"tools": []map[string]any{{"name": "lookup", "description": "Lookup"}}})
+	}))
+	defer server.Close()
+	tools, err := (HTTPClient{BaseURL: server.URL}).ListTools(context.Background(), ExecutionContext{RunID: "r"}, "srv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sawRunID != "r" || len(tools) != 1 || tools[0].Name != "lookup" {
+		t.Fatalf("run=%q tools=%#v", sawRunID, tools)
+	}
+}

@@ -121,3 +121,25 @@ func TestManagerWithConfigRegistersStdioServers(t *testing.T) {
 		t.Fatalf("spec=%#v", managed.spec)
 	}
 }
+
+func TestManagerListToolsDelegates(t *testing.T) {
+	manager := NewManager()
+	manager.Register("srv", listingClient{})
+	tools, err := manager.ListTools(context.Background(), ExecutionContext{}, "srv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tools) != 1 || tools[0].Name != "lookup" {
+		t.Fatalf("tools=%#v", tools)
+	}
+}
+
+type listingClient struct{}
+
+func (listingClient) CallTool(context.Context, ExecutionContext, string, string, map[string]any) (map[string]any, error) {
+	return map[string]any{}, nil
+}
+
+func (listingClient) ListTools(context.Context, ExecutionContext, string) ([]ToolInfo, error) {
+	return []ToolInfo{{Name: "lookup"}}, nil
+}
