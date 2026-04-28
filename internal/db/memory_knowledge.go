@@ -17,6 +17,17 @@ type Memory struct {
 	Metadata   json.RawMessage `json:"metadata"`
 }
 
+type Preference struct {
+	ID         string          `json:"id"`
+	CustomerID string          `json:"customer_id"`
+	UserID     string          `json:"user_id"`
+	SessionID  *string         `json:"session_id,omitempty"`
+	Category   string          `json:"category"`
+	Content    string          `json:"content"`
+	Condition  json.RawMessage `json:"condition"`
+	Metadata   json.RawMessage `json:"metadata"`
+}
+
 func (s *Store) AddMemory(ctx context.Context, customerID, userID, sessionID, memoryType, content string, metadata any) (string, error) {
 	if err := s.ensureCustomer(ctx, customerID); err != nil {
 		return "", err
@@ -115,6 +126,86 @@ func (s *Store) SearchMemories(ctx context.Context, customerID, userID string, e
 	return out, rows.Err()
 }
 
+func (s *Store) AddPreference(ctx context.Context, customerID, userID, sessionID, category, content string, condition, metadata any) (string, error) {
+	if err := s.ensureCustomer(ctx, customerID); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(category) == "" {
+		category = "general"
+	}
+	conditionJSON, _ := json.Marshal(condition)
+	metadataJSON, _ := json.Marshal(metadata)
+	var nullableSession any
+	if sessionID != "" {
+		nullableSession = sessionID
+	}
+	var id string
+	err := s.pool.QueryRow(ctx, `
+		INSERT INTO preferences(customer_id,user_id,session_id,category,content,condition,metadata)
+		VALUES($1,$2,$3,$4,$5,$6,$7)
+		RETURNING id::text`, customerID, userID, nullableSession, category, content, conditionJSON, metadataJSON).Scan(&id)
+	return id, err
+}
+
+func (s *Store) ListPreferences(ctx context.Context, customerID, userID string, limit int) ([]Preference, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT id::text, customer_id, user_id, session_id, category, content, condition, metadata
+		FROM preferences
+		WHERE customer_id=$1 AND user_id=$2
+		ORDER BY updated_at DESC
+		LIMIT $3`, customerID, userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Preference
+	for rows.Next() {
+		var p Preference
+		if err := rows.Scan(&p.ID, &p.CustomerID, &p.UserID, &p.SessionID, &p.Category, &p.Content, &p.Condition, &p.Metadata); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) UpdatePreference(ctx context.Context, preferenceID, customerID, userID, category, content string, condition, metadata any) error {
+	if strings.TrimSpace(category) == "" {
+		category = "general"
+	}
+	conditionJSON, _ := json.Marshal(condition)
+	metadataJSON, _ := json.Marshal(metadata)
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE preferences
+		SET category=$4, content=$5, condition=$6, metadata=$7, updated_at=now()
+		WHERE id=$1 AND customer_id=$2 AND user_id=$3`,
+		preferenceID, customerID, userID, category, content, conditionJSON, metadataJSON)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("preference not found")
+	}
+	return nil
+}
+
+func (s *Store) DeletePreference(ctx context.Context, preferenceID, customerID, userID string) error {
+	tag, err := s.pool.Exec(ctx, `
+		DELETE FROM preferences
+		WHERE id=$1 AND customer_id=$2 AND user_id=$3`,
+		preferenceID, customerID, userID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("preference not found")
+	}
+	return nil
+}
+
 type KnowledgeDocument struct {
 	ID         string          `json:"id"`
 	CustomerID string          `json:"customer_id"`
@@ -183,6 +274,48 @@ func (s *Store) AddKnowledgeChunk(ctx context.Context, documentID, customerID st
 		ON CONFLICT (document_id, chunk_index) DO UPDATE SET content=EXCLUDED.content, metadata=EXCLUDED.metadata
 		RETURNING id::text`, documentID, customerID, chunkIndex, content, b).Scan(&id)
 	return id, err
+}
+
+func (s *Store) SetKnowledgeChunkEmbedding(ctx context.Context, chunkID, customerID string, embedding []float32) error {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE knowledge_chunks
+		SET embedding=$3::vector
+		WHERE id=$1 AND customer_id=$2`, chunkID, customerID, pgVector(embedding))
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("knowledge chunk not found")
+	}
+	return nil
+}
+
+func (s *Store) SetMemoryEmbedding(ctx context.Context, memoryID, customerID, userID string, embedding []float32) error {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE memories
+		SET embedding=$4::vector
+		WHERE id=$1 AND customer_id=$2 AND user_id=$3`, memoryID, customerID, userID, pgVector(embedding))
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("memory not found")
+	}
+	return nil
+}
+
+func (s *Store) SetPreferenceEmbedding(ctx context.Context, preferenceID, customerID, userID string, embedding []float32) error {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE preferences
+		SET embedding=$4::vector
+		WHERE id=$1 AND customer_id=$2 AND user_id=$3`, preferenceID, customerID, userID, pgVector(embedding))
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("preference not found")
+	}
+	return nil
 }
 
 type KnowledgeChunk struct {

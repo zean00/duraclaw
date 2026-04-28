@@ -2,9 +2,11 @@ package db
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -86,6 +88,7 @@ type ObservabilityEvent struct {
 type SchedulerJob struct {
 	ID             string          `json:"id"`
 	CustomerID     string          `json:"customer_id"`
+	JobType        string          `json:"job_type"`
 	Schedule       string          `json:"schedule"`
 	NextRunAt      time.Time       `json:"next_run_at"`
 	Payload        json.RawMessage `json:"payload"`
@@ -93,6 +96,7 @@ type SchedulerJob struct {
 	LeaseOwner     *string         `json:"lease_owner,omitempty"`
 	LeaseExpiresAt *time.Time      `json:"lease_expires_at,omitempty"`
 	LastFiredAt    *time.Time      `json:"last_fired_at,omitempty"`
+	Metadata       json.RawMessage `json:"metadata"`
 }
 
 type SchedulerJobSpec struct {
@@ -100,9 +104,11 @@ type SchedulerJobSpec struct {
 	UserID          string
 	AgentInstanceID string
 	SessionID       string
+	JobType         string
 	Schedule        string
 	NextRunAt       time.Time
 	Input           any
+	Metadata        any
 }
 
 type OutboxItem struct {
@@ -122,6 +128,7 @@ type ToolCallRecord struct {
 	Arguments json.RawMessage `json:"arguments"`
 	Result    json.RawMessage `json:"result"`
 	Retryable bool            `json:"retryable"`
+	ArgsHash  string          `json:"args_hash"`
 	Error     *string         `json:"error,omitempty"`
 }
 
@@ -560,11 +567,12 @@ func (s *Store) CompleteModelCall(ctx context.Context, callID, runID string, res
 
 func (s *Store) StartToolCall(ctx context.Context, runID, toolName string, args any, retryable bool) (string, error) {
 	b, _ := json.Marshal(args)
+	argsHash := StableArgsHash(toolName, args)
 	var id string
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO tool_calls(run_id,tool_name,state,arguments,retryable)
-		VALUES($1,$2,'running',$3,$4)
-		RETURNING id::text`, runID, toolName, b, retryable).Scan(&id)
+		INSERT INTO tool_calls(run_id,tool_name,state,arguments,retryable,args_hash)
+		VALUES($1,$2,'running',$3,$4,$5)
+		RETURNING id::text`, runID, toolName, b, retryable, argsHash).Scan(&id)
 	if err == nil {
 		_ = s.AddEvent(ctx, runID, "tool.started", map[string]any{"tool_call_id": id, "tool_name": toolName})
 	}
@@ -586,7 +594,7 @@ func (s *Store) CompleteToolCall(ctx context.Context, callID, runID string, resu
 
 func (s *Store) CompletedNonRetryableToolCalls(ctx context.Context, runID string) ([]ToolCallRecord, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id::text, run_id::text, tool_name, state, arguments, result, retryable, error
+		SELECT id::text, run_id::text, tool_name, state, arguments, result, retryable, args_hash, error
 		FROM tool_calls
 		WHERE run_id=$1 AND retryable=false AND completed_at IS NOT NULL
 		ORDER BY created_at`, runID)
@@ -597,12 +605,49 @@ func (s *Store) CompletedNonRetryableToolCalls(ctx context.Context, runID string
 	var out []ToolCallRecord
 	for rows.Next() {
 		var rec ToolCallRecord
-		if err := rows.Scan(&rec.ID, &rec.RunID, &rec.ToolName, &rec.State, &rec.Arguments, &rec.Result, &rec.Retryable, &rec.Error); err != nil {
+		if err := rows.Scan(&rec.ID, &rec.RunID, &rec.ToolName, &rec.State, &rec.Arguments, &rec.Result, &rec.Retryable, &rec.ArgsHash, &rec.Error); err != nil {
 			return nil, err
 		}
 		out = append(out, rec)
 	}
 	return out, rows.Err()
+}
+
+func StableArgsHash(toolName string, args any) string {
+	normalized := normalizeJSON(args)
+	b, _ := json.Marshal(normalized)
+	sum := sha256.Sum256([]byte(toolName + ":" + string(b)))
+	return fmt.Sprintf("%x", sum[:])
+}
+
+func normalizeJSON(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(x))
+		for k := range x {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		out := make(map[string]any, len(x))
+		for _, k := range keys {
+			out[k] = normalizeJSON(x[k])
+		}
+		return out
+	case []any:
+		out := make([]any, len(x))
+		for i := range x {
+			out[i] = normalizeJSON(x[i])
+		}
+		return out
+	case json.RawMessage:
+		var decoded any
+		if err := json.Unmarshal(x, &decoded); err == nil {
+			return normalizeJSON(decoded)
+		}
+		return string(x)
+	default:
+		return x
+	}
 }
 
 func (s *Store) StartMCPCall(ctx context.Context, runID, serverName, toolName string, request any) (string, error) {
@@ -650,7 +695,7 @@ func (s *Store) ClaimDueSchedulerJobs(ctx context.Context, owner string, limit i
 		SET lease_owner=$2, lease_expires_at=now()+$3::interval
 		FROM candidate
 		WHERE j.id=candidate.id
-		RETURNING j.id::text, j.customer_id, j.schedule, j.next_run_at, j.payload, j.enabled, j.lease_owner, j.lease_expires_at, j.last_fired_at`,
+		RETURNING j.id::text, j.customer_id, j.job_type, j.schedule, j.next_run_at, j.payload, j.enabled, j.lease_owner, j.lease_expires_at, j.last_fired_at, j.metadata`,
 		limit, owner, fmt.Sprintf("%f seconds", leaseFor.Seconds()))
 	if err != nil {
 		return nil, err
@@ -659,7 +704,7 @@ func (s *Store) ClaimDueSchedulerJobs(ctx context.Context, owner string, limit i
 	var jobs []SchedulerJob
 	for rows.Next() {
 		var job SchedulerJob
-		if err := rows.Scan(&job.ID, &job.CustomerID, &job.Schedule, &job.NextRunAt, &job.Payload, &job.Enabled, &job.LeaseOwner, &job.LeaseExpiresAt, &job.LastFiredAt); err != nil {
+		if err := rows.Scan(&job.ID, &job.CustomerID, &job.JobType, &job.Schedule, &job.NextRunAt, &job.Payload, &job.Enabled, &job.LeaseOwner, &job.LeaseExpiresAt, &job.LastFiredAt, &job.Metadata); err != nil {
 			return nil, err
 		}
 		jobs = append(jobs, job)
@@ -681,14 +726,20 @@ func (s *Store) CreateSchedulerJob(ctx context.Context, spec SchedulerJobSpec) (
 		"agent_instance_id": spec.AgentInstanceID,
 		"session_id":        spec.SessionID,
 		"input":             spec.Input,
+		"workflow_wake":     workflowWakeMetadata(spec.Metadata),
 	})
+	metadata, _ := json.Marshal(spec.Metadata)
+	jobType := spec.JobType
+	if jobType == "" {
+		jobType = "cron"
+	}
 	var job SchedulerJob
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO scheduler_jobs(customer_id,schedule,next_run_at,payload)
-		VALUES($1,$2,$3,$4)
-		RETURNING id::text, customer_id, schedule, next_run_at, payload, enabled, lease_owner, lease_expires_at, last_fired_at`,
-		spec.CustomerID, spec.Schedule, spec.NextRunAt, payload).
-		Scan(&job.ID, &job.CustomerID, &job.Schedule, &job.NextRunAt, &job.Payload, &job.Enabled, &job.LeaseOwner, &job.LeaseExpiresAt, &job.LastFiredAt)
+		INSERT INTO scheduler_jobs(customer_id,job_type,schedule,next_run_at,payload,metadata)
+		VALUES($1,$2,$3,$4,$5,$6)
+		RETURNING id::text, customer_id, job_type, schedule, next_run_at, payload, enabled, lease_owner, lease_expires_at, last_fired_at, metadata`,
+		spec.CustomerID, jobType, spec.Schedule, spec.NextRunAt, payload, metadata).
+		Scan(&job.ID, &job.CustomerID, &job.JobType, &job.Schedule, &job.NextRunAt, &job.Payload, &job.Enabled, &job.LeaseOwner, &job.LeaseExpiresAt, &job.LastFiredAt, &job.Metadata)
 	return &job, err
 }
 
@@ -697,7 +748,7 @@ func (s *Store) ListSchedulerJobs(ctx context.Context, customerID string, limit 
 		limit = 100
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT id::text, customer_id, schedule, next_run_at, payload, enabled, lease_owner, lease_expires_at, last_fired_at
+		SELECT id::text, customer_id, job_type, schedule, next_run_at, payload, enabled, lease_owner, lease_expires_at, last_fired_at, metadata
 		FROM scheduler_jobs
 		WHERE customer_id=$1
 		ORDER BY next_run_at ASC
@@ -709,7 +760,7 @@ func (s *Store) ListSchedulerJobs(ctx context.Context, customerID string, limit 
 	var jobs []SchedulerJob
 	for rows.Next() {
 		var job SchedulerJob
-		if err := rows.Scan(&job.ID, &job.CustomerID, &job.Schedule, &job.NextRunAt, &job.Payload, &job.Enabled, &job.LeaseOwner, &job.LeaseExpiresAt, &job.LastFiredAt); err != nil {
+		if err := rows.Scan(&job.ID, &job.CustomerID, &job.JobType, &job.Schedule, &job.NextRunAt, &job.Payload, &job.Enabled, &job.LeaseOwner, &job.LeaseExpiresAt, &job.LastFiredAt, &job.Metadata); err != nil {
 			return nil, err
 		}
 		jobs = append(jobs, job)
@@ -732,6 +783,13 @@ func (s *Store) SetSchedulerJobEnabled(ctx context.Context, jobID, customerID st
 }
 
 func (s *Store) CompleteSchedulerJob(ctx context.Context, jobID string, firedAt, nextRunAt time.Time) error {
+	if nextRunAt.IsZero() {
+		_, err := s.pool.Exec(ctx, `
+			UPDATE scheduler_jobs
+			SET last_fired_at=$2, enabled=false, lease_owner=NULL, lease_expires_at=NULL
+			WHERE id=$1`, jobID, firedAt)
+		return err
+	}
 	_, err := s.pool.Exec(ctx, `
 		UPDATE scheduler_jobs
 		SET last_fired_at=$2, next_run_at=$3, lease_owner=NULL, lease_expires_at=NULL
@@ -843,4 +901,12 @@ func nullableRunID(runID string) any {
 		return nil
 	}
 	return runID
+}
+
+func workflowWakeMetadata(metadata any) any {
+	m, ok := metadata.(map[string]any)
+	if !ok {
+		return nil
+	}
+	return m["workflow_wake"]
 }

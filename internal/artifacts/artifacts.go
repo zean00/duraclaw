@@ -1,6 +1,9 @@
 package artifacts
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 type ProcessorContext struct {
 	CustomerID      string
@@ -30,6 +33,37 @@ type Processor interface {
 	Name() string
 	CanProcess(a Artifact) bool
 	Process(ctx context.Context, exec ProcessorContext, a Artifact) ([]Representation, error)
+}
+
+type ProviderAdapter struct {
+	NameValue   string
+	Modalities  map[string]bool
+	MediaTypes  map[string]bool
+	ProcessFunc func(ctx context.Context, exec ProcessorContext, a Artifact) ([]Representation, error)
+}
+
+func (p ProviderAdapter) Name() string {
+	if p.NameValue == "" {
+		return "provider_adapter"
+	}
+	return p.NameValue
+}
+
+func (p ProviderAdapter) CanProcess(a Artifact) bool {
+	if len(p.Modalities) > 0 && !p.Modalities[a.Modality] {
+		return false
+	}
+	if len(p.MediaTypes) > 0 && !p.MediaTypes[a.MediaType] {
+		return false
+	}
+	return p.ProcessFunc != nil
+}
+
+func (p ProviderAdapter) Process(ctx context.Context, exec ProcessorContext, a Artifact) ([]Representation, error) {
+	if p.ProcessFunc == nil {
+		return nil, fmt.Errorf("artifact provider adapter %q has no process function", p.Name())
+	}
+	return p.ProcessFunc(ctx, exec, a)
 }
 
 type Registry struct {

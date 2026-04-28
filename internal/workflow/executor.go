@@ -10,8 +10,11 @@ import (
 	"sync"
 	"time"
 
+	"duraclaw/internal/artifacts"
 	"duraclaw/internal/db"
 	"duraclaw/internal/mcp"
+	"duraclaw/internal/policy"
+	"duraclaw/internal/preferences"
 	"duraclaw/internal/providers"
 	"duraclaw/internal/tools"
 )
@@ -39,6 +42,24 @@ type Store interface {
 	CompleteToolCall(ctx context.Context, callID, runID string, result any, errText *string) error
 	StartMCPCall(ctx context.Context, runID, serverName, toolName string, request any) (string, error)
 	CompleteMCPCall(ctx context.Context, callID, runID string, response any, errText *string) error
+	ListMemories(ctx context.Context, customerID, userID string, limit int) ([]db.Memory, error)
+	AddMemory(ctx context.Context, customerID, userID, sessionID, memoryType, content string, metadata any) (string, error)
+	ListPreferences(ctx context.Context, customerID, userID string, limit int) ([]db.Preference, error)
+	AddPreference(ctx context.Context, customerID, userID, sessionID, category, content string, condition, metadata any) (string, error)
+	ListKnowledgeDocuments(ctx context.Context, customerID string, limit int) ([]db.KnowledgeDocument, error)
+	ListKnowledgeChunks(ctx context.Context, documentID string, limit int) ([]db.KnowledgeChunk, error)
+	ArtifactsForRun(ctx context.Context, runID string) ([]db.Artifact, error)
+	ArtifactRepresentations(ctx context.Context, customerID, artifactID string) ([]db.ArtifactRepresentation, error)
+	AttachArtifact(ctx context.Context, runID string, a db.Artifact) error
+	InsertArtifactRepresentation(ctx context.Context, artifactID, typ, summary string, metadata any) error
+	SetArtifactState(ctx context.Context, artifactID, state string) error
+	StartProcessorCall(ctx context.Context, runID, artifactID, processor string, request any) (string, error)
+	CompleteProcessorCall(ctx context.Context, callID, runID string, response any, errText *string) error
+	CreateOutboundIntent(ctx context.Context, intent db.OutboundIntent) (string, int64, error)
+	CreateRun(ctx context.Context, c db.ACPContext, input any) (*db.Run, error)
+	CreateSchedulerJob(ctx context.Context, spec db.SchedulerJobSpec) (*db.SchedulerJob, error)
+	PolicyRulesForScope(ctx context.Context, customerID, agentInstanceID, enforcementMode string) ([]db.PolicyRule, error)
+	RecordPolicyEvaluation(ctx context.Context, ev db.PolicyEvaluation) error
 	SetRunState(ctx context.Context, runID, state string, errText *string) error
 	AddEvent(ctx context.Context, runID, typ string, payload any) error
 }
@@ -49,6 +70,8 @@ type Executor struct {
 	modelConfig providers.ModelConfig
 	tools       *tools.Registry
 	mcpManager  *mcp.Manager
+	policy      *policy.Engine
+	processors  *artifacts.Registry
 	concurrency int
 }
 
@@ -69,6 +92,16 @@ func (e *Executor) WithTools(registry *tools.Registry) *Executor {
 
 func (e *Executor) WithMCP(manager *mcp.Manager) *Executor {
 	e.mcpManager = manager
+	return e
+}
+
+func (e *Executor) WithPolicy(engine *policy.Engine) *Executor {
+	e.policy = engine
+	return e
+}
+
+func (e *Executor) WithProcessors(registry *artifacts.Registry) *Executor {
+	e.processors = registry
 	return e
 }
 
@@ -214,7 +247,9 @@ func validateGraph(g *graphData) (string, error) {
 
 func supportedNodeType(typ string) bool {
 	switch typ {
-	case "start", "checkpoint", "message", "end", "ask_user", "split", "merge", "switch", "condition", "llm_condition", "tool", "mcp":
+	case "start", "checkpoint", "message", "end", "ask_user", "split", "merge", "switch", "condition", "llm_condition", "tool", "mcp",
+		"tool_call", "mcp_call", "model_call", "retrieve_knowledge", "read_memory", "write_memory", "read_preference", "write_preference", "read_artifact", "process_artifact", "write_artifact",
+		"branch", "loop", "transform", "wait_timer", "emit_outbound_message", "create_background_job":
 		return true
 	default:
 		return false
@@ -353,6 +388,14 @@ func (e *Executor) executeBatch(ctx context.Context, req GraphRequest, g *graphD
 }
 
 func (e *Executor) executeOne(ctx context.Context, req GraphRequest, node db.WorkflowNode, workflowRunID string, state db.WorkflowNodeState, previous map[string]any) nodeResult {
+	if _, err := e.policyEngine().Enforce(ctx, "pre_workflow_node", policy.Context{
+		CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID,
+		RunID: req.RunID, WorkflowRunID: workflowRunID, WorkflowNodeKey: node.NodeKey,
+	}); err != nil {
+		msg := err.Error()
+		_ = e.store.SetWorkflowNodeState(context.Background(), workflowRunID, node.NodeKey, "failed", nil, &msg)
+		return nodeResult{nodeKey: node.NodeKey, err: err}
+	}
 	if err := e.store.SetWorkflowNodeState(ctx, workflowRunID, node.NodeKey, "running", nil, nil); err != nil {
 		return nodeResult{nodeKey: node.NodeKey, err: err}
 	}
@@ -362,7 +405,7 @@ func (e *Executor) executeOne(ctx context.Context, req GraphRequest, node db.Wor
 	}
 	nodeCtx, cancel := nodeContext(ctx, node)
 	defer cancel()
-	output, nodeState, err := e.executeNode(nodeCtx, req, node, previous)
+	output, nodeState, err := e.executeNode(nodeCtx, req, node, workflowRunID, previous)
 	if err != nil {
 		msg := err.Error()
 		_ = e.store.CompleteWorkflowNodeRun(context.Background(), nodeRunID, "failed", output, &msg)
@@ -379,10 +422,19 @@ func (e *Executor) executeOne(ctx context.Context, req GraphRequest, node db.Wor
 	if err := e.store.SetWorkflowNodeState(ctx, workflowRunID, node.NodeKey, nodeState, output, nil); err != nil {
 		return nodeResult{nodeKey: node.NodeKey, output: output, err: err}
 	}
+	if _, err := e.policyEngine().Enforce(ctx, "post_workflow_node", policy.Context{
+		CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID,
+		RunID: req.RunID, WorkflowRunID: workflowRunID, WorkflowNodeKey: node.NodeKey, Content: mustJSONString(output),
+	}); err != nil {
+		msg := err.Error()
+		_ = e.store.CompleteWorkflowNodeRun(context.Background(), nodeRunID, "failed", output, &msg)
+		_ = e.store.SetWorkflowNodeState(context.Background(), workflowRunID, node.NodeKey, "failed", output, &msg)
+		return nodeResult{nodeKey: node.NodeKey, output: output, err: err}
+	}
 	return nodeResult{nodeKey: node.NodeKey, state: nodeState, output: output}
 }
 
-func (e *Executor) executeNode(ctx context.Context, req GraphRequest, node db.WorkflowNode, previous map[string]any) (map[string]any, string, error) {
+func (e *Executor) executeNode(ctx context.Context, req GraphRequest, node db.WorkflowNode, workflowRunID string, previous map[string]any) (map[string]any, string, error) {
 	config, err := configMap(node)
 	if err != nil {
 		return nil, "", err
@@ -400,7 +452,7 @@ func (e *Executor) executeNode(ctx context.Context, req GraphRequest, node db.Wo
 			question = "Additional input is required."
 		}
 		return map[string]any{"question": question}, "awaiting_user", nil
-	case "switch":
+	case "switch", "branch":
 		key, _ := config["key"].(string)
 		return map[string]any{"route": valueAt(previous, key)}, "succeeded", nil
 	case "condition":
@@ -411,10 +463,38 @@ func (e *Executor) executeNode(ctx context.Context, req GraphRequest, node db.Wo
 		return map[string]any{"route": route}, "succeeded", nil
 	case "llm_condition":
 		return e.executeLLMCondition(ctx, req, node, config, previous)
-	case "tool":
+	case "model_call":
+		return e.executeModelCall(ctx, req, node, config, previous)
+	case "tool", "tool_call":
 		return e.executeToolNode(ctx, req, node, config)
-	case "mcp":
+	case "mcp", "mcp_call":
 		return e.executeMCPNode(ctx, req, node, config)
+	case "retrieve_knowledge":
+		return e.executeRetrieveKnowledge(ctx, req, config, previous)
+	case "read_memory":
+		return e.executeReadMemory(ctx, req, config)
+	case "write_memory":
+		return e.executeWriteMemory(ctx, req, config, previous)
+	case "read_preference":
+		return e.executeReadPreference(ctx, req, config)
+	case "write_preference":
+		return e.executeWritePreference(ctx, req, config, previous)
+	case "read_artifact":
+		return e.executeReadArtifact(ctx, req, config)
+	case "process_artifact":
+		return e.executeProcessArtifact(ctx, req, config)
+	case "write_artifact":
+		return e.executeWriteArtifact(ctx, req, config)
+	case "transform":
+		return executeTransform(config, previous), "succeeded", nil
+	case "loop":
+		return executeLoop(config, previous), "succeeded", nil
+	case "emit_outbound_message":
+		return e.executeEmitOutbound(ctx, req, config, previous)
+	case "create_background_job":
+		return e.executeCreateBackgroundJob(ctx, req, config, previous)
+	case "wait_timer":
+		return e.executeWaitTimer(ctx, req, workflowRunID, node.NodeKey, config)
 	default:
 		return nil, "", fmt.Errorf("unsupported workflow node_type %q", node.NodeType)
 	}
@@ -452,6 +532,55 @@ func (e *Executor) executeLLMCondition(ctx context.Context, req GraphRequest, no
 				} else if strings.TrimSpace(fmt.Sprint(out["route"])) == "" {
 					err = fmt.Errorf("llm_condition response missing route")
 				} else {
+					_ = e.store.CompleteModelCall(ctx, callID, req.RunID, map[string]any{"finish_reason": resp.FinishReason, "content_length": len(resp.Content)}, nil)
+					return out, "succeeded", nil
+				}
+			}
+		}
+		lastErr = err
+		msg := err.Error()
+		_ = e.store.CompleteModelCall(context.Background(), callID, req.RunID, nil, &msg)
+	}
+	return nil, "", lastErr
+}
+
+func (e *Executor) executeModelCall(ctx context.Context, req GraphRequest, node db.WorkflowNode, config map[string]any, previous map[string]any) (map[string]any, string, error) {
+	if e.providers == nil {
+		return nil, "", fmt.Errorf("model_call requires provider registry")
+	}
+	candidates := providers.ResolveCandidates(e.modelConfig, e.providers.DefaultProvider())
+	if len(candidates) == 0 {
+		return nil, "", fmt.Errorf("no provider candidates configured")
+	}
+	promptText, _ := config["prompt"].(string)
+	if promptText == "" {
+		promptText = "Complete the workflow model step."
+	}
+	strictJSON, _ := config["strict_json"].(bool)
+	messages := []providers.Message{{Role: "user", Content: promptText + "\nContext: " + mustJSONString(previous)}}
+	var lastErr error
+	for _, candidate := range candidates {
+		callID, err := e.store.StartModelCall(ctx, req.RunID, candidate.Provider, candidate.Model, map[string]any{"node_key": node.NodeKey, "type": "model_call"})
+		if err != nil {
+			return nil, "", err
+		}
+		provider, ok := e.providers.Get(candidate.Provider)
+		if !ok {
+			err = fmt.Errorf("provider %q is not registered", candidate.Provider)
+		} else {
+			var resp *providers.LLMResponse
+			resp, err = provider.Chat(ctx, messages, nil, candidate.Model, nil)
+			if err == nil {
+				out := map[string]any{"content": resp.Content, "finish_reason": resp.FinishReason}
+				if strictJSON {
+					parsed := map[string]any{}
+					if jsonErr := json.Unmarshal([]byte(resp.Content), &parsed); jsonErr != nil {
+						err = jsonErr
+					} else {
+						out = parsed
+					}
+				}
+				if err == nil {
 					_ = e.store.CompleteModelCall(ctx, callID, req.RunID, map[string]any{"finish_reason": resp.FinishReason, "content_length": len(resp.Content)}, nil)
 					return out, "succeeded", nil
 				}
@@ -506,6 +635,271 @@ func (e *Executor) executeMCPNode(ctx context.Context, req GraphRequest, node db
 		return nil, "", err
 	}
 	return map[string]any{"server_name": serverName, "tool_name": toolName, "result": result}, "succeeded", nil
+}
+
+func (e *Executor) executeReadMemory(ctx context.Context, req GraphRequest, config map[string]any) (map[string]any, string, error) {
+	limit := intValue(config["limit"])
+	memories, err := e.store.ListMemories(ctx, req.CustomerID, req.UserID, limit)
+	if err != nil {
+		return nil, "", err
+	}
+	return map[string]any{"memories": memories}, "succeeded", nil
+}
+
+func (e *Executor) executeWriteMemory(ctx context.Context, req GraphRequest, config map[string]any, previous map[string]any) (map[string]any, string, error) {
+	content, _ := config["content"].(string)
+	if key, _ := config["content_key"].(string); key != "" {
+		content = fmt.Sprint(valueAt(previous, key))
+	}
+	if strings.TrimSpace(content) == "" {
+		return nil, "", fmt.Errorf("write_memory requires content or content_key")
+	}
+	if _, err := e.policyEngine().Enforce(ctx, "pre_memory_write", policy.Context{
+		CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID, RunID: req.RunID, Content: content,
+	}); err != nil {
+		return nil, "", err
+	}
+	memoryType, _ := config["memory_type"].(string)
+	if memoryType == "" {
+		memoryType = "workflow"
+	}
+	id, err := e.store.AddMemory(ctx, req.CustomerID, req.UserID, req.SessionID, memoryType, content, config["metadata"])
+	if err != nil {
+		return nil, "", err
+	}
+	return map[string]any{"memory_id": id, "content": content}, "succeeded", nil
+}
+
+func (e *Executor) executeReadPreference(ctx context.Context, req GraphRequest, config map[string]any) (map[string]any, string, error) {
+	limit := intValue(config["limit"])
+	list, err := e.store.ListPreferences(ctx, req.CustomerID, req.UserID, limit)
+	if err != nil {
+		return nil, "", err
+	}
+	return map[string]any{"preferences": preferences.Match(list, mapValue(config["context"]))}, "succeeded", nil
+}
+
+func (e *Executor) executeWritePreference(ctx context.Context, req GraphRequest, config map[string]any, previous map[string]any) (map[string]any, string, error) {
+	content, _ := config["content"].(string)
+	if key, _ := config["content_key"].(string); key != "" {
+		content = fmt.Sprint(valueAt(previous, key))
+	}
+	if strings.TrimSpace(content) == "" {
+		return nil, "", fmt.Errorf("write_preference requires content or content_key")
+	}
+	if _, err := e.policyEngine().Enforce(ctx, "pre_memory_write", policy.Context{
+		CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID, RunID: req.RunID, Content: content,
+	}); err != nil {
+		return nil, "", err
+	}
+	id, err := e.store.AddPreference(ctx, req.CustomerID, req.UserID, req.SessionID, stringValue(config["category"], "general"), content, mapValue(config["condition"]), config["metadata"])
+	if err != nil {
+		return nil, "", err
+	}
+	return map[string]any{"preference_id": id, "content": content, "condition": mapValue(config["condition"])}, "succeeded", nil
+}
+
+func (e *Executor) executeRetrieveKnowledge(ctx context.Context, req GraphRequest, config map[string]any, previous map[string]any) (map[string]any, string, error) {
+	query, _ := config["query"].(string)
+	if key, _ := config["query_key"].(string); key != "" {
+		query = fmt.Sprint(valueAt(previous, key))
+	}
+	limit := intValue(config["limit"])
+	if limit <= 0 {
+		limit = 5
+	}
+	docs, err := e.store.ListKnowledgeDocuments(ctx, req.CustomerID, 50)
+	if err != nil {
+		return nil, "", err
+	}
+	query = strings.ToLower(query)
+	var chunks []db.KnowledgeChunk
+	for _, doc := range docs {
+		docChunks, err := e.store.ListKnowledgeChunks(ctx, doc.ID, 100)
+		if err != nil {
+			return nil, "", err
+		}
+		for _, chunk := range docChunks {
+			if query == "" || strings.Contains(strings.ToLower(chunk.Content), query) {
+				chunks = append(chunks, chunk)
+				if len(chunks) >= limit {
+					return map[string]any{"chunks": chunks}, "succeeded", nil
+				}
+			}
+		}
+	}
+	return map[string]any{"chunks": chunks}, "succeeded", nil
+}
+
+func (e *Executor) executeReadArtifact(ctx context.Context, req GraphRequest, config map[string]any) (map[string]any, string, error) {
+	artifactID, _ := config["artifact_id"].(string)
+	artifactsForRun, err := e.store.ArtifactsForRun(ctx, req.RunID)
+	if err != nil {
+		return nil, "", err
+	}
+	for _, artifact := range artifactsForRun {
+		if artifactID != "" && artifact.ID != artifactID {
+			continue
+		}
+		reps, err := e.store.ArtifactRepresentations(ctx, req.CustomerID, artifact.ID)
+		if err != nil {
+			return nil, "", err
+		}
+		return map[string]any{"artifact": artifact, "representations": reps}, "succeeded", nil
+	}
+	return nil, "", fmt.Errorf("artifact not found")
+}
+
+func (e *Executor) executeProcessArtifact(ctx context.Context, req GraphRequest, config map[string]any) (map[string]any, string, error) {
+	if e.processors == nil {
+		e.processors = artifacts.NewRegistry(artifacts.MockProcessor{})
+	}
+	artifactID, _ := config["artifact_id"].(string)
+	artifactsForRun, err := e.store.ArtifactsForRun(ctx, req.RunID)
+	if err != nil {
+		return nil, "", err
+	}
+	for _, artifact := range artifactsForRun {
+		if artifactID != "" && artifact.ID != artifactID {
+			continue
+		}
+		pa := artifacts.Artifact{ID: artifact.ID, Modality: artifact.Modality, MediaType: artifact.MediaType, StorageRef: artifact.StorageRef, Metadata: artifact.Metadata}
+		processor, ok := e.processors.ProcessorFor(pa)
+		if !ok {
+			return nil, "", fmt.Errorf("no artifact processor for %s", artifact.ID)
+		}
+		if _, err := e.policyEngine().Enforce(ctx, "pre_artifact_process", policy.Context{
+			CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID, RunID: req.RunID,
+			ArtifactID: artifact.ID, Processor: processor.Name(),
+		}); err != nil {
+			return nil, "", err
+		}
+		callID, err := e.store.StartProcessorCall(ctx, req.RunID, artifact.ID, processor.Name(), map[string]any{"modality": artifact.Modality, "media_type": artifact.MediaType})
+		if err != nil {
+			return nil, "", err
+		}
+		reps, err := processor.Process(ctx, artifacts.ProcessorContext{
+			CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID, RunID: req.RunID,
+			ArtifactID: artifact.ID, RequestID: req.RequestID,
+		}, pa)
+		if err != nil {
+			msg := err.Error()
+			_ = e.store.CompleteProcessorCall(context.Background(), callID, req.RunID, nil, &msg)
+			return nil, "", err
+		}
+		for _, rep := range reps {
+			if err := e.store.InsertArtifactRepresentation(ctx, artifact.ID, rep.Type, rep.Summary, rep.Metadata); err != nil {
+				return nil, "", err
+			}
+		}
+		if err := e.store.CompleteProcessorCall(ctx, callID, req.RunID, map[string]any{"representations": len(reps)}, nil); err != nil {
+			return nil, "", err
+		}
+		_ = e.store.SetArtifactState(ctx, artifact.ID, "processed")
+		return map[string]any{"artifact_id": artifact.ID, "representations": len(reps)}, "succeeded", nil
+	}
+	return nil, "", fmt.Errorf("artifact not found")
+}
+
+func (e *Executor) executeWriteArtifact(ctx context.Context, req GraphRequest, config map[string]any) (map[string]any, string, error) {
+	id, _ := config["artifact_id"].(string)
+	if id == "" {
+		id = "artifact-" + fmt.Sprint(time.Now().UnixNano())
+	}
+	storageRef, _ := config["storage_ref"].(string)
+	if storageRef == "" {
+		return nil, "", fmt.Errorf("write_artifact requires storage_ref")
+	}
+	artifact := db.Artifact{
+		ID: id, Modality: stringValue(config["modality"], "document"), MediaType: stringValue(config["media_type"], "application/octet-stream"),
+		Filename: stringValue(config["filename"], ""), StorageRef: storageRef, State: "available", Metadata: mapValue(config["metadata"]),
+	}
+	if err := e.store.AttachArtifact(ctx, req.RunID, artifact); err != nil {
+		return nil, "", err
+	}
+	return map[string]any{"artifact_id": id}, "succeeded", nil
+}
+
+func executeTransform(config map[string]any, previous map[string]any) map[string]any {
+	out := map[string]any{}
+	if constants, ok := config["set"].(map[string]any); ok {
+		for k, v := range constants {
+			out[k] = v
+		}
+	}
+	if mappings, ok := config["map"].(map[string]any); ok {
+		for outKey, raw := range mappings {
+			if inKey, ok := raw.(string); ok {
+				out[outKey] = valueAt(previous, inKey)
+			}
+		}
+	}
+	return out
+}
+
+func executeLoop(config map[string]any, previous map[string]any) map[string]any {
+	items, _ := valueAt(previous, stringValue(config["items_key"], "items")).([]any)
+	max := intValue(config["max_items"])
+	if max <= 0 || max > 100 {
+		max = 100
+	}
+	count := len(items)
+	if count > max {
+		count = max
+	}
+	return map[string]any{"iterations": count, "items": items[:count]}
+}
+
+func (e *Executor) executeEmitOutbound(ctx context.Context, req GraphRequest, config map[string]any, previous map[string]any) (map[string]any, string, error) {
+	payload := mapValue(config["payload"])
+	if textKey, _ := config["text_key"].(string); textKey != "" {
+		payload["text"] = valueAt(previous, textKey)
+	}
+	runID := req.RunID
+	id, outboxID, err := e.store.CreateOutboundIntent(ctx, db.OutboundIntent{
+		CustomerID: req.CustomerID, UserID: req.UserID, SessionID: req.SessionID, RunID: &runID, Type: stringValue(config["intent_type"], "message"),
+		Payload: mustRawJSON(payload),
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	return map[string]any{"outbound_intent_id": id, "outbox_id": outboxID}, "succeeded", nil
+}
+
+func (e *Executor) executeCreateBackgroundJob(ctx context.Context, req GraphRequest, config map[string]any, previous map[string]any) (map[string]any, string, error) {
+	input := mapValue(config["input"])
+	if len(input) == 0 {
+		input = previous
+	}
+	key := stringValue(config["idempotency_key"], "workflow-background:"+req.RunID+":"+fmt.Sprint(time.Now().UnixNano()))
+	run, err := e.store.CreateRun(ctx, db.ACPContext{
+		CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID,
+		RequestID: req.RequestID + ":background", IdempotencyKey: key,
+	}, input)
+	if err != nil {
+		return nil, "", err
+	}
+	return map[string]any{"run_id": run.ID}, "succeeded", nil
+}
+
+func (e *Executor) executeWaitTimer(ctx context.Context, req GraphRequest, workflowRunID, nodeKey string, config map[string]any) (map[string]any, string, error) {
+	seconds := intValue(config["seconds"])
+	if seconds <= 0 {
+		seconds = 60
+	}
+	resumeAt := time.Now().UTC().Add(time.Duration(seconds) * time.Second)
+	schedule := stringValue(config["schedule"], "@once")
+	job, err := e.store.CreateSchedulerJob(ctx, db.SchedulerJobSpec{
+		CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID,
+		JobType: "workflow_timer", Schedule: schedule, NextRunAt: resumeAt,
+		Input:    map[string]any{"text": "Workflow timer fired.", "workflow_definition_id": req.WorkflowDefinitionID},
+		Metadata: map[string]any{"workflow_wake": map[string]any{"run_id": req.RunID, "workflow_run_id": workflowRunID, "node_key": nodeKey}},
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	_ = e.store.AddEvent(ctx, req.RunID, "workflow.wait_timer", map[string]any{"seconds": seconds, "resume_after": resumeAt, "scheduler_job_id": job.ID})
+	return map[string]any{"wait_seconds": seconds, "scheduler_job_id": job.ID}, "awaiting_user", nil
 }
 
 func (e *Executor) activateOutgoing(ctx context.Context, workflowRunID string, g *graphData, nodeKey string, output map[string]any) error {
@@ -605,6 +999,13 @@ func (e *Executor) activationMap(ctx context.Context, workflowRunID string) (map
 		}
 	}
 	return out, nil
+}
+
+func (e *Executor) policyEngine() *policy.Engine {
+	if e.policy != nil {
+		return e.policy
+	}
+	return policy.NewEngine(e.store)
 }
 
 func queuedNodes(states map[string]db.WorkflowNodeState) []string {
@@ -787,6 +1188,25 @@ func intValue(raw any) int {
 func mustJSONString(v any) string {
 	b, _ := json.Marshal(v)
 	return string(b)
+}
+
+func mustRawJSON(v any) json.RawMessage {
+	b, _ := json.Marshal(v)
+	return b
+}
+
+func stringValue(raw any, fallback string) string {
+	if s, ok := raw.(string); ok && strings.TrimSpace(s) != "" {
+		return s
+	}
+	return fallback
+}
+
+func mapValue(raw any) map[string]any {
+	if m, ok := raw.(map[string]any); ok {
+		return m
+	}
+	return map[string]any{}
 }
 
 func firstRootNode(nodes []db.WorkflowNode, edges []db.WorkflowEdge) string {

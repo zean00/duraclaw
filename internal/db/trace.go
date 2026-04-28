@@ -109,7 +109,7 @@ func (s *Store) modelCalls(ctx context.Context, runID string) ([]ModelCallRecord
 }
 
 func (s *Store) toolCalls(ctx context.Context, runID string) ([]ToolCallRecord, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id::text, run_id::text, tool_name, state, arguments, result, retryable, error FROM tool_calls WHERE run_id=$1 ORDER BY created_at`, runID)
+	rows, err := s.pool.Query(ctx, `SELECT id::text, run_id::text, tool_name, state, arguments, result, retryable, args_hash, error FROM tool_calls WHERE run_id=$1 ORDER BY created_at`, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +117,7 @@ func (s *Store) toolCalls(ctx context.Context, runID string) ([]ToolCallRecord, 
 	var out []ToolCallRecord
 	for rows.Next() {
 		var rec ToolCallRecord
-		if err := rows.Scan(&rec.ID, &rec.RunID, &rec.ToolName, &rec.State, &rec.Arguments, &rec.Result, &rec.Retryable, &rec.Error); err != nil {
+		if err := rows.Scan(&rec.ID, &rec.RunID, &rec.ToolName, &rec.State, &rec.Arguments, &rec.Result, &rec.Retryable, &rec.ArgsHash, &rec.Error); err != nil {
 			return nil, err
 		}
 		out = append(out, rec)

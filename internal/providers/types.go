@@ -103,6 +103,15 @@ func (MockProvider) Chat(ctx context.Context, messages []Message, _ []ToolDefini
 	if strings.Contains(last, "[[remember:") {
 		return mockToolCall(last, "[[remember:", "remember", "content"), nil
 	}
+	if strings.Contains(last, "[[prefer:") {
+		return mockToolCall(last, "[[prefer:", "save_preference", "content"), nil
+	}
+	if strings.Contains(last, "[[workflow:") {
+		return mockToolCall(last, "[[workflow:", "duraclaw.run_workflow", "workflow_id"), nil
+	}
+	if strings.Contains(last, "[[ask_user:") {
+		return mockToolCall(last, "[[ask_user:", "duraclaw.ask_user", "question"), nil
+	}
 	if strings.Contains(last, "[[list_memories]]") {
 		return &LLMResponse{
 			Content:      "",
@@ -112,6 +121,20 @@ func (MockProvider) Chat(ctx context.Context, messages []Message, _ []ToolDefini
 				Type: "function",
 				Function: FunctionCall{
 					Name:      "list_memories",
+					Arguments: map[string]any{},
+				},
+			}},
+		}, nil
+	}
+	if strings.Contains(last, "[[list_preferences]]") {
+		return &LLMResponse{
+			Content:      "",
+			FinishReason: "tool_calls",
+			ToolCalls: []ToolCall{{
+				ID:   "mock-tool-call-1",
+				Type: "function",
+				Function: FunctionCall{
+					Name:      "list_preferences",
 					Arguments: map[string]any{},
 				},
 			}},

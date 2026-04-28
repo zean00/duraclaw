@@ -46,3 +46,59 @@ func TestInitialMigrationContainsRequiredDurabilitySchema(t *testing.T) {
 		}
 	}
 }
+
+func TestSecondMigrationContainsPolicyAndToolHashSchema(t *testing.T) {
+	raw, err := migrationFS.ReadFile("migrations/0002_policy_agent_workflow_v1.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw)
+	for _, want := range []string{
+		"CREATE TABLE IF NOT EXISTS policy_packs",
+		"CREATE TABLE IF NOT EXISTS policy_rules",
+		"CREATE TABLE IF NOT EXISTS policy_assignments",
+		"CREATE TABLE IF NOT EXISTS policy_evaluations",
+		"ALTER TABLE tool_calls ADD COLUMN IF NOT EXISTS args_hash",
+		"tool_calls_nonretry_hash_idx",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("migration missing %q", want)
+		}
+	}
+}
+
+func TestThirdMigrationContainsPreferencesSchema(t *testing.T) {
+	raw, err := migrationFS.ReadFile("migrations/0003_preferences.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw)
+	for _, want := range []string{
+		"CREATE TABLE IF NOT EXISTS preferences",
+		"condition jsonb NOT NULL DEFAULT '{}'::jsonb",
+		"embedding vector(768)",
+		"CREATE INDEX IF NOT EXISTS preferences_customer_user_idx",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("migration missing %q", want)
+		}
+	}
+}
+
+func TestFourthMigrationContainsReminderSchema(t *testing.T) {
+	raw, err := migrationFS.ReadFile("migrations/0004_reminders_and_embeddings.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw)
+	for _, want := range []string{
+		"ALTER TABLE scheduler_jobs ADD COLUMN IF NOT EXISTS job_type",
+		"CREATE TABLE IF NOT EXISTS reminder_subscriptions",
+		"reminder_subscriptions_due_idx",
+		"reminder_subscriptions_customer_user_idx",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("migration missing %q", want)
+		}
+	}
+}

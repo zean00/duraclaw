@@ -13,23 +13,29 @@ import (
 	"duraclaw/internal/mcp"
 	"duraclaw/internal/observability"
 	"duraclaw/internal/outbound"
+	"duraclaw/internal/policy"
+	"duraclaw/internal/preferences"
 	"duraclaw/internal/prompt"
 	"duraclaw/internal/providers"
 	"duraclaw/internal/tools"
 	"duraclaw/internal/workflow"
 )
 
+const defaultMaxIterations = 6
+
 type Worker struct {
-	store       *db.Store
-	providers   *providers.Registry
-	modelConfig providers.ModelConfig
-	processors  *artifacts.Registry
-	tools       *tools.Registry
-	mcpManager  *mcp.Manager
-	counters    *observability.Counters
-	outbound    *outbound.Service
-	owner       string
-	leaseFor    time.Duration
+	store         *db.Store
+	providers     *providers.Registry
+	modelConfig   providers.ModelConfig
+	processors    *artifacts.Registry
+	tools         *tools.Registry
+	mcpManager    *mcp.Manager
+	counters      *observability.Counters
+	outbound      *outbound.Service
+	policy        *policy.Engine
+	owner         string
+	leaseFor      time.Duration
+	maxIterations int
 }
 
 func NewWorker(store *db.Store, provider providers.LLMProvider, owner string) *Worker {
@@ -61,8 +67,10 @@ func NewWorkerWithProviders(store *db.Store, registry *providers.Registry, model
 	if store != nil {
 		toolRegistry.Register(tools.RememberTool{Store: store})
 		toolRegistry.Register(tools.ListMemoriesTool{Store: store})
+		toolRegistry.Register(tools.SavePreferenceTool{Store: store})
+		toolRegistry.Register(tools.ListPreferencesTool{Store: store})
 	}
-	return &Worker{store: store, providers: registry, modelConfig: modelConfig, processors: artifacts.NewRegistry(artifacts.MockProcessor{}), tools: toolRegistry, owner: owner, leaseFor: 2 * time.Minute}
+	return &Worker{store: store, providers: registry, modelConfig: modelConfig, processors: artifacts.NewRegistry(artifacts.MockProcessor{}), tools: toolRegistry, policy: policy.NewEngine(store), owner: owner, leaseFor: 2 * time.Minute, maxIterations: defaultMaxIterations}
 }
 
 func (w *Worker) WithCounters(counters *observability.Counters) *Worker {
@@ -153,6 +161,8 @@ func (w *Worker) process(ctx context.Context, run *db.Run) error {
 			WithProviders(w.providers, w.modelConfig).
 			WithTools(w.tools).
 			WithMCP(w.mcpManager).
+			WithPolicy(w.policyEngine()).
+			WithProcessors(w.processors).
 			ExecuteGraph(ctx, workflow.GraphRequest{
 				RunID:                run.ID,
 				CustomerID:           run.CustomerID,
@@ -202,64 +212,65 @@ func (w *Worker) process(ctx context.Context, run *db.Run) error {
 	if err := w.ensureRunnable(ctx, run.ID); err != nil {
 		return err
 	}
+	if _, err := w.policyEngine().Enforce(ctx, "pre_run", w.policyContext(run, "", "", text)); err != nil {
+		return err
+	}
 	messages, err := w.providerMessages(ctx, run, text)
 	if err != nil {
 		return err
 	}
 	toolDefs := w.toolDefinitions()
-	modelStepID, err := w.store.StartRunStep(ctx, run.ID, "model_call", map[string]any{"messages": len(messages), "tools": len(toolDefs)})
-	if err != nil {
-		return err
-	}
-	resp, err := w.chat(ctx, run, messages, toolDefs, map[string]any{"messages": len(messages), "tools": len(toolDefs)})
-	if err != nil {
-		msg := err.Error()
-		_ = w.store.CompleteRunStep(context.Background(), run.ID, modelStepID, "failed", nil, &msg)
-		return err
-	}
-	if err := w.store.CompleteRunStep(ctx, run.ID, modelStepID, "succeeded", map[string]any{"finish_reason": resp.FinishReason, "tool_calls": len(resp.ToolCalls)}, nil); err != nil {
-		return err
-	}
-	if err := w.ensureRunnable(ctx, run.ID); err != nil {
-		return err
-	}
-	if len(resp.ToolCalls) > 0 {
-		toolStepID, err := w.store.StartRunStep(ctx, run.ID, "tool_execution", map[string]any{"tool_calls": len(resp.ToolCalls)})
+	var resp *providers.LLMResponse
+	for iteration := 1; iteration <= w.maxIterations; iteration++ {
+		modelStepID, err := w.store.StartRunStep(ctx, run.ID, "model_call", map[string]any{"messages": len(messages), "tools": len(toolDefs), "iteration": iteration})
+		if err != nil {
+			return err
+		}
+		if _, err := w.policyEngine().Enforce(ctx, "pre_model", w.policyContext(run, modelStepID, "", text)); err != nil {
+			msg := err.Error()
+			_ = w.store.CompleteRunStep(context.Background(), run.ID, modelStepID, "failed", nil, &msg)
+			return err
+		}
+		resp, err = w.chat(ctx, run, messages, toolDefs, map[string]any{"messages": len(messages), "tools": len(toolDefs), "iteration": iteration})
+		if err != nil {
+			msg := err.Error()
+			_ = w.store.CompleteRunStep(context.Background(), run.ID, modelStepID, "failed", nil, &msg)
+			return err
+		}
+		if _, err := w.policyEngine().Enforce(ctx, "post_model", w.policyContext(run, modelStepID, "", resp.Content)); err != nil {
+			msg := err.Error()
+			_ = w.store.CompleteRunStep(context.Background(), run.ID, modelStepID, "failed", nil, &msg)
+			return err
+		}
+		if err := w.store.CompleteRunStep(ctx, run.ID, modelStepID, "succeeded", map[string]any{"finish_reason": resp.FinishReason, "tool_calls": len(resp.ToolCalls), "iteration": iteration}, nil); err != nil {
+			return err
+		}
+		if err := w.ensureRunnable(ctx, run.ID); err != nil {
+			return err
+		}
+		if len(resp.ToolCalls) == 0 {
+			break
+		}
+		toolStepID, err := w.store.StartRunStep(ctx, run.ID, "tool_execution", map[string]any{"tool_calls": len(resp.ToolCalls), "iteration": iteration})
 		if err != nil {
 			return err
 		}
 		messages = append(messages, providers.Message{Role: "assistant", Content: "Tool calls requested."})
-		toolResults, err := w.executeToolCalls(ctx, run, resp.ToolCalls)
+		toolResults, err := w.executeToolCalls(ctx, run, toolStepID, resp.ToolCalls)
 		if err != nil {
 			msg := err.Error()
 			_ = w.store.CompleteRunStep(context.Background(), run.ID, toolStepID, "failed", nil, &msg)
 			return err
 		}
-		if err := w.store.CompleteRunStep(ctx, run.ID, toolStepID, "succeeded", map[string]any{"tool_results": len(toolResults)}, nil); err != nil {
-			return err
-		}
-		if err := w.ensureRunnable(ctx, run.ID); err != nil {
+		if err := w.store.CompleteRunStep(ctx, run.ID, toolStepID, "succeeded", map[string]any{"tool_results": len(toolResults), "iteration": iteration}, nil); err != nil {
 			return err
 		}
 		messages = append(messages, providers.Message{Role: "tool", Content: strings.Join(toolResults, "\n")})
-		followupStepID, err := w.store.StartRunStep(ctx, run.ID, "model_call", map[string]any{"messages": len(messages), "tools": len(toolDefs), "after_tools": true})
-		if err != nil {
-			return err
-		}
-		resp, err = w.chat(ctx, run, messages, toolDefs, map[string]any{"messages": len(messages), "tools": len(toolDefs), "after_tools": true})
-		if err != nil {
-			msg := err.Error()
-			_ = w.store.CompleteRunStep(context.Background(), run.ID, followupStepID, "failed", nil, &msg)
-			return err
-		}
-		if err := w.store.CompleteRunStep(ctx, run.ID, followupStepID, "succeeded", map[string]any{"finish_reason": resp.FinishReason}, nil); err != nil {
-			return err
-		}
-		if err := w.ensureRunnable(ctx, run.ID); err != nil {
-			return err
-		}
 		if err := w.store.Checkpoint(ctx, run.ID, "tools_complete", map[string]any{"tool_calls": len(toolResults)}); err != nil {
 			return err
+		}
+		if iteration == w.maxIterations {
+			return fmt.Errorf("agent loop exceeded %d iterations", w.maxIterations)
 		}
 	}
 	if err := w.store.Checkpoint(ctx, run.ID, "provider_complete", map[string]any{"finish_reason": resp.FinishReason}); err != nil {
@@ -372,6 +383,20 @@ func (w *Worker) providerMessages(ctx context.Context, run *db.Run, currentText 
 	if strings.TrimSpace(workflowManifest) != "" {
 		promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: workflowManifest})
 	}
+	userProfile, err := w.userProfileContext(ctx, run)
+	if err != nil {
+		return nil, err
+	}
+	if userProfile != "" {
+		promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: userProfile})
+	}
+	instructions, err := w.policyEngine().PromptInstructions(ctx, w.policyContext(run, "", "", currentText))
+	if err != nil {
+		return nil, err
+	}
+	if len(instructions) > 0 {
+		promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: strings.Join(instructions, "\n")})
+	}
 	for _, msg := range history {
 		content := messageText(msg.Content)
 		if strings.TrimSpace(content) == "" {
@@ -386,6 +411,82 @@ func (w *Worker) providerMessages(ctx context.Context, run *db.Run, currentText 
 		messages = append(messages, providers.Message{Role: msg.Role, Content: msg.Content})
 	}
 	return messages, nil
+}
+
+func (w *Worker) policyEngine() *policy.Engine {
+	if w.policy != nil {
+		return w.policy
+	}
+	return policy.NewEngine(w.store)
+}
+
+func (w *Worker) policyContext(run *db.Run, stepID, subject, content string) policy.Context {
+	pc := policy.Context{
+		CustomerID: run.CustomerID, UserID: run.UserID, AgentInstanceID: run.AgentInstanceID,
+		SessionID: run.SessionID, RunID: run.ID, StepID: stepID, Content: content,
+	}
+	if strings.HasPrefix(subject, "duraclaw.") || subject == "echo" || subject == "remember" || subject == "list_memories" || subject == "save_preference" || subject == "list_preferences" {
+		pc.ToolName = subject
+	} else if subject != "" {
+		pc.WorkflowID = subject
+	}
+	return pc
+}
+
+func (w *Worker) userProfileContext(ctx context.Context, run *db.Run) (string, error) {
+	memories, err := w.store.ListMemories(ctx, run.CustomerID, run.UserID, 8)
+	if err != nil {
+		return "", err
+	}
+	allPreferences, err := w.store.ListPreferences(ctx, run.CustomerID, run.UserID, 20)
+	if err != nil {
+		return "", err
+	}
+	matchedPreferences := preferences.Match(allPreferences, preferenceContext(time.Now()))
+	if len(memories) == 0 && len(matchedPreferences) == 0 {
+		return "", nil
+	}
+	var b strings.Builder
+	if len(memories) > 0 {
+		b.WriteString("Stable user facts:\n")
+		for _, m := range memories {
+			fmt.Fprintf(&b, "- %s: %s\n", m.Type, m.Content)
+		}
+	}
+	if len(matchedPreferences) > 0 {
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString("Conditional user preferences:\n")
+		for _, p := range matchedPreferences {
+			condition := strings.TrimSpace(string(p.Condition))
+			if condition == "" || condition == "null" {
+				condition = "{}"
+			}
+			fmt.Fprintf(&b, "- %s: %s when %s\n", p.Category, p.Content, condition)
+		}
+	}
+	return strings.TrimSpace(b.String()), nil
+}
+
+func preferenceContext(now time.Time) map[string]any {
+	month := now.Month()
+	season := "summer"
+	switch month {
+	case time.December, time.January, time.February:
+		season = "winter"
+	case time.March, time.April, time.May:
+		season = "spring"
+	case time.June, time.July, time.August:
+		season = "summer"
+	default:
+		season = "autumn"
+	}
+	return map[string]any{
+		"season": season,
+		"month":  int(month),
+		"hour":   now.Hour(),
+	}
 }
 
 func messageText(raw json.RawMessage) string {
@@ -408,20 +509,42 @@ func messageText(raw json.RawMessage) string {
 
 func (w *Worker) toolDefinitions() []providers.ToolDefinition {
 	if w.tools == nil {
-		return nil
+		return internalToolDefinitions()
 	}
-	return w.tools.ToProviderDefs()
+	return append(w.tools.ToProviderDefs(), internalToolDefinitions()...)
 }
 
-func (w *Worker) executeToolCalls(ctx context.Context, run *db.Run, calls []providers.ToolCall) ([]string, error) {
+func (w *Worker) executeToolCalls(ctx context.Context, run *db.Run, stepID string, calls []providers.ToolCall) ([]string, error) {
 	if w.tools == nil {
 		w.tools = tools.NewRegistry()
 	}
+	completed, err := w.completedNonRetryableTools(ctx, run.ID)
+	if err != nil {
+		return nil, err
+	}
 	results := make([]string, 0, len(calls))
 	for _, call := range calls {
+		if w.isInternalTool(call.Function.Name) {
+			result, err := w.executeInternalTool(ctx, run, stepID, call)
+			if err != nil {
+				return nil, err
+			}
+			results = append(results, result)
+			continue
+		}
+		if _, err := w.policyEngine().Enforce(ctx, "pre_tool", w.policyContext(run, stepID, call.Function.Name, "")); err != nil {
+			return nil, err
+		}
 		retryable := true
 		if w.tools != nil {
 			retryable = w.tools.Retryable(call.Function.Name)
+		}
+		argsHash := db.StableArgsHash(call.Function.Name, call.Function.Arguments)
+		if !retryable {
+			if prior, ok := completed[call.Function.Name+":"+argsHash]; ok {
+				results = append(results, call.Function.Name+": "+string(prior.Result))
+				continue
+			}
 		}
 		callID, err := w.store.StartToolCall(ctx, run.ID, call.Function.Name, call.Function.Arguments, retryable)
 		if err != nil {
@@ -447,9 +570,111 @@ func (w *Worker) executeToolCalls(ctx context.Context, run *db.Run, calls []prov
 			}
 			return nil, fmt.Errorf("%s", result.ForLLM)
 		}
+		if _, err := w.policyEngine().Enforce(ctx, "post_tool", w.policyContext(run, stepID, call.Function.Name, result.ForLLM)); err != nil {
+			return nil, err
+		}
 		results = append(results, call.Function.Name+": "+result.ForLLM)
 	}
 	return results, nil
+}
+
+func internalToolDefinitions() []providers.ToolDefinition {
+	return []providers.ToolDefinition{
+		{
+			Type: "function",
+			Function: providers.ToolFunctionDefinition{
+				Name:        "duraclaw.run_workflow",
+				Description: "Run an assigned durable workflow and return its output.",
+				Parameters: map[string]any{
+					"properties": map[string]any{
+						"workflow_id": map[string]any{"type": "string"},
+						"input":       map[string]any{"type": "object"},
+					},
+					"required":             []any{"workflow_id"},
+					"additionalProperties": false,
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: providers.ToolFunctionDefinition{
+				Name:        "duraclaw.ask_user",
+				Description: "Pause the run and ask the user for clarification.",
+				Parameters: map[string]any{
+					"properties":           map[string]any{"question": map[string]any{"type": "string"}},
+					"required":             []any{"question"},
+					"additionalProperties": false,
+				},
+			},
+		},
+	}
+}
+
+func (w *Worker) isInternalTool(name string) bool {
+	return name == "duraclaw.run_workflow" || name == "duraclaw.ask_user"
+}
+
+func (w *Worker) executeInternalTool(ctx context.Context, run *db.Run, stepID string, call providers.ToolCall) (string, error) {
+	switch call.Function.Name {
+	case "duraclaw.ask_user":
+		question, _ := call.Function.Arguments["question"].(string)
+		if strings.TrimSpace(question) == "" {
+			question = "Additional input is required."
+		}
+		if _, err := w.policyEngine().Enforce(ctx, "pre_run", w.policyContext(run, stepID, call.Function.Name, question)); err != nil {
+			return "", err
+		}
+		if err := w.store.SetRunState(ctx, run.ID, "awaiting_user", nil); err != nil {
+			return "", err
+		}
+		if err := w.store.AddEvent(ctx, run.ID, "run.awaiting_user", map[string]any{"question": question}); err != nil {
+			return "", err
+		}
+		return "", runStoppedError{runID: run.ID, state: "awaiting_user"}
+	case "duraclaw.run_workflow":
+		workflowID, _ := call.Function.Arguments["workflow_id"].(string)
+		if strings.TrimSpace(workflowID) == "" {
+			return "", fmt.Errorf("workflow_id is required")
+		}
+		if _, err := w.policyEngine().Enforce(ctx, "pre_workflow", w.policyContext(run, stepID, workflowID, "")); err != nil {
+			return "", err
+		}
+		input, _ := call.Function.Arguments["input"].(map[string]any)
+		result, err := workflow.NewExecutor(w.store).
+			WithProviders(w.providers, w.modelConfig).
+			WithTools(w.tools).
+			WithMCP(w.mcpManager).
+			WithPolicy(w.policyEngine()).
+			WithProcessors(w.processors).
+			ExecuteGraph(ctx, workflow.GraphRequest{
+				RunID: run.ID, CustomerID: run.CustomerID, UserID: run.UserID, AgentInstanceID: run.AgentInstanceID,
+				SessionID: run.SessionID, RequestID: run.RequestID, WorkflowDefinitionID: workflowID, Input: input,
+			})
+		if err != nil {
+			return "", err
+		}
+		if result.State == "awaiting_user" {
+			return "", runStoppedError{runID: run.ID, state: "awaiting_user"}
+		}
+		if _, err := w.policyEngine().Enforce(ctx, "post_workflow", w.policyContext(run, stepID, workflowID, workflowOutputText(result.Output))); err != nil {
+			return "", err
+		}
+		return "duraclaw.run_workflow: " + workflowOutputText(result.Output), nil
+	default:
+		return "", fmt.Errorf("unsupported internal tool %q", call.Function.Name)
+	}
+}
+
+func (w *Worker) completedNonRetryableTools(ctx context.Context, runID string) (map[string]db.ToolCallRecord, error) {
+	records, err := w.store.CompletedNonRetryableToolCalls(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]db.ToolCallRecord, len(records))
+	for _, rec := range records {
+		out[rec.ToolName+":"+rec.ArgsHash] = rec
+	}
+	return out, nil
 }
 
 func (w *Worker) processArtifacts(ctx context.Context, run *db.Run) ([]string, error) {
@@ -475,6 +700,12 @@ func (w *Worker) processArtifacts(ctx context.Context, run *db.Run) ([]string, e
 		processor, ok := w.processors.ProcessorFor(pa)
 		if !ok || a.State == "processed" {
 			continue
+		}
+		if _, err := w.policyEngine().Enforce(ctx, "pre_artifact_process", policy.Context{
+			CustomerID: run.CustomerID, UserID: run.UserID, AgentInstanceID: run.AgentInstanceID, SessionID: run.SessionID,
+			RunID: run.ID, ArtifactID: a.ID, Processor: processor.Name(),
+		}); err != nil {
+			return nil, err
 		}
 		stepID, err := w.store.StartRunStep(ctx, run.ID, "artifact_processing", map[string]any{"artifact_id": a.ID, "processor": processor.Name()})
 		if err != nil {
@@ -517,6 +748,12 @@ func (w *Worker) processArtifacts(ctx context.Context, run *db.Run) ([]string, e
 		if err := w.store.SetArtifactState(ctx, a.ID, "processed"); err != nil {
 			msg := err.Error()
 			_ = w.store.CompleteRunStep(context.Background(), run.ID, stepID, "failed", nil, &msg)
+			return nil, err
+		}
+		if _, err := w.policyEngine().Enforce(ctx, "post_artifact_process", policy.Context{
+			CustomerID: run.CustomerID, UserID: run.UserID, AgentInstanceID: run.AgentInstanceID, SessionID: run.SessionID,
+			RunID: run.ID, StepID: stepID, ArtifactID: a.ID, Processor: processor.Name(),
+		}); err != nil {
 			return nil, err
 		}
 		if err := w.store.CompleteRunStep(ctx, run.ID, stepID, "succeeded", map[string]any{"representations": len(reps)}, nil); err != nil {

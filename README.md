@@ -78,6 +78,12 @@ go test ./internal/db -run TestMigrateAgainstPostgres
 - `POST /admin/workflows/{workflow_id}/assignments`
 - `PUT /admin/agent-policies`
 - `GET /admin/agent-policies?customer_id={customer_id}&agent_instance_id={agent_instance_id}`
+- `POST /admin/policy-packs`
+- `GET /admin/policy-packs`
+- `PUT /admin/policy-packs/{pack_id}/rules/{rule_id}`
+- `GET /admin/policy-packs/{pack_id}/rules`
+- `POST /admin/policy-packs/{pack_id}/assignments`
+- `GET /admin/policy-evaluations?run_id={run_id}`
 - `POST /admin/knowledge/text`
 - `GET /admin/knowledge/documents?customer_id={customer_id}`
 - `GET /admin/knowledge/documents/{document_id}/chunks`
@@ -86,6 +92,13 @@ go test ./internal/db -run TestMigrateAgainstPostgres
 - `GET /admin/memories?customer_id={customer_id}&user_id={user_id}`
 - `PUT /admin/memories/{memory_id}`
 - `DELETE /admin/memories/{memory_id}?customer_id={customer_id}&user_id={user_id}`
+- `POST /admin/preferences`
+- `GET /admin/preferences?customer_id={customer_id}&user_id={user_id}`
+- `PUT /admin/preferences/{preference_id}`
+- `DELETE /admin/preferences/{preference_id}?customer_id={customer_id}&user_id={user_id}`
+- `POST /admin/reminders/subscriptions`
+- `GET /admin/reminders/subscriptions?customer_id={customer_id}`
+- `PATCH /admin/reminders/subscriptions/{subscription_id}`
 - `POST /admin/scheduler/jobs`
 - `GET /admin/scheduler/jobs?customer_id={customer_id}`
 - `PATCH /admin/scheduler/jobs/{job_id}`
@@ -126,8 +139,19 @@ Supported node types:
 - `switch`: copies a configured key into `route`.
 - `condition`: routes with deterministic `equals` or `not_equals` config.
 - `llm_condition`: persists a model call and requires JSON output containing `route`.
-- `tool`: executes a local durable tool and persists tool intent/result.
-- `mcp`: executes an MCP tool and persists MCP intent/result.
+- `tool` and `tool_call`: execute a local durable tool and persist tool intent/result.
+- `mcp` and `mcp_call`: execute an MCP tool and persist MCP intent/result.
+- `model_call`: executes a provider model call and can require strict JSON output.
+- `retrieve_knowledge`: reads matching customer knowledge chunks.
+- `read_memory` and `write_memory`: read or persist stable user facts; writes pass policy enforcement.
+- `read_preference` and `write_preference`: read or persist conditional preferences with condition metadata.
+- `read_artifact`, `process_artifact`, and `write_artifact`: operate on durable artifact metadata and representations.
+- `branch`: emits a route from a configured key.
+- `transform`: maps constants and prior output values into a new output object.
+- `loop`: performs bounded node-internal iteration over an array.
+- `wait_timer`: creates a one-shot scheduler wake job and pauses the workflow until the timer resumes the node.
+- `emit_outbound_message`: creates an outbound intent for Nexus delivery.
+- `create_background_job`: creates a queued durable run.
 - `ask_user`: persists the workflow and parent run as `awaiting_user`; `POST /acp/runs/{run_id}/resume` continues from the next edge.
 
 Node retry policy supports `{"max_attempts":2}` or `{"attempts":2}`. Timeout policy supports `{"seconds":30}` or `{"timeout_seconds":30}`. Exhausted retries fail the workflow and parent run.
@@ -163,11 +187,12 @@ queued run
   -> lease with FOR UPDATE SKIP LOCKED
   -> running
   -> optional workflow graph execution
-  -> run steps and checkpoints
+  -> bounded model/tool/workflow iterations
+  -> policy evaluation and run steps/checkpoints
   -> artifact processor intent/result records
   -> model call intent/result records
-  -> tool intent/result records when requested
-  -> optional workflow awaiting-user state
+  -> tool intent/result records when requested, with non-retryable result suppression
+  -> optional workflow or agent awaiting-user state
   -> final assistant message
   -> outbound intent queued for Nexus delivery
   -> completed
@@ -178,22 +203,29 @@ Scheduler jobs and async outbox records also use PostgreSQL claim queries with `
 The persistence layer also includes:
 
 - Workflow definitions, nodes, edges, assignments, workflow runs, node states, edge activations, and workflow node runs.
-- Memory records scoped by customer/user/session.
+- Policy packs, rules, assignments, and policy evaluation audit records.
+- Memory records for stable facts scoped by customer/user/session.
+- Preference records for conditional preferences scoped by customer/user/session.
+- Reminder subscriptions and one-shot workflow timer wake jobs backed by scheduler jobs.
 - Knowledge documents and vector-ready chunks with pgvector search helpers.
 - Outbound intents queued through `async_outbox` for Nexus-owned delivery.
 - Broadcast creation creates per-target outbound intents for Nexus-owned delivery.
 - Recent session message history used by the worker when composing model context.
 - Context compaction for bounded prompt history.
 - Artifact attachment policy checks for size, allowed media types, and raw payload metadata fields.
-- Memory tools: `remember` and `list_memories`.
+- Memory tools: `remember` and `list_memories` for stable facts.
+- Preference tools: `save_preference` and `list_preferences` for conditional preferences.
 - Non-retryable tool metadata for write-like tools, with recovery query helpers.
 - Admin text knowledge ingestion into deterministic chunks.
+- Optional embedding provider seam for knowledge chunk embeddings, with deterministic hash embeddings for tests/local use.
+- Artifact processor provider-adapter seam for OCR/transcription/document extraction adapters.
 - Retention maintenance hooks for old events, completed outbox rows, and artifact expiry.
 - Retention maintenance hooks for observability events and terminal broadcasts.
 - Lease extension and cancellation checks during worker execution.
 - Retry release/backoff for failed async outbox delivery.
 - Provider registry and model fallback attempts with persisted model-call records per attempt.
 - Artifact processor registry for modality-specific processor selection.
+- Internal model-visible control tools: `duraclaw.run_workflow` and `duraclaw.ask_user`.
 - Optional admin bearer-token protection.
 - Graceful SIGINT/SIGTERM shutdown.
 - Basic in-process counters exposed on `/metrics`, including HTTP status counters from access logging.

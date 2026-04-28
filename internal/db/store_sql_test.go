@@ -84,9 +84,30 @@ func TestStoreCanLoadCompletedNonRetryableToolCalls(t *testing.T) {
 		t.Fatal(err)
 	}
 	sql := string(raw)
-	for _, want := range []string{"CompletedNonRetryableToolCalls", "retryable=false", "completed_at IS NOT NULL"} {
+	for _, want := range []string{"CompletedNonRetryableToolCalls", "retryable=false", "completed_at IS NOT NULL", "args_hash"} {
 		if !strings.Contains(sql, want) {
 			t.Fatalf("store missing %q", want)
 		}
+	}
+}
+
+func TestCompleteSchedulerJobDisablesOneShotJobs(t *testing.T) {
+	raw, err := os.ReadFile("store.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw)
+	for _, want := range []string{"nextRunAt.IsZero()", "enabled=false", "lease_owner=NULL"} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("CompleteSchedulerJob should disable one-shot jobs, missing %q", want)
+		}
+	}
+}
+
+func TestStableArgsHashIsOrderIndependent(t *testing.T) {
+	a := StableArgsHash("tool", map[string]any{"a": float64(1), "b": "x"})
+	b := StableArgsHash("tool", map[string]any{"b": "x", "a": float64(1)})
+	if a == "" || a != b {
+		t.Fatalf("hashes differ: %q %q", a, b)
 	}
 }

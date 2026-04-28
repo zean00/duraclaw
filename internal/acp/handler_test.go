@@ -95,6 +95,30 @@ func TestUpdateSchedulerJobRequiresEnabled(t *testing.T) {
 	}
 }
 
+func TestCreateReminderSubscriptionValidatesBeforeStore(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/admin/reminders/subscriptions", strings.NewReader(`{"customer_id":"c"}`))
+	rec := httptest.NewRecorder()
+	NewHandler(nil).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "schedule") {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+}
+
+func TestUpdateReminderSubscriptionRequiresEnabled(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPatch, "/admin/reminders/subscriptions/sub-1", strings.NewReader(`{"customer_id":"c"}`))
+	rec := httptest.NewRecorder()
+	NewHandler(nil).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "enabled") {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+}
+
 func TestUpsertWorkflowNodeRequiresNodeType(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPut, "/admin/workflows/wf-1/nodes/start", strings.NewReader(`{}`))
 	rec := httptest.NewRecorder()
@@ -200,6 +224,30 @@ func TestGetAgentPolicyRequiresScope(t *testing.T) {
 	}
 }
 
+func TestCreatePolicyPackValidatesPayloadBeforeStore(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/admin/policy-packs", strings.NewReader(`{"version":1}`))
+	rec := httptest.NewRecorder()
+	NewHandler(nil).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "name") {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+}
+
+func TestUpsertPolicyRuleValidatesPayloadBeforeStore(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPut, "/admin/policy-packs/pack-1/rules/rule-1", strings.NewReader(`{"action":"deny"}`))
+	rec := httptest.NewRecorder()
+	NewHandler(nil).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "rule_type") {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+}
+
 func TestListKnowledgeDocumentsRequiresCustomer(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/admin/knowledge/documents", nil)
 	rec := httptest.NewRecorder()
@@ -236,8 +284,32 @@ func TestCreateMemoryValidatesBeforeStore(t *testing.T) {
 	}
 }
 
+func TestCreatePreferenceValidatesBeforeStore(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/admin/preferences", strings.NewReader(`{"customer_id":"c","user_id":"u"}`))
+	rec := httptest.NewRecorder()
+	NewHandler(nil).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "content") {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+}
+
 func TestListMemoriesRequiresScope(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/admin/memories?customer_id=c", nil)
+	rec := httptest.NewRecorder()
+	NewHandler(nil).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "user_id") {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+}
+
+func TestListPreferencesRequiresScope(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/admin/preferences?customer_id=c", nil)
 	rec := httptest.NewRecorder()
 	NewHandler(nil).Routes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
@@ -260,8 +332,32 @@ func TestUpdateMemoryValidatesBeforeStore(t *testing.T) {
 	}
 }
 
+func TestUpdatePreferenceValidatesBeforeStore(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPut, "/admin/preferences/pref-1", strings.NewReader(`{"customer_id":"c","user_id":"u"}`))
+	rec := httptest.NewRecorder()
+	NewHandler(nil).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "content") {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+}
+
 func TestDeleteMemoryRequiresScope(t *testing.T) {
 	req := httptest.NewRequest(http.MethodDelete, "/admin/memories/mem-1?customer_id=c", nil)
+	rec := httptest.NewRecorder()
+	NewHandler(nil).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "user_id") {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+}
+
+func TestDeletePreferenceRequiresScope(t *testing.T) {
+	req := httptest.NewRequest(http.MethodDelete, "/admin/preferences/pref-1?customer_id=c", nil)
 	rec := httptest.NewRecorder()
 	NewHandler(nil).Routes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {

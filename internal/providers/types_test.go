@@ -78,3 +78,21 @@ func TestMockProviderCanRequestMemoryTools(t *testing.T) {
 		t.Fatalf("resp=%#v", resp)
 	}
 }
+
+func TestMockProviderCanRequestInternalControlTools(t *testing.T) {
+	p := MockProvider{}
+	resp, err := p.Chat(context.Background(), []Message{{Role: "user", Content: "[[workflow:wf-1]]"}}, nil, p.GetDefaultModel(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.ToolCalls) != 1 || resp.ToolCalls[0].Function.Name != "duraclaw.run_workflow" || resp.ToolCalls[0].Function.Arguments["workflow_id"] != "wf-1" {
+		t.Fatalf("resp=%#v", resp)
+	}
+	resp, err = p.Chat(context.Background(), []Message{{Role: "user", Content: "[[ask_user:Need details?]]"}}, nil, p.GetDefaultModel(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.ToolCalls) != 1 || resp.ToolCalls[0].Function.Name != "duraclaw.ask_user" {
+		t.Fatalf("resp=%#v", resp)
+	}
+}

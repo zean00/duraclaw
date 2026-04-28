@@ -3,10 +3,24 @@ package knowledge
 import (
 	"context"
 	"testing"
+
+	"duraclaw/internal/embeddings"
 )
 
 type fakeKnowledgeStore struct {
-	chunks int
+	chunks     int
+	embeddings int
+}
+
+func TestIngesterEmbedsChunksWhenConfigured(t *testing.T) {
+	store := &fakeKnowledgeStore{}
+	_, _, err := NewIngester(store).WithEmbedder(embeddings.NewHashProvider(8)).IngestText(context.Background(), "c", "title", "src", "hello", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.embeddings != 1 {
+		t.Fatalf("store=%#v", store)
+	}
 }
 
 func (s *fakeKnowledgeStore) CreateKnowledgeDocument(context.Context, string, string, string, any) (string, error) {
@@ -16,6 +30,11 @@ func (s *fakeKnowledgeStore) CreateKnowledgeDocument(context.Context, string, st
 func (s *fakeKnowledgeStore) AddKnowledgeChunk(context.Context, string, string, int, string, any) (string, error) {
 	s.chunks++
 	return "chunk", nil
+}
+
+func (s *fakeKnowledgeStore) SetKnowledgeChunkEmbedding(context.Context, string, string, []float32) error {
+	s.embeddings++
+	return nil
 }
 
 func TestIngester(t *testing.T) {

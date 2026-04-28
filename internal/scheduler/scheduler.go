@@ -9,6 +9,9 @@ import (
 )
 
 func Next(schedule string, from time.Time) (time.Time, error) {
+	if schedule == "@once" {
+		return time.Time{}, nil
+	}
 	spec, err := cron.ParseStandard(schedule)
 	if err != nil {
 		return time.Time{}, err

@@ -21,6 +21,12 @@ type fakeWorkflowStore struct {
 	current        *db.WorkflowRun
 	states         map[string]db.WorkflowNodeState
 	activations    []db.WorkflowEdgeActivation
+	memories       []db.Memory
+	preferences    []db.Preference
+	knowledge      []db.KnowledgeChunk
+	artifacts      []db.Artifact
+	reps           []db.ArtifactRepresentation
+	policyRules    []db.PolicyRule
 }
 
 type testTool struct{}
@@ -152,6 +158,85 @@ func (s *fakeWorkflowStore) StartMCPCall(context.Context, string, string, string
 }
 
 func (s *fakeWorkflowStore) CompleteMCPCall(context.Context, string, string, any, *string) error {
+	return nil
+}
+
+func (s *fakeWorkflowStore) ListMemories(context.Context, string, string, int) ([]db.Memory, error) {
+	return s.memories, nil
+}
+
+func (s *fakeWorkflowStore) AddMemory(context.Context, string, string, string, string, string, any) (string, error) {
+	return "memory-1", nil
+}
+
+func (s *fakeWorkflowStore) ListPreferences(context.Context, string, string, int) ([]db.Preference, error) {
+	return s.preferences, nil
+}
+
+func (s *fakeWorkflowStore) AddPreference(context.Context, string, string, string, string, string, any, any) (string, error) {
+	return "preference-1", nil
+}
+
+func (s *fakeWorkflowStore) ListKnowledgeDocuments(context.Context, string, int) ([]db.KnowledgeDocument, error) {
+	return []db.KnowledgeDocument{{ID: "doc-1"}}, nil
+}
+
+func (s *fakeWorkflowStore) ListKnowledgeChunks(context.Context, string, int) ([]db.KnowledgeChunk, error) {
+	return s.knowledge, nil
+}
+
+func (s *fakeWorkflowStore) ArtifactsForRun(context.Context, string) ([]db.Artifact, error) {
+	return s.artifacts, nil
+}
+
+func (s *fakeWorkflowStore) ArtifactRepresentations(context.Context, string, string) ([]db.ArtifactRepresentation, error) {
+	return s.reps, nil
+}
+
+func (s *fakeWorkflowStore) AttachArtifact(_ context.Context, _ string, a db.Artifact) error {
+	s.artifacts = append(s.artifacts, a)
+	return nil
+}
+
+func (s *fakeWorkflowStore) InsertArtifactRepresentation(context.Context, string, string, string, any) error {
+	return nil
+}
+
+func (s *fakeWorkflowStore) SetArtifactState(context.Context, string, string) error {
+	return nil
+}
+
+func (s *fakeWorkflowStore) StartProcessorCall(context.Context, string, string, string, any) (string, error) {
+	return "processor-call-1", nil
+}
+
+func (s *fakeWorkflowStore) CompleteProcessorCall(context.Context, string, string, any, *string) error {
+	return nil
+}
+
+func (s *fakeWorkflowStore) CreateOutboundIntent(context.Context, db.OutboundIntent) (string, int64, error) {
+	return "outbound-1", 1, nil
+}
+
+func (s *fakeWorkflowStore) CreateRun(context.Context, db.ACPContext, any) (*db.Run, error) {
+	return &db.Run{ID: "run-background"}, nil
+}
+
+func (s *fakeWorkflowStore) CreateSchedulerJob(context.Context, db.SchedulerJobSpec) (*db.SchedulerJob, error) {
+	return &db.SchedulerJob{ID: "scheduler-1"}, nil
+}
+
+func (s *fakeWorkflowStore) PolicyRulesForScope(_ context.Context, _, _, enforcementMode string) ([]db.PolicyRule, error) {
+	var out []db.PolicyRule
+	for _, rule := range s.policyRules {
+		if rule.EnforcementMode == enforcementMode {
+			out = append(out, rule)
+		}
+	}
+	return out, nil
+}
+
+func (s *fakeWorkflowStore) RecordPolicyEvaluation(context.Context, db.PolicyEvaluation) error {
 	return nil
 }
 
@@ -369,5 +454,103 @@ func TestExecuteGraphRetriesThenFails(t *testing.T) {
 	}
 	if store.states["tool"].Attempts != 2 || store.workflowStates[len(store.workflowStates)-1] != "failed" {
 		t.Fatalf("states=%#v workflow=%#v", store.states, store.workflowStates)
+	}
+}
+
+func TestExecuteGraphArchitectureNodeAliases(t *testing.T) {
+	registry := tools.NewRegistry()
+	registry.Register(testTool{})
+	store := &fakeWorkflowStore{
+		nodes: []db.WorkflowNode{{NodeKey: "tool", NodeType: "tool_call", Config: json.RawMessage(`{"tool_name":"test_tool","arguments":{"x":"y"}}`)}},
+	}
+	got, err := NewExecutor(store).WithTools(registry).ExecuteGraph(context.Background(), GraphRequest{RunID: "run-1", WorkflowDefinitionID: "wf-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Output["result"] != "tool ok" {
+		t.Fatalf("got=%#v", got)
+	}
+}
+
+func TestExecuteGraphMemoryAndKnowledgeNodes(t *testing.T) {
+	store := &fakeWorkflowStore{
+		memories:  []db.Memory{{ID: "m1", Content: "remembered"}},
+		knowledge: []db.KnowledgeChunk{{ID: "k1", Content: "needle in haystack"}},
+		nodes: []db.WorkflowNode{
+			{NodeKey: "memory", NodeType: "read_memory"},
+			{NodeKey: "knowledge", NodeType: "retrieve_knowledge", Config: json.RawMessage(`{"query":"needle"}`)},
+		},
+		edges: []db.WorkflowEdge{{FromNodeKey: "memory", ToNodeKey: "knowledge"}},
+	}
+	got, err := NewExecutor(store).ExecuteGraph(context.Background(), GraphRequest{RunID: "run-1", CustomerID: "c", UserID: "u", WorkflowDefinitionID: "wf-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.CurrentNode != "knowledge" {
+		t.Fatalf("got=%#v", got)
+	}
+}
+
+func TestExecuteGraphPreferenceNodes(t *testing.T) {
+	store := &fakeWorkflowStore{
+		preferences: []db.Preference{{ID: "p1", Content: "ice cream", Condition: json.RawMessage(`{"season":"summer"}`)}},
+		nodes: []db.WorkflowNode{
+			{NodeKey: "write", NodeType: "write_preference", Config: json.RawMessage(`{"content":"hot chocolate","condition":{"season":"winter"}}`)},
+			{NodeKey: "read", NodeType: "read_preference"},
+		},
+		edges: []db.WorkflowEdge{{FromNodeKey: "write", ToNodeKey: "read"}},
+	}
+	got, err := NewExecutor(store).ExecuteGraph(context.Background(), GraphRequest{RunID: "run-1", CustomerID: "c", UserID: "u", WorkflowDefinitionID: "wf-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.CurrentNode != "read" {
+		t.Fatalf("got=%#v", got)
+	}
+}
+
+func TestExecuteGraphTransformAndOutboundNodes(t *testing.T) {
+	store := &fakeWorkflowStore{
+		nodes: []db.WorkflowNode{
+			{NodeKey: "transform", NodeType: "transform", Config: json.RawMessage(`{"set":{"text":"hello"}}`)},
+			{NodeKey: "outbound", NodeType: "emit_outbound_message", Config: json.RawMessage(`{"text_key":"text"}`)},
+		},
+		edges: []db.WorkflowEdge{{FromNodeKey: "transform", ToNodeKey: "outbound"}},
+	}
+	got, err := NewExecutor(store).ExecuteGraph(context.Background(), GraphRequest{RunID: "run-1", CustomerID: "c", UserID: "u", SessionID: "s", WorkflowDefinitionID: "wf-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.CurrentNode != "outbound" {
+		t.Fatalf("got=%#v", got)
+	}
+}
+
+func TestExecuteGraphWaitTimerPausesWithSchedulerJob(t *testing.T) {
+	store := &fakeWorkflowStore{
+		nodes: []db.WorkflowNode{{NodeKey: "wait", NodeType: "wait_timer", Config: json.RawMessage(`{"seconds":5}`)}},
+	}
+	got, err := NewExecutor(store).ExecuteGraph(context.Background(), GraphRequest{RunID: "run-1", CustomerID: "c", UserID: "u", AgentInstanceID: "a", SessionID: "s", WorkflowDefinitionID: "wf-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != "awaiting_user" || got.Output["scheduler_job_id"] != "scheduler-1" {
+		t.Fatalf("got=%#v", got)
+	}
+}
+
+func TestExecuteGraphPostNodePolicyDenialMarksNodeFailed(t *testing.T) {
+	store := &fakeWorkflowStore{
+		policyRules: []db.PolicyRule{{
+			ID: "rule-1", PolicyPackID: "pack-1", RuleType: "deny", EnforcementMode: "post_workflow_node", Action: "deny", InstructionText: "blocked",
+		}},
+		nodes: []db.WorkflowNode{{NodeKey: "msg", NodeType: "message", Config: json.RawMessage(`{"text":"hello"}`)}},
+	}
+	_, err := NewExecutor(store).ExecuteGraph(context.Background(), GraphRequest{RunID: "run-1", CustomerID: "c", UserID: "u", WorkflowDefinitionID: "wf-1"})
+	if err == nil {
+		t.Fatalf("expected policy denial")
+	}
+	if store.states["msg"].Status != "failed" || store.nodeState != "failed" {
+		t.Fatalf("states=%#v nodeState=%s", store.states, store.nodeState)
 	}
 }

@@ -378,3 +378,19 @@ func (s *Store) CompleteWorkflowNodeRun(ctx context.Context, nodeRunID, state st
 		WHERE id=$1`, nodeRunID, state, b, errText)
 	return err
 }
+
+func (s *Store) ResumeWorkflowTimer(ctx context.Context, runID, workflowRunID, nodeKey string, response map[string]any) error {
+	if runID == "" || workflowRunID == "" || nodeKey == "" {
+		return fmt.Errorf("run_id, workflow_run_id, and node_key are required")
+	}
+	if err := s.SetWorkflowNodeState(ctx, workflowRunID, nodeKey, "succeeded", map[string]any{"timer": response}, nil); err != nil {
+		return err
+	}
+	if err := s.SetWorkflowRunState(ctx, workflowRunID, runID, "running", nodeKey, map[string]any{"timer": response}, nil); err != nil {
+		return err
+	}
+	if err := s.SetRunState(ctx, runID, "queued", nil); err != nil {
+		return err
+	}
+	return s.AddEvent(ctx, runID, "workflow.timer_resumed", map[string]any{"workflow_run_id": workflowRunID, "node_key": nodeKey})
+}

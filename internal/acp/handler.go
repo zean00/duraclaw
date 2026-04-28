@@ -83,6 +83,12 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("POST /admin/workflows/{workflow_id}/assignments", h.requireAdmin(h.assignWorkflow))
 	mux.HandleFunc("PUT /admin/agent-policies", h.requireAdmin(h.upsertAgentPolicy))
 	mux.HandleFunc("GET /admin/agent-policies", h.requireAdmin(h.getAgentPolicy))
+	mux.HandleFunc("POST /admin/policy-packs", h.requireAdmin(h.createPolicyPack))
+	mux.HandleFunc("GET /admin/policy-packs", h.requireAdmin(h.listPolicyPacks))
+	mux.HandleFunc("PUT /admin/policy-packs/{pack_id}/rules/{rule_id}", h.requireAdmin(h.upsertPolicyRule))
+	mux.HandleFunc("GET /admin/policy-packs/{pack_id}/rules", h.requireAdmin(h.listPolicyRules))
+	mux.HandleFunc("POST /admin/policy-packs/{pack_id}/assignments", h.requireAdmin(h.assignPolicyPack))
+	mux.HandleFunc("GET /admin/policy-evaluations", h.requireAdmin(h.listPolicyEvaluations))
 	mux.HandleFunc("POST /admin/knowledge/text", h.requireAdmin(h.ingestKnowledgeText))
 	mux.HandleFunc("GET /admin/knowledge/documents", h.requireAdmin(h.listKnowledgeDocuments))
 	mux.HandleFunc("GET /admin/knowledge/documents/{document_id}/chunks", h.requireAdmin(h.listKnowledgeChunks))
@@ -91,6 +97,13 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /admin/memories", h.requireAdmin(h.listMemories))
 	mux.HandleFunc("PUT /admin/memories/{memory_id}", h.requireAdmin(h.updateMemory))
 	mux.HandleFunc("DELETE /admin/memories/{memory_id}", h.requireAdmin(h.deleteMemory))
+	mux.HandleFunc("POST /admin/preferences", h.requireAdmin(h.createPreference))
+	mux.HandleFunc("GET /admin/preferences", h.requireAdmin(h.listPreferences))
+	mux.HandleFunc("PUT /admin/preferences/{preference_id}", h.requireAdmin(h.updatePreference))
+	mux.HandleFunc("DELETE /admin/preferences/{preference_id}", h.requireAdmin(h.deletePreference))
+	mux.HandleFunc("POST /admin/reminders/subscriptions", h.requireAdmin(h.createReminderSubscription))
+	mux.HandleFunc("GET /admin/reminders/subscriptions", h.requireAdmin(h.listReminderSubscriptions))
+	mux.HandleFunc("PATCH /admin/reminders/subscriptions/{subscription_id}", h.requireAdmin(h.updateReminderSubscription))
 	mux.HandleFunc("POST /admin/scheduler/jobs", h.requireAdmin(h.createSchedulerJob))
 	mux.HandleFunc("GET /admin/scheduler/jobs", h.requireAdmin(h.listSchedulerJobs))
 	mux.HandleFunc("PATCH /admin/scheduler/jobs/{job_id}", h.requireAdmin(h.updateSchedulerJob))
@@ -402,6 +415,97 @@ func (h *Handler) getAgentPolicy(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, policy)
 }
 
+func (h *Handler) createPolicyPack(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		Name       string `json:"name"`
+		Version    int    `json:"version"`
+		OwnerScope string `json:"owner_scope"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if strings.TrimSpace(payload.Name) == "" || payload.Version <= 0 {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("name and positive version are required"))
+		return
+	}
+	id, err := h.store.CreatePolicyPack(r.Context(), payload.Name, payload.Version, payload.OwnerScope)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]string{"policy_pack_id": id})
+}
+
+func (h *Handler) listPolicyPacks(w http.ResponseWriter, r *http.Request) {
+	packs, err := h.store.ListPolicyPacks(r.Context(), queryLimit(r, 100))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"policy_packs": packs})
+}
+
+func (h *Handler) upsertPolicyRule(w http.ResponseWriter, r *http.Request) {
+	var payload db.PolicyRule
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	payload.PolicyPackID = r.PathValue("pack_id")
+	payload.ID = r.PathValue("rule_id")
+	if payload.RuleType == "" || payload.EnforcementMode == "" || payload.Action == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("rule_type, enforcement_mode, and action are required"))
+		return
+	}
+	id, err := h.store.UpsertPolicyRule(r.Context(), payload)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"policy_rule_id": id})
+}
+
+func (h *Handler) listPolicyRules(w http.ResponseWriter, r *http.Request) {
+	rules, err := h.store.ListPolicyRules(r.Context(), r.PathValue("pack_id"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"policy_rules": rules})
+}
+
+func (h *Handler) assignPolicyPack(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		CustomerID      string `json:"customer_id"`
+		AgentInstanceID string `json:"agent_instance_id"`
+		Enabled         *bool  `json:"enabled"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	enabled := true
+	if payload.Enabled != nil {
+		enabled = *payload.Enabled
+	}
+	id, err := h.store.AssignPolicyPack(r.Context(), r.PathValue("pack_id"), payload.CustomerID, payload.AgentInstanceID, enabled)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"policy_assignment_id": id})
+}
+
+func (h *Handler) listPolicyEvaluations(w http.ResponseWriter, r *http.Request) {
+	evals, err := h.store.ListPolicyEvaluations(r.Context(), r.URL.Query().Get("run_id"), queryLimit(r, 100))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"policy_evaluations": evals})
+}
+
 func (h *Handler) ingestKnowledgeText(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
 		CustomerID string         `json:"customer_id"`
@@ -486,7 +590,7 @@ func (h *Handler) createMemory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if payload.Type == "" {
-		payload.Type = "note"
+		payload.Type = "fact"
 	}
 	id, err := h.store.AddMemory(r.Context(), payload.CustomerID, payload.UserID, payload.SessionID, payload.Type, payload.Content, payload.Metadata)
 	if err != nil {
@@ -529,7 +633,7 @@ func (h *Handler) updateMemory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if payload.Type == "" {
-		payload.Type = "note"
+		payload.Type = "fact"
 	}
 	if err := h.store.UpdateMemory(r.Context(), r.PathValue("memory_id"), payload.CustomerID, payload.UserID, payload.Type, payload.Content, payload.Metadata); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -552,15 +656,170 @@ func (h *Handler) deleteMemory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"memory_id": r.PathValue("memory_id"), "deleted": true})
 }
 
+func (h *Handler) createPreference(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		CustomerID string         `json:"customer_id"`
+		UserID     string         `json:"user_id"`
+		SessionID  string         `json:"session_id"`
+		Category   string         `json:"category"`
+		Content    string         `json:"content"`
+		Condition  map[string]any `json:"condition"`
+		Metadata   map[string]any `json:"metadata"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if payload.CustomerID == "" || payload.UserID == "" || strings.TrimSpace(payload.Content) == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id, user_id, and content are required"))
+		return
+	}
+	id, err := h.store.AddPreference(r.Context(), payload.CustomerID, payload.UserID, payload.SessionID, payload.Category, payload.Content, payload.Condition, payload.Metadata)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"preference_id": id})
+}
+
+func (h *Handler) listPreferences(w http.ResponseWriter, r *http.Request) {
+	customerID := r.URL.Query().Get("customer_id")
+	userID := r.URL.Query().Get("user_id")
+	if customerID == "" || userID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id and user_id are required"))
+		return
+	}
+	preferences, err := h.store.ListPreferences(r.Context(), customerID, userID, queryLimit(r, 20))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"preferences": preferences})
+}
+
+func (h *Handler) updatePreference(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		CustomerID string         `json:"customer_id"`
+		UserID     string         `json:"user_id"`
+		Category   string         `json:"category"`
+		Content    string         `json:"content"`
+		Condition  map[string]any `json:"condition"`
+		Metadata   map[string]any `json:"metadata"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if r.PathValue("preference_id") == "" || payload.CustomerID == "" || payload.UserID == "" || strings.TrimSpace(payload.Content) == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("preference_id, customer_id, user_id, and content are required"))
+		return
+	}
+	if err := h.store.UpdatePreference(r.Context(), r.PathValue("preference_id"), payload.CustomerID, payload.UserID, payload.Category, payload.Content, payload.Condition, payload.Metadata); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"preference_id": r.PathValue("preference_id"), "updated": true})
+}
+
+func (h *Handler) deletePreference(w http.ResponseWriter, r *http.Request) {
+	customerID := r.URL.Query().Get("customer_id")
+	userID := r.URL.Query().Get("user_id")
+	if r.PathValue("preference_id") == "" || customerID == "" || userID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("preference_id, customer_id, and user_id are required"))
+		return
+	}
+	if err := h.store.DeletePreference(r.Context(), r.PathValue("preference_id"), customerID, userID); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"preference_id": r.PathValue("preference_id"), "deleted": true})
+}
+
+func (h *Handler) createReminderSubscription(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		CustomerID      string         `json:"customer_id"`
+		UserID          string         `json:"user_id"`
+		SessionID       string         `json:"session_id"`
+		AgentInstanceID string         `json:"agent_instance_id"`
+		Title           string         `json:"title"`
+		Schedule        string         `json:"schedule"`
+		Timezone        string         `json:"timezone"`
+		Payload         map[string]any `json:"payload"`
+		NextRunAt       time.Time      `json:"next_run_at"`
+		Metadata        map[string]any `json:"metadata"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if payload.CustomerID == "" || payload.UserID == "" || payload.SessionID == "" || payload.AgentInstanceID == "" || payload.Schedule == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id, user_id, session_id, agent_instance_id, and schedule are required"))
+		return
+	}
+	if payload.NextRunAt.IsZero() {
+		next, err := scheduler.Next(payload.Schedule, time.Now().UTC())
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		payload.NextRunAt = next
+	}
+	sub, err := h.store.CreateReminderSubscription(r.Context(), db.ReminderSubscriptionSpec{
+		CustomerID: payload.CustomerID, UserID: payload.UserID, SessionID: payload.SessionID, AgentInstanceID: payload.AgentInstanceID,
+		Title: payload.Title, Schedule: payload.Schedule, Timezone: payload.Timezone, Payload: payload.Payload, NextRunAt: payload.NextRunAt, Metadata: payload.Metadata,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, sub)
+}
+
+func (h *Handler) listReminderSubscriptions(w http.ResponseWriter, r *http.Request) {
+	customerID := r.URL.Query().Get("customer_id")
+	if customerID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id is required"))
+		return
+	}
+	subs, err := h.store.ListReminderSubscriptions(r.Context(), customerID, r.URL.Query().Get("user_id"), queryLimit(r, 100))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"reminder_subscriptions": subs})
+}
+
+func (h *Handler) updateReminderSubscription(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		CustomerID string `json:"customer_id"`
+		Enabled    *bool  `json:"enabled"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if payload.CustomerID == "" || payload.Enabled == nil || r.PathValue("subscription_id") == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("subscription_id, customer_id, and enabled are required"))
+		return
+	}
+	if err := h.store.SetReminderSubscriptionEnabled(r.Context(), r.PathValue("subscription_id"), payload.CustomerID, *payload.Enabled); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"subscription_id": r.PathValue("subscription_id"), "enabled": *payload.Enabled})
+}
+
 func (h *Handler) createSchedulerJob(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
 		CustomerID      string         `json:"customer_id"`
 		UserID          string         `json:"user_id"`
 		AgentInstanceID string         `json:"agent_instance_id"`
 		SessionID       string         `json:"session_id"`
+		JobType         string         `json:"job_type"`
 		Schedule        string         `json:"schedule"`
 		NextRunAt       time.Time      `json:"next_run_at"`
 		Input           map[string]any `json:"input"`
+		Metadata        map[string]any `json:"metadata"`
 	}
 	if err := decodeJSON(w, r, &payload); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -593,9 +852,11 @@ func (h *Handler) createSchedulerJob(w http.ResponseWriter, r *http.Request) {
 		UserID:          payload.UserID,
 		AgentInstanceID: payload.AgentInstanceID,
 		SessionID:       payload.SessionID,
+		JobType:         payload.JobType,
 		Schedule:        payload.Schedule,
 		NextRunAt:       payload.NextRunAt,
 		Input:           payload.Input,
+		Metadata:        payload.Metadata,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -1204,6 +1465,19 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
 		return fmt.Errorf("request body must contain a single JSON value")
 	}
 	return nil
+}
+
+func queryLimit(r *http.Request, fallback int) int {
+	limit := fallback
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil {
+			limit = n
+		}
+	}
+	if limit <= 0 || limit > 500 {
+		return fallback
+	}
+	return limit
 }
 
 func writeError(w http.ResponseWriter, status int, err error) {
