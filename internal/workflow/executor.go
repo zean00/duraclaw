@@ -58,6 +58,7 @@ type Store interface {
 	CompleteProcessorCall(ctx context.Context, callID, runID string, response any, errText *string) error
 	CreateOutboundIntent(ctx context.Context, intent db.OutboundIntent) (string, int64, error)
 	CreateRun(ctx context.Context, c db.ACPContext, input any) (*db.Run, error)
+	EnforceBackgroundQuota(ctx context.Context, customerID, agentInstanceID string) error
 	CreateSchedulerJob(ctx context.Context, spec db.SchedulerJobSpec) (*db.SchedulerJob, error)
 	PolicyRulesForScope(ctx context.Context, customerID, agentInstanceID, enforcementMode string) ([]db.PolicyRule, error)
 	RecordPolicyEvaluation(ctx context.Context, ev db.PolicyEvaluation) error
@@ -883,6 +884,9 @@ func (e *Executor) executeCreateBackgroundJob(ctx context.Context, req GraphRequ
 		input = previous
 	}
 	key := stringValue(config["idempotency_key"], "workflow-background:"+req.RunID+":"+fmt.Sprint(time.Now().UnixNano()))
+	if err := e.store.EnforceBackgroundQuota(ctx, req.CustomerID, req.AgentInstanceID); err != nil {
+		return nil, "", err
+	}
 	run, err := e.store.CreateRun(ctx, db.ACPContext{
 		CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID,
 		RequestID: req.RequestID + ":background", IdempotencyKey: key,

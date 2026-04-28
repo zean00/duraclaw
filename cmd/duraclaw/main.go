@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"duraclaw/internal/acp"
+	"duraclaw/internal/asyncwrite"
 	"duraclaw/internal/db"
 	"duraclaw/internal/observability"
 	"duraclaw/internal/outbound"
@@ -36,9 +37,11 @@ func main() {
 	store := db.NewStore(pool)
 	counters := observability.NewCounters()
 	outboundService := outbound.NewService(store)
+	asyncWriter := asyncwrite.NewWriter(store, cfg.Hostname, db.DefaultRuntimeLimits().AsyncBufferSize).WithCounters(counters)
 	worker := runtime.NewWorkerWithProviders(store, buildProviderRegistry(cfg), buildModelConfig(cfg), cfg.Hostname).
 		WithCounters(counters).
-		WithOutbound(outboundService)
+		WithOutbound(outboundService).
+		WithAsyncWriter(asyncWriter)
 	go func() {
 		if err := worker.Loop(ctx, cfg.WorkerInterval); err != nil && err != context.Canceled {
 			log.Printf("worker stopped: %v", err)
@@ -63,6 +66,11 @@ func main() {
 	go func() {
 		if err := outboxWorker.Loop(ctx, cfg.OutboxInterval); err != nil && err != context.Canceled {
 			log.Printf("outbox worker stopped: %v", err)
+		}
+	}()
+	go func() {
+		if err := asyncWriter.Loop(ctx, cfg.OutboxInterval); err != nil && err != context.Canceled {
+			log.Printf("async writer stopped: %v", err)
 		}
 	}()
 	server := &http.Server{

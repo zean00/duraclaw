@@ -1,0 +1,345 @@
+package db
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+)
+
+type RuntimeLimits struct {
+	CustomerID                 string          `json:"customer_id"`
+	AgentInstanceID            string          `json:"agent_instance_id,omitempty"`
+	MaxActiveRuns              *int            `json:"max_active_runs,omitempty"`
+	MaxQueuedRuns              *int            `json:"max_queued_runs,omitempty"`
+	MaxWorkflowRuns            *int            `json:"max_workflow_runs,omitempty"`
+	MaxBackgroundRuns          *int            `json:"max_background_runs,omitempty"`
+	AsyncBufferSize            *int            `json:"async_buffer_size,omitempty"`
+	MaxAsyncPayloadBytes       *int            `json:"max_async_payload_bytes,omitempty"`
+	AsyncDegradeThresholdBytes *int            `json:"async_degrade_threshold_bytes,omitempty"`
+	Metadata                   json.RawMessage `json:"metadata,omitempty"`
+	UpdatedAt                  time.Time       `json:"updated_at"`
+}
+
+type EffectiveRuntimeLimits struct {
+	MaxActiveRuns              int `json:"max_active_runs"`
+	MaxQueuedRuns              int `json:"max_queued_runs"`
+	MaxWorkflowRuns            int `json:"max_workflow_runs"`
+	MaxBackgroundRuns          int `json:"max_background_runs"`
+	AsyncBufferSize            int `json:"async_buffer_size"`
+	MaxAsyncPayloadBytes       int `json:"max_async_payload_bytes"`
+	AsyncDegradeThresholdBytes int `json:"async_degrade_threshold_bytes"`
+}
+
+func DefaultRuntimeLimits() EffectiveRuntimeLimits {
+	return EffectiveRuntimeLimits{
+		MaxActiveRuns:              0,
+		MaxQueuedRuns:              0,
+		MaxWorkflowRuns:            0,
+		MaxBackgroundRuns:          0,
+		AsyncBufferSize:            100,
+		MaxAsyncPayloadBytes:       1 << 20,
+		AsyncDegradeThresholdBytes: 64 << 10,
+	}
+}
+
+type QuotaExceededError struct {
+	Kind  string
+	Limit int
+	Count int
+}
+
+func (e QuotaExceededError) Error() string {
+	return fmt.Sprintf("quota exceeded: %s count %d exceeds limit %d", e.Kind, e.Count, e.Limit)
+}
+
+func IsQuotaExceeded(err error) bool {
+	var q QuotaExceededError
+	return errors.As(err, &q)
+}
+
+type ValidationError struct {
+	Message string
+}
+
+func (e ValidationError) Error() string { return e.Message }
+
+func IsValidationError(err error) bool {
+	var v ValidationError
+	return errors.As(err, &v)
+}
+
+func (s *Store) UpsertCustomerRuntimeLimits(ctx context.Context, limits RuntimeLimits) (*RuntimeLimits, error) {
+	if limits.CustomerID == "" {
+		return nil, ValidationError{Message: "customer_id is required"}
+	}
+	if err := validateRuntimeLimits(limits); err != nil {
+		return nil, err
+	}
+	if err := s.ensureCustomer(ctx, limits.CustomerID); err != nil {
+		return nil, err
+	}
+	metadata := jsonObject(limits.Metadata)
+	var out RuntimeLimits
+	err := s.pool.QueryRow(ctx, `
+		INSERT INTO customer_runtime_limits(customer_id,max_active_runs,max_queued_runs,max_workflow_runs,max_background_runs,async_buffer_size,max_async_payload_bytes,async_degrade_threshold_bytes,metadata,updated_at)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,now())
+		ON CONFLICT (customer_id) DO UPDATE SET
+			max_active_runs=EXCLUDED.max_active_runs,
+			max_queued_runs=EXCLUDED.max_queued_runs,
+			max_workflow_runs=EXCLUDED.max_workflow_runs,
+			max_background_runs=EXCLUDED.max_background_runs,
+			async_buffer_size=EXCLUDED.async_buffer_size,
+			max_async_payload_bytes=EXCLUDED.max_async_payload_bytes,
+			async_degrade_threshold_bytes=EXCLUDED.async_degrade_threshold_bytes,
+			metadata=EXCLUDED.metadata,
+			updated_at=now()
+		RETURNING customer_id, max_active_runs, max_queued_runs, max_workflow_runs, max_background_runs, async_buffer_size, max_async_payload_bytes, async_degrade_threshold_bytes, metadata, updated_at`,
+		limits.CustomerID, limits.MaxActiveRuns, limits.MaxQueuedRuns, limits.MaxWorkflowRuns, limits.MaxBackgroundRuns, limits.AsyncBufferSize, limits.MaxAsyncPayloadBytes, limits.AsyncDegradeThresholdBytes, metadata).
+		Scan(&out.CustomerID, &out.MaxActiveRuns, &out.MaxQueuedRuns, &out.MaxWorkflowRuns, &out.MaxBackgroundRuns, &out.AsyncBufferSize, &out.MaxAsyncPayloadBytes, &out.AsyncDegradeThresholdBytes, &out.Metadata, &out.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (s *Store) CustomerRuntimeLimits(ctx context.Context, customerID string) (*RuntimeLimits, error) {
+	var out RuntimeLimits
+	err := s.pool.QueryRow(ctx, `
+		SELECT customer_id, max_active_runs, max_queued_runs, max_workflow_runs, max_background_runs, async_buffer_size, max_async_payload_bytes, async_degrade_threshold_bytes, metadata, updated_at
+		FROM customer_runtime_limits
+		WHERE customer_id=$1`, customerID).
+		Scan(&out.CustomerID, &out.MaxActiveRuns, &out.MaxQueuedRuns, &out.MaxWorkflowRuns, &out.MaxBackgroundRuns, &out.AsyncBufferSize, &out.MaxAsyncPayloadBytes, &out.AsyncDegradeThresholdBytes, &out.Metadata, &out.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (s *Store) UpsertAgentInstanceRuntimeLimits(ctx context.Context, limits RuntimeLimits) (*RuntimeLimits, error) {
+	if limits.CustomerID == "" || limits.AgentInstanceID == "" {
+		return nil, ValidationError{Message: "customer_id and agent_instance_id are required"}
+	}
+	if err := validateRuntimeLimits(limits); err != nil {
+		return nil, err
+	}
+	if err := s.ensureCustomer(ctx, limits.CustomerID); err != nil {
+		return nil, err
+	}
+	if _, err := s.pool.Exec(ctx, `INSERT INTO agent_instances(customer_id,id) VALUES($1,$2) ON CONFLICT DO NOTHING`, limits.CustomerID, limits.AgentInstanceID); err != nil {
+		return nil, err
+	}
+	metadata := jsonObject(limits.Metadata)
+	var out RuntimeLimits
+	err := s.pool.QueryRow(ctx, `
+		INSERT INTO agent_instance_runtime_limits(customer_id,agent_instance_id,max_active_runs,max_queued_runs,max_workflow_runs,max_background_runs,async_buffer_size,max_async_payload_bytes,async_degrade_threshold_bytes,metadata,updated_at)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now())
+		ON CONFLICT (customer_id,agent_instance_id) DO UPDATE SET
+			max_active_runs=EXCLUDED.max_active_runs,
+			max_queued_runs=EXCLUDED.max_queued_runs,
+			max_workflow_runs=EXCLUDED.max_workflow_runs,
+			max_background_runs=EXCLUDED.max_background_runs,
+			async_buffer_size=EXCLUDED.async_buffer_size,
+			max_async_payload_bytes=EXCLUDED.max_async_payload_bytes,
+			async_degrade_threshold_bytes=EXCLUDED.async_degrade_threshold_bytes,
+			metadata=EXCLUDED.metadata,
+			updated_at=now()
+		RETURNING customer_id, agent_instance_id, max_active_runs, max_queued_runs, max_workflow_runs, max_background_runs, async_buffer_size, max_async_payload_bytes, async_degrade_threshold_bytes, metadata, updated_at`,
+		limits.CustomerID, limits.AgentInstanceID, limits.MaxActiveRuns, limits.MaxQueuedRuns, limits.MaxWorkflowRuns, limits.MaxBackgroundRuns, limits.AsyncBufferSize, limits.MaxAsyncPayloadBytes, limits.AsyncDegradeThresholdBytes, metadata).
+		Scan(&out.CustomerID, &out.AgentInstanceID, &out.MaxActiveRuns, &out.MaxQueuedRuns, &out.MaxWorkflowRuns, &out.MaxBackgroundRuns, &out.AsyncBufferSize, &out.MaxAsyncPayloadBytes, &out.AsyncDegradeThresholdBytes, &out.Metadata, &out.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (s *Store) AgentInstanceRuntimeLimits(ctx context.Context, customerID, agentInstanceID string) (*RuntimeLimits, error) {
+	var out RuntimeLimits
+	err := s.pool.QueryRow(ctx, `
+		SELECT customer_id, agent_instance_id, max_active_runs, max_queued_runs, max_workflow_runs, max_background_runs, async_buffer_size, max_async_payload_bytes, async_degrade_threshold_bytes, metadata, updated_at
+		FROM agent_instance_runtime_limits
+		WHERE customer_id=$1 AND agent_instance_id=$2`, customerID, agentInstanceID).
+		Scan(&out.CustomerID, &out.AgentInstanceID, &out.MaxActiveRuns, &out.MaxQueuedRuns, &out.MaxWorkflowRuns, &out.MaxBackgroundRuns, &out.AsyncBufferSize, &out.MaxAsyncPayloadBytes, &out.AsyncDegradeThresholdBytes, &out.Metadata, &out.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (s *Store) EffectiveRuntimeLimits(ctx context.Context, customerID, agentInstanceID string) (EffectiveRuntimeLimits, error) {
+	limits := DefaultRuntimeLimits()
+	if customer, err := s.CustomerRuntimeLimits(ctx, customerID); err == nil {
+		applyRuntimeLimits(&limits, customer)
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return limits, err
+	}
+	if agentInstanceID != "" {
+		if agent, err := s.AgentInstanceRuntimeLimits(ctx, customerID, agentInstanceID); err == nil {
+			applyRuntimeLimits(&limits, agent)
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return limits, err
+		}
+	}
+	return limits, nil
+}
+
+func (s *Store) EnforceRunQuota(ctx context.Context, customerID, agentInstanceID string) error {
+	limits, err := s.EffectiveRuntimeLimits(ctx, customerID, agentInstanceID)
+	if err != nil {
+		return err
+	}
+	if limits.MaxQueuedRuns > 0 {
+		count, err := s.runCount(ctx, customerID, agentInstanceID, []string{"queued"})
+		if err != nil {
+			return err
+		}
+		if count >= limits.MaxQueuedRuns {
+			return QuotaExceededError{Kind: "queued_runs", Limit: limits.MaxQueuedRuns, Count: count + 1}
+		}
+	}
+	if limits.MaxActiveRuns > 0 {
+		count, err := s.runCount(ctx, customerID, agentInstanceID, []string{"leased", "running", "running_workflow", "awaiting_user"})
+		if err != nil {
+			return err
+		}
+		if count >= limits.MaxActiveRuns {
+			return QuotaExceededError{Kind: "active_runs", Limit: limits.MaxActiveRuns, Count: count + 1}
+		}
+	}
+	return nil
+}
+
+func (s *Store) EnforceWorkflowQuota(ctx context.Context, customerID, agentInstanceID string) error {
+	limits, err := s.EffectiveRuntimeLimits(ctx, customerID, agentInstanceID)
+	if err != nil {
+		return err
+	}
+	if limits.MaxWorkflowRuns <= 0 {
+		return nil
+	}
+	count, err := s.workflowRunCount(ctx, customerID, agentInstanceID)
+	if err != nil {
+		return err
+	}
+	if count >= limits.MaxWorkflowRuns {
+		return QuotaExceededError{Kind: "workflow_runs", Limit: limits.MaxWorkflowRuns, Count: count + 1}
+	}
+	return nil
+}
+
+func (s *Store) EnforceRunStartQuota(ctx context.Context, runID, customerID, agentInstanceID string) error {
+	limits, err := s.EffectiveRuntimeLimits(ctx, customerID, agentInstanceID)
+	if err != nil {
+		return err
+	}
+	if limits.MaxActiveRuns <= 0 {
+		return nil
+	}
+	var count int
+	err = s.pool.QueryRow(ctx, `
+		SELECT count(*)
+		FROM runs
+		WHERE customer_id=$1
+		AND agent_instance_id=$2
+		AND id<>$3
+		AND state IN ('leased','running','running_workflow','awaiting_user')`, customerID, agentInstanceID, runID).Scan(&count)
+	if err != nil {
+		return err
+	}
+	if count+1 > limits.MaxActiveRuns {
+		return QuotaExceededError{Kind: "active_runs", Limit: limits.MaxActiveRuns, Count: count + 1}
+	}
+	return nil
+}
+
+func (s *Store) EnforceBackgroundQuota(ctx context.Context, customerID, agentInstanceID string) error {
+	limits, err := s.EffectiveRuntimeLimits(ctx, customerID, agentInstanceID)
+	if err != nil {
+		return err
+	}
+	if limits.MaxBackgroundRuns <= 0 {
+		return nil
+	}
+	var count int
+	err = s.pool.QueryRow(ctx, `
+		SELECT count(*)
+		FROM runs
+		WHERE customer_id=$1
+		AND agent_instance_id=$2
+		AND request_id LIKE '%:background'
+		AND state IN ('queued','leased','running','running_workflow','awaiting_user')`, customerID, agentInstanceID).Scan(&count)
+	if err != nil {
+		return err
+	}
+	if count >= limits.MaxBackgroundRuns {
+		return QuotaExceededError{Kind: "background_runs", Limit: limits.MaxBackgroundRuns, Count: count + 1}
+	}
+	return nil
+}
+
+func applyRuntimeLimits(out *EffectiveRuntimeLimits, in *RuntimeLimits) {
+	if in.MaxActiveRuns != nil {
+		out.MaxActiveRuns = *in.MaxActiveRuns
+	}
+	if in.MaxQueuedRuns != nil {
+		out.MaxQueuedRuns = *in.MaxQueuedRuns
+	}
+	if in.MaxWorkflowRuns != nil {
+		out.MaxWorkflowRuns = *in.MaxWorkflowRuns
+	}
+	if in.MaxBackgroundRuns != nil {
+		out.MaxBackgroundRuns = *in.MaxBackgroundRuns
+	}
+	if in.AsyncBufferSize != nil {
+		out.AsyncBufferSize = *in.AsyncBufferSize
+	}
+	if in.MaxAsyncPayloadBytes != nil {
+		out.MaxAsyncPayloadBytes = *in.MaxAsyncPayloadBytes
+	}
+	if in.AsyncDegradeThresholdBytes != nil {
+		out.AsyncDegradeThresholdBytes = *in.AsyncDegradeThresholdBytes
+	}
+}
+
+func validateRuntimeLimits(limits RuntimeLimits) error {
+	for name, value := range map[string]*int{
+		"max_active_runs":               limits.MaxActiveRuns,
+		"max_queued_runs":               limits.MaxQueuedRuns,
+		"max_workflow_runs":             limits.MaxWorkflowRuns,
+		"max_background_runs":           limits.MaxBackgroundRuns,
+		"async_buffer_size":             limits.AsyncBufferSize,
+		"max_async_payload_bytes":       limits.MaxAsyncPayloadBytes,
+		"async_degrade_threshold_bytes": limits.AsyncDegradeThresholdBytes,
+	} {
+		if value != nil && *value < 0 {
+			return ValidationError{Message: fmt.Sprintf("%s must be non-negative", name)}
+		}
+	}
+	return nil
+}
+
+func (s *Store) runCount(ctx context.Context, customerID, agentInstanceID string, states []string) (int, error) {
+	var count int
+	err := s.pool.QueryRow(ctx, `
+		SELECT count(*)
+		FROM runs
+		WHERE customer_id=$1
+		AND agent_instance_id=$2
+		AND state = ANY($3)`, customerID, agentInstanceID, states).Scan(&count)
+	return count, err
+}
+
+func (s *Store) workflowRunCount(ctx context.Context, customerID, agentInstanceID string) (int, error) {
+	var count int
+	err := s.pool.QueryRow(ctx, `
+		SELECT count(*)
+		FROM workflow_runs wr
+		JOIN runs r ON r.id=wr.run_id
+		WHERE r.customer_id=$1
+		AND r.agent_instance_id=$2
+		AND wr.status IN ('queued','running','awaiting_user')`, customerID, agentInstanceID).Scan(&count)
+	return count, err
+}

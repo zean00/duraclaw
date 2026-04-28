@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"duraclaw/internal/artifacts"
+	"duraclaw/internal/asyncwrite"
 	"duraclaw/internal/db"
 	"duraclaw/internal/mcp"
 	"duraclaw/internal/observability"
@@ -31,6 +32,7 @@ type Worker struct {
 	tools         *tools.Registry
 	mcpManager    *mcp.Manager
 	counters      *observability.Counters
+	asyncWriter   *asyncwrite.Writer
 	outbound      *outbound.Service
 	policy        *policy.Engine
 	owner         string
@@ -83,6 +85,11 @@ func (w *Worker) WithOutbound(service *outbound.Service) *Worker {
 	return w
 }
 
+func (w *Worker) WithAsyncWriter(writer *asyncwrite.Writer) *Worker {
+	w.asyncWriter = writer
+	return w
+}
+
 func (w *Worker) SetToolRegistry(registry *tools.Registry) {
 	if registry == nil {
 		registry = tools.NewRegistry()
@@ -104,6 +111,15 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 	}
 	if w.counters != nil {
 		w.counters.ObserveDuration("run_queue_lag_seconds", time.Since(run.CreatedAt))
+	}
+	if err := w.store.EnforceRunStartQuota(ctx, run.ID, run.CustomerID, run.AgentInstanceID); err != nil {
+		w.inc("quota_exceeded_total")
+		if db.IsQuotaExceeded(err) {
+			msg := err.Error()
+			_ = w.store.AddEvent(context.Background(), run.ID, "quota_exceeded", map[string]any{"error": msg})
+			_ = w.store.SetRunState(context.Background(), run.ID, "failed", &msg)
+		}
+		return true, err
 	}
 	started := time.Now()
 	if err := w.process(ctx, run); err != nil {
@@ -312,6 +328,7 @@ func (w *Worker) process(ctx context.Context, run *db.Run) error {
 	if err := w.store.Checkpoint(ctx, run.ID, "provider_complete", map[string]any{"finish_reason": resp.FinishReason}); err != nil {
 		return err
 	}
+	w.enqueueAsyncObservability(ctx, run, "checkpoint.provider_complete", map[string]any{"finish_reason": resp.FinishReason, "content_length": len(resp.Content)})
 	msgID, err := w.store.InsertMessage(ctx, run.CustomerID, run.SessionID, run.ID, "assistant", map[string]any{
 		"parts": []map[string]any{{"type": "text", "text": resp.Content}},
 	})
@@ -322,6 +339,22 @@ func (w *Worker) process(ctx context.Context, run *db.Run) error {
 		return err
 	}
 	return w.store.CompleteRunWithMessage(ctx, run.ID, msgID)
+}
+
+func (w *Worker) enqueueAsyncObservability(ctx context.Context, run *db.Run, eventType string, payload any) {
+	if w.asyncWriter == nil {
+		return
+	}
+	w.asyncWriter.Enqueue(ctx, db.AsyncWriteSpec{
+		CustomerID:      run.CustomerID,
+		AgentInstanceID: run.AgentInstanceID,
+		RunID:           run.ID,
+		JobType:         "observability_event",
+		Payload: map[string]any{
+			"event_type": eventType,
+			"payload":    payload,
+		},
+	})
 }
 
 func (w *Worker) emitFinalOutbound(ctx context.Context, run *db.Run, messageID, text string) error {

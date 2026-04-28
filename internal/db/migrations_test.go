@@ -140,3 +140,22 @@ func TestSixthMigrationContainsAgentInstanceVersionSchema(t *testing.T) {
 		}
 	}
 }
+
+func TestSeventhMigrationContainsRuntimeLimitsAndAsyncWrites(t *testing.T) {
+	raw, err := migrationFS.ReadFile("migrations/0007_runtime_limits_and_async_writes.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw)
+	for _, want := range []string{
+		"CREATE TABLE IF NOT EXISTS customer_runtime_limits",
+		"CREATE TABLE IF NOT EXISTS agent_instance_runtime_limits",
+		"CREATE TABLE IF NOT EXISTS async_write_jobs",
+		"CHECK (state IN ('queued','leased','completed','failed','dropped','degraded'))",
+		"CREATE INDEX IF NOT EXISTS async_write_jobs_claim_idx",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("migration missing %q", want)
+		}
+	}
+}

@@ -87,6 +87,10 @@ go test ./internal/db -run TestMigrateAgainstPostgres
 - `GET /admin/policy-packs/{pack_id}/rules`
 - `POST /admin/policy-packs/{pack_id}/assignments`
 - `GET /admin/policy-evaluations?run_id={run_id}`
+- `PUT /admin/runtime-limits/customer/{customer_id}`
+- `GET /admin/runtime-limits/customer/{customer_id}`
+- `PUT /admin/runtime-limits/customer/{customer_id}/agent-instances/{agent_instance_id}`
+- `GET /admin/runtime-limits/customer/{customer_id}/agent-instances/{agent_instance_id}`
 - `POST /admin/knowledge/text`
 - `GET /admin/knowledge/documents?customer_id={customer_id}`
 - `GET /admin/knowledge/documents/{document_id}/chunks`
@@ -236,6 +240,8 @@ The persistence layer also includes:
 - Durable observability events are written for model, tool, MCP, and processor call lifecycle transitions.
 - Model usage is persisted in model-call summaries and exposed through token counters when providers report usage.
 - Agent instance version `tool_config`, `mcp_config`, `workflow_config`, and `policy_config` are validated and applied during run execution, including model-loop and per-turn tool-call limits.
+- Database-managed runtime limits hard-fail run, workflow, and background-job creation when configured quotas are exceeded.
+- Async write jobs provide a bounded non-critical sidecar pipeline with degrade/drop metrics for oversized debug and observability payloads.
 - Artifact processors include a generic HTTP processor adapter for OCR/transcription/document extraction services.
 - Internal model-visible control tools: `duraclaw.run_workflow` and `duraclaw.ask_user`.
 - Optional admin bearer-token protection.

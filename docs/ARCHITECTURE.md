@@ -1277,7 +1277,7 @@ Duraclaw should support OpenTelemetry-compatible tracing and metrics. PostgreSQL
 
 The `observability_events` table is for durable audit/debug events that are too important to exist only in logs.
 
-Implementation status: model, tool, MCP, and artifact processor call starts/completions write both run events and durable observability events. In-process metrics expose counters plus duration count/sum/bucket series through `/metrics`, including run queue lag, run duration, model token usage, and model/tool/MCP/artifact processor/workflow-node durations.
+Implementation status: model, tool, MCP, and artifact processor call starts/completions write both run events and durable observability events. In-process metrics expose counters plus duration count/sum/bucket series through `/metrics`, including run queue lag, run duration, model token usage, async write drop/degrade/flush counts, and model/tool/MCP/artifact processor/workflow-node durations. Non-critical observability sidecars can flow through `async_write_jobs` with degradation and drop accounting.
 
 Example event types:
 
@@ -1305,6 +1305,8 @@ Concurrency rules:
 - Use tool/MCP concurrency limits.
 - Use workflow concurrency limits.
 - Use background-job concurrency limits.
+
+Implementation status: database-managed customer and agent-instance runtime limits can hard-fail run, workflow, and background-job creation when configured quotas are exceeded.
 
 PostgreSQL patterns:
 

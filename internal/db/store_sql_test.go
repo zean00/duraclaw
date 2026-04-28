@@ -181,6 +181,48 @@ func TestStoreCanLoadCompletedNonRetryableToolCalls(t *testing.T) {
 	}
 }
 
+func TestStoreHasRuntimeQuotaQueries(t *testing.T) {
+	raw, err := os.ReadFile("runtime_limits.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw)
+	for _, want := range []string{
+		"UpsertCustomerRuntimeLimits",
+		"UpsertAgentInstanceRuntimeLimits",
+		"EnforceRunQuota",
+		"EnforceRunStartQuota",
+		"EnforceWorkflowQuota",
+		"EnforceBackgroundQuota",
+		"QuotaExceededError",
+		"state = ANY($3)",
+		"workflow_runs wr",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("runtime limit store missing %q", want)
+		}
+	}
+}
+
+func TestStoreHasAsyncWriteClaimQueries(t *testing.T) {
+	raw, err := os.ReadFile("async_writes.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw)
+	for _, want := range []string{
+		"EnqueueAsyncWrite",
+		"ClaimAsyncWriteJobs",
+		"FOR UPDATE SKIP LOCKED",
+		"CompleteAsyncWriteJob",
+		"ReleaseAsyncWriteJob",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("async write store missing %q", want)
+		}
+	}
+}
+
 func TestStoreWritesDurableObservabilityForExecutionCalls(t *testing.T) {
 	raw, err := os.ReadFile("store.go")
 	if err != nil {

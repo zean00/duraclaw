@@ -173,6 +173,17 @@ func (s *Store) CreateRun(ctx context.Context, c ACPContext, input any) (*Run, e
 	if err != nil {
 		return nil, err
 	}
+	if existing, err := s.RunByIdempotencyKey(ctx, c.CustomerID, c.SessionID, c.IdempotencyKey); err == nil {
+		return existing, nil
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, err
+	}
+	if err := s.EnforceRunQuota(ctx, c.CustomerID, effectiveAgentInstanceID); err != nil {
+		if IsQuotaExceeded(err) {
+			_ = s.AddObservabilityEvent(ctx, c.CustomerID, "", "quota_exceeded", map[string]any{"error": err.Error(), "agent_instance_id": effectiveAgentInstanceID})
+		}
+		return nil, err
+	}
 	versionID, err := s.currentAgentInstanceVersionID(ctx, c.CustomerID, effectiveAgentInstanceID)
 	if err != nil {
 		return nil, err

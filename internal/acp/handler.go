@@ -92,6 +92,10 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /admin/policy-packs/{pack_id}/rules", h.requireAdmin(h.listPolicyRules))
 	mux.HandleFunc("POST /admin/policy-packs/{pack_id}/assignments", h.requireAdmin(h.assignPolicyPack))
 	mux.HandleFunc("GET /admin/policy-evaluations", h.requireAdmin(h.listPolicyEvaluations))
+	mux.HandleFunc("PUT /admin/runtime-limits/customer/{customer_id}", h.requireAdmin(h.upsertCustomerRuntimeLimits))
+	mux.HandleFunc("GET /admin/runtime-limits/customer/{customer_id}", h.requireAdmin(h.getCustomerRuntimeLimits))
+	mux.HandleFunc("PUT /admin/runtime-limits/customer/{customer_id}/agent-instances/{agent_instance_id}", h.requireAdmin(h.upsertAgentInstanceRuntimeLimits))
+	mux.HandleFunc("GET /admin/runtime-limits/customer/{customer_id}/agent-instances/{agent_instance_id}", h.requireAdmin(h.getAgentInstanceRuntimeLimits))
 	mux.HandleFunc("POST /admin/knowledge/text", h.requireAdmin(h.ingestKnowledgeText))
 	mux.HandleFunc("GET /admin/knowledge/documents", h.requireAdmin(h.listKnowledgeDocuments))
 	mux.HandleFunc("GET /admin/knowledge/documents/{document_id}/chunks", h.requireAdmin(h.listKnowledgeChunks))
@@ -586,6 +590,57 @@ func (h *Handler) listPolicyEvaluations(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"policy_evaluations": evals})
+}
+
+func (h *Handler) upsertCustomerRuntimeLimits(w http.ResponseWriter, r *http.Request) {
+	var payload db.RuntimeLimits
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	payload.CustomerID = r.PathValue("customer_id")
+	limits, err := h.store.UpsertCustomerRuntimeLimits(r.Context(), payload)
+	if err != nil {
+		writeError(w, statusForError(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, limits)
+}
+
+func (h *Handler) getCustomerRuntimeLimits(w http.ResponseWriter, r *http.Request) {
+	limits, err := h.store.CustomerRuntimeLimits(r.Context(), r.PathValue("customer_id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	effective, _ := h.store.EffectiveRuntimeLimits(r.Context(), r.PathValue("customer_id"), "")
+	writeJSON(w, http.StatusOK, map[string]any{"limits": limits, "effective": effective})
+}
+
+func (h *Handler) upsertAgentInstanceRuntimeLimits(w http.ResponseWriter, r *http.Request) {
+	var payload db.RuntimeLimits
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	payload.CustomerID = r.PathValue("customer_id")
+	payload.AgentInstanceID = r.PathValue("agent_instance_id")
+	limits, err := h.store.UpsertAgentInstanceRuntimeLimits(r.Context(), payload)
+	if err != nil {
+		writeError(w, statusForError(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, limits)
+}
+
+func (h *Handler) getAgentInstanceRuntimeLimits(w http.ResponseWriter, r *http.Request) {
+	limits, err := h.store.AgentInstanceRuntimeLimits(r.Context(), r.PathValue("customer_id"), r.PathValue("agent_instance_id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	effective, _ := h.store.EffectiveRuntimeLimits(r.Context(), r.PathValue("customer_id"), r.PathValue("agent_instance_id"))
+	writeJSON(w, http.StatusOK, map[string]any{"limits": limits, "effective": effective})
 }
 
 func (h *Handler) ingestKnowledgeText(w http.ResponseWriter, r *http.Request) {
@@ -1204,7 +1259,10 @@ func (h *Handler) startRun(w http.ResponseWriter, r *http.Request) {
 	}
 	run, err := h.store.CreateRun(r.Context(), c, payload)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
+		if db.IsQuotaExceeded(err) && h.counters != nil {
+			h.counters.Inc("quota_exceeded_total")
+		}
+		writeError(w, statusForError(err), err)
 		return
 	}
 	_ = h.store.AddObservabilityEvent(r.Context(), c.CustomerID, run.ID, "acp_run_created", map[string]any{"request_id": c.RequestID})
@@ -1594,4 +1652,14 @@ func queryLimit(r *http.Request, fallback int) int {
 
 func writeError(w http.ResponseWriter, status int, err error) {
 	writeJSON(w, status, map[string]string{"error": err.Error()})
+}
+
+func statusForError(err error) int {
+	if db.IsQuotaExceeded(err) {
+		return http.StatusTooManyRequests
+	}
+	if db.IsValidationError(err) {
+		return http.StatusBadRequest
+	}
+	return http.StatusInternalServerError
 }

@@ -52,6 +52,9 @@ func TestWorkerAppliesVersionRuntimeConfig(t *testing.T) {
 		"ToolCallCount",
 		"plannedToolExecutions",
 		"recordModelUsage",
+		"WithAsyncWriter",
+		"enqueueAsyncObservability",
+		"EnforceRunStartQuota",
 		"policyConfigInstructions",
 	} {
 		if !strings.Contains(src, want) {

@@ -222,6 +222,10 @@ func (s *fakeWorkflowStore) CreateRun(context.Context, db.ACPContext, any) (*db.
 	return &db.Run{ID: "run-background"}, nil
 }
 
+func (s *fakeWorkflowStore) EnforceBackgroundQuota(context.Context, string, string) error {
+	return nil
+}
+
 func (s *fakeWorkflowStore) CreateSchedulerJob(context.Context, db.SchedulerJobSpec) (*db.SchedulerJob, error) {
 	return &db.SchedulerJob{ID: "scheduler-1"}, nil
 }

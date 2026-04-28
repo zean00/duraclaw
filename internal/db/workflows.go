@@ -231,6 +231,16 @@ func (s *Store) WorkflowManifests(ctx context.Context, customerID, agentInstance
 }
 
 func (s *Store) StartWorkflowRun(ctx context.Context, runID, workflowDefinitionID string, version int, currentNode string, input any) (string, error) {
+	var customerID, agentInstanceID string
+	if err := s.pool.QueryRow(ctx, `SELECT customer_id, agent_instance_id FROM runs WHERE id=$1`, runID).Scan(&customerID, &agentInstanceID); err != nil {
+		return "", err
+	}
+	if err := s.EnforceWorkflowQuota(ctx, customerID, agentInstanceID); err != nil {
+		if IsQuotaExceeded(err) {
+			_ = s.AddObservabilityEvent(ctx, customerID, runID, "quota_exceeded", map[string]any{"error": err.Error(), "agent_instance_id": agentInstanceID, "workflow_definition_id": workflowDefinitionID})
+		}
+		return "", err
+	}
 	b, _ := json.Marshal(input)
 	var id string
 	err := s.pool.QueryRow(ctx, `

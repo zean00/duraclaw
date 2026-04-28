@@ -1,6 +1,7 @@
 package acp
 
 import (
+	"duraclaw/internal/db"
 	"duraclaw/internal/observability"
 
 	"net/http"
@@ -45,6 +46,18 @@ func TestMetrics(t *testing.T) {
 	NewHandler(nil).Routes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestStatusForErrorMapsQuotaToTooManyRequests(t *testing.T) {
+	if got := statusForError(db.QuotaExceededError{Kind: "queued_runs", Limit: 1, Count: 2}); got != http.StatusTooManyRequests {
+		t.Fatalf("status=%d", got)
+	}
+}
+
+func TestStatusForErrorMapsValidationToBadRequest(t *testing.T) {
+	if got := statusForError(db.ValidationError{Message: "max_active_runs must be non-negative"}); got != http.StatusBadRequest {
+		t.Fatalf("status=%d", got)
 	}
 }
 
