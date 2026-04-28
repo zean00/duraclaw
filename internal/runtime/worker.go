@@ -153,7 +153,18 @@ func (w *Worker) process(ctx context.Context, run *db.Run) error {
 	workflowContext := ""
 	workflowID := workflowIDFromInput(run.Input)
 	if workflowID != "" {
+		if err := w.workflowAllowedForRun(ctx, run, workflowID); err != nil {
+			return err
+		}
 		modelConfig, err := w.modelConfigForRun(ctx, run)
+		if err != nil {
+			return err
+		}
+		toolRegistry, err := w.toolRegistryForRun(ctx, run)
+		if err != nil {
+			return err
+		}
+		mcpManager, err := w.mcpManagerForRun(ctx, run)
 		if err != nil {
 			return err
 		}
@@ -163,8 +174,8 @@ func (w *Worker) process(ctx context.Context, run *db.Run) error {
 		}
 		result, err := workflow.NewExecutor(w.store).
 			WithProviders(w.providers, modelConfig).
-			WithTools(w.tools).
-			WithMCP(w.mcpManager).
+			WithTools(toolRegistry).
+			WithMCP(mcpManager).
 			WithCounters(w.counters).
 			WithPolicy(w.policyEngine()).
 			WithProcessors(w.processors).
@@ -224,7 +235,10 @@ func (w *Worker) process(ctx context.Context, run *db.Run) error {
 	if err != nil {
 		return err
 	}
-	toolDefs := w.toolDefinitions()
+	toolDefs, err := w.toolDefinitions(ctx, run)
+	if err != nil {
+		return err
+	}
 	var resp *providers.LLMResponse
 	for iteration := 1; iteration <= w.maxIterations; iteration++ {
 		modelStepID, err := w.store.StartRunStep(ctx, run.ID, "model_call", map[string]any{"messages": len(messages), "tools": len(toolDefs), "iteration": iteration})
@@ -406,6 +420,13 @@ func (w *Worker) providerMessages(ctx context.Context, run *db.Run, currentText 
 	if transferNote != "" {
 		promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: transferNote})
 	}
+	policyInstructions, err := w.policyConfigInstructions(ctx, run)
+	if err != nil {
+		return nil, err
+	}
+	if policyInstructions != "" {
+		promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: policyInstructions})
+	}
 	userProfile, err := w.userProfileContext(ctx, run)
 	if err != nil {
 		return nil, err
@@ -467,6 +488,115 @@ func (w *Worker) modelConfigForRun(ctx context.Context, run *db.Run) (providers.
 		modelConfig.Fallbacks = payload.Fallbacks
 	}
 	return modelConfig, nil
+}
+
+func (w *Worker) toolRegistryForRun(ctx context.Context, run *db.Run) (*tools.Registry, error) {
+	if w.tools == nil {
+		return tools.NewRegistry(), nil
+	}
+	version, err := w.store.AgentInstanceVersion(ctx, run.AgentInstanceVersionID)
+	if err != nil || version == nil || len(version.ToolConfig) == 0 {
+		return w.tools, err
+	}
+	var cfg struct {
+		AllowedTools  []string `json:"allowed_tools"`
+		DisabledTools []string `json:"disabled_tools"`
+	}
+	if err := json.Unmarshal(version.ToolConfig, &cfg); err != nil {
+		return nil, err
+	}
+	return w.tools.Filtered(stringSet(cfg.AllowedTools), stringSet(cfg.DisabledTools)), nil
+}
+
+func (w *Worker) toolAllowedForRun(ctx context.Context, run *db.Run, name string) error {
+	version, err := w.store.AgentInstanceVersion(ctx, run.AgentInstanceVersionID)
+	if err != nil || version == nil || len(version.ToolConfig) == 0 {
+		return err
+	}
+	var cfg struct {
+		AllowedTools  []string `json:"allowed_tools"`
+		DisabledTools []string `json:"disabled_tools"`
+	}
+	if err := json.Unmarshal(version.ToolConfig, &cfg); err != nil {
+		return err
+	}
+	allowed := stringSet(cfg.AllowedTools)
+	disabled := stringSet(cfg.DisabledTools)
+	if disabled[name] {
+		return fmt.Errorf("tool %q disabled by agent instance version", name)
+	}
+	if len(allowed) > 0 && !allowed[name] {
+		return fmt.Errorf("tool %q not allowed by agent instance version", name)
+	}
+	return nil
+}
+
+func (w *Worker) workflowAllowedForRun(ctx context.Context, run *db.Run, workflowID string) error {
+	version, err := w.store.AgentInstanceVersion(ctx, run.AgentInstanceVersionID)
+	if err != nil || version == nil || len(version.WorkflowConfig) == 0 {
+		return err
+	}
+	var cfg struct {
+		AllowedWorkflows  []string `json:"allowed_workflows"`
+		DisabledWorkflows []string `json:"disabled_workflows"`
+	}
+	if err := json.Unmarshal(version.WorkflowConfig, &cfg); err != nil {
+		return err
+	}
+	allowed := stringSet(cfg.AllowedWorkflows)
+	disabled := stringSet(cfg.DisabledWorkflows)
+	if disabled[workflowID] {
+		return fmt.Errorf("workflow %q disabled by agent instance version", workflowID)
+	}
+	if len(allowed) > 0 && !allowed[workflowID] {
+		return fmt.Errorf("workflow %q not allowed by agent instance version", workflowID)
+	}
+	return nil
+}
+
+func (w *Worker) mcpManagerForRun(ctx context.Context, run *db.Run) (*mcp.Manager, error) {
+	version, err := w.store.AgentInstanceVersion(ctx, run.AgentInstanceVersionID)
+	if err != nil || version == nil || len(version.MCPConfig) == 0 {
+		return w.mcpManager, err
+	}
+	manager := w.mcpManager
+	if manager == nil {
+		manager = mcp.NewManager()
+	}
+	return manager.WithConfig(version.MCPConfig)
+}
+
+func (w *Worker) policyConfigInstructions(ctx context.Context, run *db.Run) (string, error) {
+	version, err := w.store.AgentInstanceVersion(ctx, run.AgentInstanceVersionID)
+	if err != nil || version == nil || len(version.PolicyConfig) == 0 {
+		return "", err
+	}
+	var cfg struct {
+		Instructions []string `json:"instructions"`
+	}
+	if err := json.Unmarshal(version.PolicyConfig, &cfg); err != nil {
+		return "", err
+	}
+	var lines []string
+	for _, line := range cfg.Instructions {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			lines = append(lines, trimmed)
+		}
+	}
+	if len(lines) == 0 {
+		return "", nil
+	}
+	return "Agent policy configuration:\n- " + strings.Join(lines, "\n- "), nil
+}
+
+func stringSet(values []string) map[string]bool {
+	out := map[string]bool{}
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			out[trimmed] = true
+		}
+	}
+	return out
 }
 
 func (w *Worker) sessionTransferNote(ctx context.Context, run *db.Run) (string, error) {
@@ -578,16 +708,32 @@ func messageText(raw json.RawMessage) string {
 	return strings.Join(out, "\n")
 }
 
-func (w *Worker) toolDefinitions() []providers.ToolDefinition {
-	if w.tools == nil {
-		return internalToolDefinitions()
+func (w *Worker) toolDefinitions(ctx context.Context, run *db.Run) ([]providers.ToolDefinition, error) {
+	toolRegistry, err := w.toolRegistryForRun(ctx, run)
+	if err != nil {
+		return nil, err
 	}
-	return append(w.tools.ToProviderDefs(), internalToolDefinitions()...)
+	defs := []providers.ToolDefinition{}
+	if toolRegistry != nil {
+		defs = append(defs, toolRegistry.ToProviderDefs()...)
+	}
+	internal := internalToolDefinitions()
+	filtered := make([]providers.ToolDefinition, 0, len(defs)+len(internal))
+	for _, def := range append(defs, internal...) {
+		if err := w.toolAllowedForRun(ctx, run, def.Function.Name); err == nil {
+			filtered = append(filtered, def)
+		}
+	}
+	return filtered, nil
 }
 
 func (w *Worker) executeToolCalls(ctx context.Context, run *db.Run, stepID string, calls []providers.ToolCall) ([]string, error) {
 	if w.tools == nil {
 		w.tools = tools.NewRegistry()
+	}
+	toolRegistry, err := w.toolRegistryForRun(ctx, run)
+	if err != nil {
+		return nil, err
 	}
 	completed, err := w.completedNonRetryableTools(ctx, run.ID)
 	if err != nil {
@@ -595,6 +741,9 @@ func (w *Worker) executeToolCalls(ctx context.Context, run *db.Run, stepID strin
 	}
 	results := make([]string, 0, len(calls))
 	for _, call := range calls {
+		if err := w.toolAllowedForRun(ctx, run, call.Function.Name); err != nil {
+			return nil, err
+		}
 		if w.isInternalTool(call.Function.Name) {
 			result, err := w.executeInternalTool(ctx, run, stepID, call)
 			if err != nil {
@@ -607,8 +756,8 @@ func (w *Worker) executeToolCalls(ctx context.Context, run *db.Run, stepID strin
 			return nil, err
 		}
 		retryable := true
-		if w.tools != nil {
-			retryable = w.tools.Retryable(call.Function.Name)
+		if toolRegistry != nil {
+			retryable = toolRegistry.Retryable(call.Function.Name)
 		}
 		argsHash := db.StableArgsHash(call.Function.Name, call.Function.Arguments)
 		if !retryable {
@@ -621,7 +770,7 @@ func (w *Worker) executeToolCalls(ctx context.Context, run *db.Run, stepID strin
 		if err != nil {
 			return nil, err
 		}
-		result := w.tools.Execute(ctx, tools.ExecutionContext{
+		result := toolRegistry.Execute(ctx, tools.ExecutionContext{
 			CustomerID: run.CustomerID, UserID: run.UserID, AgentInstanceID: run.AgentInstanceID, SessionID: run.SessionID, RunID: run.ID, ToolCallID: callID, RequestID: run.RequestID,
 		}, call.Function.Name, call.Function.Arguments)
 		var errText *string
@@ -707,14 +856,29 @@ func (w *Worker) executeInternalTool(ctx context.Context, run *db.Run, stepID st
 		if strings.TrimSpace(workflowID) == "" {
 			return "", fmt.Errorf("workflow_id is required")
 		}
+		if err := w.workflowAllowedForRun(ctx, run, workflowID); err != nil {
+			return "", err
+		}
 		if _, err := w.policyEngine().Enforce(ctx, "pre_workflow", w.policyContext(run, stepID, workflowID, "")); err != nil {
 			return "", err
 		}
 		input, _ := call.Function.Arguments["input"].(map[string]any)
+		modelConfig, err := w.modelConfigForRun(ctx, run)
+		if err != nil {
+			return "", err
+		}
+		toolRegistry, err := w.toolRegistryForRun(ctx, run)
+		if err != nil {
+			return "", err
+		}
+		mcpManager, err := w.mcpManagerForRun(ctx, run)
+		if err != nil {
+			return "", err
+		}
 		result, err := workflow.NewExecutor(w.store).
-			WithProviders(w.providers, w.modelConfig).
-			WithTools(w.tools).
-			WithMCP(w.mcpManager).
+			WithProviders(w.providers, modelConfig).
+			WithTools(toolRegistry).
+			WithMCP(mcpManager).
 			WithCounters(w.counters).
 			WithPolicy(w.policyEngine()).
 			WithProcessors(w.processors).

@@ -34,3 +34,22 @@ func TestWorkerPassesCountersToAllWorkflowExecutors(t *testing.T) {
 		t.Fatalf("every workflow executor path should receive counters")
 	}
 }
+
+func TestWorkerAppliesVersionRuntimeConfig(t *testing.T) {
+	raw, err := os.ReadFile("worker.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(raw)
+	for _, want := range []string{
+		"toolRegistryForRun",
+		"toolAllowedForRun",
+		"workflowAllowedForRun",
+		"mcpManagerForRun",
+		"policyConfigInstructions",
+	} {
+		if !strings.Contains(src, want) {
+			t.Fatalf("worker missing version runtime config hook %q", want)
+		}
+	}
+}

@@ -70,6 +70,25 @@ func (r *Registry) List() []string {
 	return names
 }
 
+func (r *Registry) Filtered(allowed, disabled map[string]bool) *Registry {
+	out := NewRegistry()
+	if r == nil {
+		return out
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for name, tool := range r.tools {
+		if len(allowed) > 0 && !allowed[name] {
+			continue
+		}
+		if disabled[name] {
+			continue
+		}
+		out.tools[name] = tool
+	}
+	return out
+}
+
 func (r *Registry) ToProviderDefs() []providers.ToolDefinition {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -30,13 +32,17 @@ type Client interface {
 }
 
 type ServerSpec struct {
-	Name       string         `json:"name"`
-	Transport  string         `json:"transport"`
-	BaseURL    string         `json:"base_url,omitempty"`
-	Token      string         `json:"-"`
-	MaxRetries int            `json:"max_retries"`
-	RetryDelay time.Duration  `json:"retry_delay"`
-	Metadata   map[string]any `json:"metadata,omitempty"`
+	Name          string            `json:"name"`
+	Transport     string            `json:"transport"`
+	BaseURL       string            `json:"base_url,omitempty"`
+	Token         string            `json:"-"`
+	Command       string            `json:"command,omitempty"`
+	Args          []string          `json:"args,omitempty"`
+	Env           map[string]string `json:"-"`
+	MaxRetries    int               `json:"max_retries"`
+	RetryDelay    time.Duration     `json:"retry_delay"`
+	MaxConcurrent int               `json:"max_concurrent"`
+	Metadata      map[string]any    `json:"metadata,omitempty"`
 }
 
 type ServerStatus struct {
@@ -52,6 +58,7 @@ type ServerStatus struct {
 type managedClient struct {
 	spec   ServerSpec
 	client Client
+	sem    chan struct{}
 	mu     sync.RWMutex
 	status ServerStatus
 }
@@ -88,11 +95,68 @@ func (m *Manager) RegisterWithSpec(spec ServerSpec, client Client) {
 		m.clients = map[string]*managedClient{}
 	}
 	now := time.Now().UTC()
+	var sem chan struct{}
+	if spec.MaxConcurrent > 0 {
+		sem = make(chan struct{}, spec.MaxConcurrent)
+	}
 	m.clients[spec.Name] = &managedClient{
 		spec:   spec,
 		client: client,
+		sem:    sem,
 		status: ServerStatus{Name: spec.Name, Transport: spec.Transport, RegisteredAt: now},
 	}
+}
+
+func (m *Manager) WithConfig(raw json.RawMessage) (*Manager, error) {
+	if len(raw) == 0 || string(raw) == "null" || string(raw) == "{}" {
+		return m, nil
+	}
+	next := NewManager()
+	if m != nil {
+		m.mu.RLock()
+		for name, client := range m.clients {
+			next.clients[name] = client
+		}
+		m.mu.RUnlock()
+	}
+	var cfg struct {
+		Servers []struct {
+			Name          string            `json:"name"`
+			Transport     string            `json:"transport"`
+			BaseURL       string            `json:"base_url"`
+			Token         string            `json:"token"`
+			Command       string            `json:"command"`
+			Args          []string          `json:"args"`
+			Env           map[string]string `json:"env"`
+			MaxRetries    int               `json:"max_retries"`
+			RetryDelayMS  int               `json:"retry_delay_ms"`
+			MaxConcurrent int               `json:"max_concurrent"`
+			Metadata      map[string]any    `json:"metadata"`
+		} `json:"servers"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return nil, err
+	}
+	for _, server := range cfg.Servers {
+		transport := strings.TrimSpace(server.Transport)
+		if transport == "" {
+			transport = "http"
+		}
+		spec := ServerSpec{
+			Name: server.Name, Transport: transport, BaseURL: server.BaseURL, Token: server.Token, Command: server.Command, Args: server.Args, Env: server.Env,
+			MaxRetries: server.MaxRetries, RetryDelay: time.Duration(server.RetryDelayMS) * time.Millisecond,
+			MaxConcurrent: server.MaxConcurrent, Metadata: server.Metadata,
+		}
+		switch transport {
+		case "http", "sse":
+			next.RegisterWithSpec(spec, HTTPClient{BaseURL: server.BaseURL, Token: server.Token})
+		case "stdio":
+			next.RegisterWithSpec(spec, StdioClient{Command: server.Command, Args: server.Args, Env: server.Env})
+		default:
+			return nil, fmt.Errorf("unsupported mcp transport %q for server %q", transport, server.Name)
+		}
+	}
+	return next, nil
 }
 
 func (m *Manager) Unregister(name string) {
@@ -153,6 +217,14 @@ func (m *Manager) Statuses() []ServerStatus {
 }
 
 func (c *managedClient) CallTool(ctx context.Context, exec ExecutionContext, serverName, toolName string, arguments map[string]any) (map[string]any, error) {
+	if c.sem != nil {
+		select {
+		case c.sem <- struct{}{}:
+			defer func() { <-c.sem }()
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	attempts := c.spec.MaxRetries + 1
 	if attempts <= 0 {
 		attempts = 1

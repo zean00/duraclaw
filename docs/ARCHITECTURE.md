@@ -651,7 +651,7 @@ X-Request-ID
 
 MCP tool arguments should remain domain-specific. Customer context should not be duplicated into tool arguments unless a specific MCP server requires it.
 
-Implementation status: Duraclaw's MCP manager tracks registered server specs, transport type, retry settings, last-use status, last error, and call/failure counts. HTTP clients propagate Duraclaw context headers, and MCP calls persist intent/result records before and after execution.
+Implementation status: Duraclaw's MCP manager tracks registered server specs, transport type, opt-in retry settings, max-concurrency limits, last-use status, last error, and call/failure counts. HTTP clients propagate Duraclaw context headers, stdio clients inject context into the command environment, and MCP calls persist intent/result records before and after execution. Agent instance version `mcp_config` can register per-version MCP servers.
 
 ## Knowledge, Preferences, and Memory
 
@@ -1277,7 +1277,7 @@ Duraclaw should support OpenTelemetry-compatible tracing and metrics. PostgreSQL
 
 The `observability_events` table is for durable audit/debug events that are too important to exist only in logs.
 
-Implementation status: model, tool, MCP, and artifact processor call starts/completions write both run events and durable observability events. In-process metrics expose counters plus duration count/sum series through `/metrics`.
+Implementation status: model, tool, MCP, and artifact processor call starts/completions write both run events and durable observability events. In-process metrics expose counters plus duration count/sum/bucket series through `/metrics`, including MCP call and workflow-node durations.
 
 Example event types:
 

@@ -20,7 +20,10 @@ type Counters struct {
 type durationValue struct {
 	Count      int64
 	SumSeconds float64
+	Buckets    map[float64]int64
 }
+
+var durationBuckets = []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60}
 
 func NewCounters() *Counters {
 	return &Counters{values: map[string]int64{}, durations: map[string]durationValue{}}
@@ -43,7 +46,16 @@ func (c *Counters) ObserveDuration(name string, d time.Duration) {
 	defer c.mu.Unlock()
 	v := c.durations[name]
 	v.Count++
-	v.SumSeconds += d.Seconds()
+	seconds := d.Seconds()
+	v.SumSeconds += seconds
+	if v.Buckets == nil {
+		v.Buckets = map[float64]int64{}
+	}
+	for _, bucket := range durationBuckets {
+		if seconds <= bucket {
+			v.Buckets[bucket]++
+		}
+	}
 	c.durations[name] = v
 }
 
@@ -68,6 +80,13 @@ func (c *Counters) DurationSnapshot() map[string]durationValue {
 	defer c.mu.RUnlock()
 	out := make(map[string]durationValue, len(c.durations))
 	for k, v := range c.durations {
+		if v.Buckets != nil {
+			buckets := make(map[float64]int64, len(v.Buckets))
+			for bucket, count := range v.Buckets {
+				buckets[bucket] = count
+			}
+			v.Buckets = buckets
+		}
 		out[k] = v
 	}
 	return out
@@ -93,6 +112,10 @@ func (c *Counters) PrometheusText() string {
 	for _, name := range durationNames {
 		metric := sanitizeMetricName(name)
 		value := durations[name]
+		for _, bucket := range durationBuckets {
+			fmt.Fprintf(&b, "duraclaw_%s_bucket{le=\"%g\"} %d\n", metric, bucket, value.Buckets[bucket])
+		}
+		fmt.Fprintf(&b, "duraclaw_%s_bucket{le=\"+Inf\"} %d\n", metric, value.Count)
 		fmt.Fprintf(&b, "duraclaw_%s_count %d\n", metric, value.Count)
 		fmt.Fprintf(&b, "duraclaw_%s_sum %.6f\n", metric, value.SumSeconds)
 	}

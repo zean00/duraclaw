@@ -412,7 +412,11 @@ func (e *Executor) executeOne(ctx context.Context, req GraphRequest, node db.Wor
 	}
 	nodeCtx, cancel := nodeContext(ctx, node)
 	defer cancel()
+	started := time.Now()
 	output, nodeState, err := e.executeNode(nodeCtx, req, node, workflowRunID, previous)
+	if e.counters != nil {
+		e.counters.ObserveDuration("workflow_node_duration_seconds", time.Since(started))
+	}
 	if err != nil {
 		msg := err.Error()
 		_ = e.store.CompleteWorkflowNodeRun(context.Background(), nodeRunID, "failed", output, &msg)

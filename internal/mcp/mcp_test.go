@@ -83,3 +83,41 @@ func TestManagerManagedClientRetriesAndTracksStatus(t *testing.T) {
 		t.Fatalf("status=%#v ok=%v", status, ok)
 	}
 }
+
+func TestManagerWithConfigRegistersHTTPServers(t *testing.T) {
+	manager := NewManager()
+	configured, err := manager.WithConfig([]byte(`{"servers":[{"name":"srv","transport":"http","base_url":"http://example.test","max_retries":2,"retry_delay_ms":5,"max_concurrent":1}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, ok := configured.Client("srv")
+	if !ok {
+		t.Fatal("missing configured client")
+	}
+	managed, ok := client.(*managedClient)
+	if !ok {
+		t.Fatalf("client=%T", client)
+	}
+	if managed.spec.MaxRetries != 2 || managed.spec.RetryDelay != 5*time.Millisecond || managed.sem == nil {
+		t.Fatalf("spec=%#v sem=%v", managed.spec, managed.sem)
+	}
+}
+
+func TestManagerWithConfigRegistersStdioServers(t *testing.T) {
+	manager := NewManager()
+	configured, err := manager.WithConfig([]byte(`{"servers":[{"name":"local","transport":"stdio","command":"sh","args":["-c","cat"]}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, ok := configured.Client("local")
+	if !ok {
+		t.Fatal("missing configured client")
+	}
+	managed, ok := client.(*managedClient)
+	if !ok {
+		t.Fatalf("client=%T", client)
+	}
+	if managed.spec.Transport != "stdio" || managed.spec.Command != "sh" {
+		t.Fatalf("spec=%#v", managed.spec)
+	}
+}

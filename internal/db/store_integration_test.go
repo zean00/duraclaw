@@ -145,3 +145,108 @@ func TestStoreReminderSubscriptionLeaseCompletionPostgres(t *testing.T) {
 		t.Fatalf("subscription should be disabled after one-shot completion: %#v", subs)
 	}
 }
+
+func TestStoreLeaseRecoveryPostgres(t *testing.T) {
+	store, cleanup := integrationStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	suffix := time.Now().UTC().Format("20060102150405.000000000")
+	run, err := store.CreateRun(ctx, ACPContext{CustomerID: "c-lease-" + suffix, UserID: "u", AgentInstanceID: "a", SessionID: "s", RequestID: "r", IdempotencyKey: "i"}, map[string]any{"text": "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := store.ClaimRun(ctx, "owner", -time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed == nil || claimed.ID != run.ID {
+		t.Fatalf("claimed=%#v run=%#v", claimed, run)
+	}
+	recovered, err := store.RecoverExpiredLeases(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered == 0 {
+		t.Fatalf("expected expired lease recovery")
+	}
+	got, err := store.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != "queued" {
+		t.Fatalf("state=%s", got.State)
+	}
+}
+
+func TestStoreOutboxRetryPostgres(t *testing.T) {
+	store, cleanup := integrationStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	id, err := store.EnqueueOutbox(ctx, "topic", map[string]any{"ok": true}, time.Now().UTC().Add(-time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := store.ClaimOutbox(ctx, "owner", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) == 0 || items[0].ID != id || items[0].ClaimOwner == nil || *items[0].ClaimOwner != "owner" {
+		t.Fatalf("items=%#v id=%d", items, id)
+	}
+	if err := store.ReleaseOutbox(ctx, id, -time.Second); err != nil {
+		t.Fatal(err)
+	}
+	items, err = store.ClaimOutbox(ctx, "owner-2", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) == 0 || items[0].ID != id || items[0].ClaimOwner == nil || *items[0].ClaimOwner != "owner-2" {
+		t.Fatalf("items after release=%#v", items)
+	}
+}
+
+func TestStoreWorkflowTimerResumePostgres(t *testing.T) {
+	store, cleanup := integrationStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	suffix := time.Now().UTC().Format("20060102150405.000000000")
+	customerID := "c-timer-" + suffix
+	run, err := store.CreateRun(ctx, ACPContext{CustomerID: customerID, UserID: "u", AgentInstanceID: "a", SessionID: "s", RequestID: "r", IdempotencyKey: "i"}, map[string]any{"text": "timer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflowID, err := store.CreateWorkflowDefinition(ctx, "timer", 1, "", "", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflowRunID, err := store.StartWorkflowRun(ctx, run.ID, workflowID, 1, "wait", map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.InitializeWorkflowNodeStates(ctx, workflowRunID, []WorkflowNode{{NodeKey: "wait"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetWorkflowRunState(ctx, workflowRunID, run.ID, "awaiting_user", "wait", map[string]any{"timer": true}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetRunState(ctx, run.ID, "awaiting_user", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ResumeWorkflowTimer(ctx, run.ID, workflowRunID, "wait", map[string]any{"scheduler_job_id": "job-1"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != "queued" {
+		t.Fatalf("state=%s", got.State)
+	}
+	states, err := store.WorkflowNodeStates(ctx, workflowRunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(states) != 1 || states[0].Status != "succeeded" {
+		t.Fatalf("states=%#v", states)
+	}
+}

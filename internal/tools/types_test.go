@@ -59,6 +59,20 @@ func TestRegistryRetryableDefaults(t *testing.T) {
 	}
 }
 
+func TestRegistryFiltered(t *testing.T) {
+	r := NewRegistry()
+	r.Register(testTool{name: "alpha"})
+	r.Register(testTool{name: "beta"})
+	filtered := r.Filtered(map[string]bool{"alpha": true}, map[string]bool{})
+	if got := filtered.List(); len(got) != 1 || got[0] != "alpha" {
+		t.Fatalf("allowed filter got %v", got)
+	}
+	filtered = r.Filtered(nil, map[string]bool{"beta": true})
+	if got := filtered.List(); len(got) != 1 || got[0] != "alpha" {
+		t.Fatalf("disabled filter got %v", got)
+	}
+}
+
 func TestRegistryValidatesArgs(t *testing.T) {
 	r := NewRegistry()
 	r.Register(testTool{name: "echo"})
