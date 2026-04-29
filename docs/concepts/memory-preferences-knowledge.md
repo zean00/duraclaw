@@ -2,6 +2,30 @@
 
 Duraclaw separates conversation history, prompt-fed session context, stable memories, conditional preferences, and knowledge.
 
+## User Metadata and External Profiles
+
+Duraclaw keeps canonical user profile data out of the core schema. The built-in `users` table has a flexible `metadata` JSON object. Deployments can configure an optional customer profile retriever to refresh external profile data into:
+
+```json
+{
+  "profile": {
+    "display_name": "Sahal",
+    "timezone": "Asia/Jakarta",
+    "locale": "id-ID"
+  },
+  "profile_source": {
+    "provider": "customer_profile_retriever",
+    "retrieved_at": "2026-04-29T10:00:00Z"
+  }
+}
+```
+
+Prompt context includes only explicitly allowlisted profile fields. Memories and preferences remain separate from profile data:
+
+- Profile data is external or customer-canonical identity/context.
+- Memories are stable facts learned or saved through assistant usage.
+- Preferences are conditional choices.
+
 ## Conversation History
 
 Full conversation history lives in `messages`. It is the audit/source record and is not itself the entire prompt context.

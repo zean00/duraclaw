@@ -104,3 +104,37 @@ Knowledge and memory extensions should use existing store APIs:
 - Embeddings with dimension 768.
 
 Do not store transient conversation history as memory by default.
+
+## Add a Customer Profile Retriever
+
+Use a profile retriever when canonical user data lives outside Duraclaw, such as in a customer database, CRM, identity provider, or Nexus.
+
+The built-in HTTP retriever posts this payload:
+
+```json
+{
+  "customer_id": "customer-1",
+  "user_id": "user-1",
+  "agent_instance_id": "agent-1",
+  "session_id": "session-1"
+}
+```
+
+Return a normalized profile envelope:
+
+```json
+{
+  "profile": {
+    "display_name": "Sahal",
+    "timezone": "Asia/Jakarta",
+    "locale": "id-ID"
+  },
+  "metadata": {
+    "source": "customer_api"
+  }
+}
+```
+
+Duraclaw stores the result in `users.metadata.profile` and records source metadata in `users.metadata.profile_source`.
+
+Keep sensitive fields out of prompt context unless explicitly allowlisted through `DURACLAW_CUSTOMER_PROFILE_PROMPT_FIELDS`.

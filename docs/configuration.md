@@ -160,6 +160,37 @@ NEXUS_TOKEN=...
 | `DURACLAW_SESSION_MONITOR_MESSAGE_LIMIT` | `40` | Recent messages loaded for compaction/extraction. |
 | `DURACLAW_SESSION_COMPACTION_THRESHOLD_CHARS` | `12000` | Transcript size before summary compaction. |
 
+## Customer Profile Retriever
+
+Duraclaw does not create a dedicated user-profile table. Optional external customer profile data is refreshed into `users.metadata.profile`.
+
+HTTP profile retriever:
+
+```bash
+DURACLAW_CUSTOMER_PROFILE_URL=https://customer.example/profile
+DURACLAW_CUSTOMER_PROFILE_TOKEN=...
+DURACLAW_CUSTOMER_PROFILE_HEADERS=X-App=duraclaw
+DURACLAW_CUSTOMER_PROFILE_TIMEOUT_SECONDS=5
+DURACLAW_CUSTOMER_PROFILE_PROMPT_FIELDS=display_name,timezone,locale
+```
+
+The retriever is called on ACP session ensure and run creation. It receives customer/user/session/agent context and should return:
+
+```json
+{
+  "profile": {
+    "display_name": "Sahal",
+    "timezone": "Asia/Jakarta",
+    "locale": "id-ID"
+  },
+  "metadata": {
+    "source": "crm"
+  }
+}
+```
+
+Only fields listed in `DURACLAW_CUSTOMER_PROFILE_PROMPT_FIELDS` are included in model prompt context. Sensitive fields such as email, phone, and birth date should remain omitted unless explicitly needed.
+
 ## Observability
 
 ```bash

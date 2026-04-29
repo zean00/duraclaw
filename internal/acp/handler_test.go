@@ -300,6 +300,28 @@ func TestStartRunRequiresContextHeadersBeforeBody(t *testing.T) {
 	}
 }
 
+func TestStartRunChecksIdempotencyBeforeProfileRefresh(t *testing.T) {
+	raw, err := os.ReadFile("handler.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(raw)
+	start := strings.Index(src, "func (h *Handler) startRun")
+	if start < 0 {
+		t.Fatal("startRun not found")
+	}
+	body := src[start:]
+	idempotency := strings.Index(body, "RunByIdempotencyKey")
+	refresh := strings.Index(body, "refreshUserProfile")
+	create := strings.Index(body, "CreateRun")
+	if idempotency < 0 || refresh < 0 || create < 0 {
+		t.Fatal("startRun missing idempotency, profile refresh, or create call")
+	}
+	if !(idempotency < refresh && refresh < create) {
+		t.Fatalf("unexpected startRun order: idempotency=%d refresh=%d create=%d", idempotency, refresh, create)
+	}
+}
+
 func TestValidateRunInputRejectsUnsupportedPartType(t *testing.T) {
 	payload := map[string]any{"parts": []any{map[string]any{"type": "unknown"}}}
 	if err := validateRunInput(payload); err == nil || !strings.Contains(err.Error(), "unsupported type") {

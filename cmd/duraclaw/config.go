@@ -63,6 +63,11 @@ type config struct {
 	GeneratedMediaHTTPPutURL    string
 	GeneratedMediaHTTPBaseURL   string
 	GeneratedMediaHTTPHeaders   map[string]string
+	CustomerProfileURL          string
+	CustomerProfileToken        string
+	CustomerProfileHeaders      map[string]string
+	CustomerProfileTimeout      time.Duration
+	CustomerProfilePromptFields []string
 }
 
 func loadConfig() (config, error) {
@@ -121,6 +126,11 @@ func loadConfig() (config, error) {
 		GeneratedMediaHTTPPutURL:    os.Getenv("DURACLAW_GENERATED_MEDIA_HTTP_PUT_URL"),
 		GeneratedMediaHTTPBaseURL:   os.Getenv("DURACLAW_GENERATED_MEDIA_HTTP_BASE_URL"),
 		GeneratedMediaHTTPHeaders:   parseHeaders(os.Getenv("DURACLAW_GENERATED_MEDIA_HTTP_HEADERS")),
+		CustomerProfileURL:          os.Getenv("DURACLAW_CUSTOMER_PROFILE_URL"),
+		CustomerProfileToken:        os.Getenv("DURACLAW_CUSTOMER_PROFILE_TOKEN"),
+		CustomerProfileHeaders:      parseHeaders(os.Getenv("DURACLAW_CUSTOMER_PROFILE_HEADERS")),
+		CustomerProfileTimeout:      time.Duration(envInt("DURACLAW_CUSTOMER_PROFILE_TIMEOUT_SECONDS", 5)) * time.Second,
+		CustomerProfilePromptFields: splitCSV(os.Getenv("DURACLAW_CUSTOMER_PROFILE_PROMPT_FIELDS")),
 	}
 	if cfg.DatabaseURL == "" {
 		return cfg, fmt.Errorf("DATABASE_URL is required")

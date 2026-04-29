@@ -19,6 +19,7 @@ import (
 	"duraclaw/internal/mcp"
 	"duraclaw/internal/observability"
 	"duraclaw/internal/outbound"
+	"duraclaw/internal/profiles"
 	"duraclaw/internal/providers"
 	"duraclaw/internal/runtime"
 	"duraclaw/internal/scheduler"
@@ -65,6 +66,7 @@ func main() {
 	providerRegistry := buildProviderRegistry(cfg)
 	modelConfig := buildModelConfig(cfg)
 	mediaBlobStore := buildMediaBlobStore(cfg)
+	profileRetriever := buildProfileRetriever(cfg)
 	asyncWriter := asyncwrite.NewWriter(store, cfg.Hostname, db.DefaultRuntimeLimits().AsyncBufferSize).WithCounters(counters).WithOTLPExporter(otlp)
 	worker := runtime.NewWorkerWithProviders(store, providerRegistry, modelConfig, cfg.Hostname).
 		WithCounters(counters).
@@ -73,7 +75,8 @@ func main() {
 		WithAsyncWriter(asyncWriter).
 		WithProcessors(buildArtifactRegistry(cfg)).
 		WithEmbedder(embedder).
-		WithMediaBlobStore(mediaBlobStore)
+		WithMediaBlobStore(mediaBlobStore).
+		WithProfilePromptFields(cfg.CustomerProfilePromptFields)
 	worker.SetMCPManager(mcpManager)
 	go func() {
 		if err := worker.Loop(ctx, cfg.WorkerInterval); err != nil && err != context.Canceled {
@@ -127,7 +130,7 @@ func main() {
 	}()
 	server := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           observability.InstrumentHTTP(acp.NewHandler(store).WithAdminToken(cfg.AdminToken).WithACPToken(cfg.ACPToken).WithRequireAuth(cfg.RequireAuth).WithCounters(counters).WithEmbedder(embedder).WithMCPManager(mcpManager).WithProviders(providerRegistry, modelConfig).WithMediaBlobStore(mediaBlobStore).WithLogger(logger).Routes()),
+		Handler:           observability.InstrumentHTTP(acp.NewHandler(store).WithAdminToken(cfg.AdminToken).WithACPToken(cfg.ACPToken).WithRequireAuth(cfg.RequireAuth).WithCounters(counters).WithEmbedder(embedder).WithMCPManager(mcpManager).WithProviders(providerRegistry, modelConfig).WithMediaBlobStore(mediaBlobStore).WithProfileRetriever(profileRetriever).WithLogger(logger).Routes()),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {
@@ -339,6 +342,18 @@ func buildMediaBlobStore(cfg config) tools.MediaBlobStore {
 		return nil
 	}
 	return tools.FileMediaBlobStore{Directory: cfg.GeneratedMediaDir, RefPrefix: cfg.GeneratedMediaRefPrefix}
+}
+
+func buildProfileRetriever(cfg config) profiles.Retriever {
+	if strings.TrimSpace(cfg.CustomerProfileURL) == "" {
+		return nil
+	}
+	return profiles.HTTPRetriever{
+		URL:     cfg.CustomerProfileURL,
+		Token:   cfg.CustomerProfileToken,
+		Headers: cfg.CustomerProfileHeaders,
+		Timeout: cfg.CustomerProfileTimeout,
+	}
 }
 
 func buildModelConfig(cfg config) providers.ModelConfig {

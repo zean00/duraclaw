@@ -676,6 +676,7 @@ Knowledge scopes:
 
 - Shared knowledge: available to many or all customers.
 - Customer knowledge: available only within one `customer_id`.
+- User metadata: flexible per-user JSON for customer-provided profile data.
 - User preferences: stable preferences for one user.
 - User memory: long-lived facts inferred or explicitly saved for one user.
 - Session memory: conversation-scoped summaries and recent context.
@@ -686,6 +687,8 @@ Admins may manually create, edit, disable, and delete shared knowledge, customer
 Memory writes should be policy-controlled. Not every conversation fact should become memory. Stable facts that rarely change belong in memories. Conditional preferences, such as seasonal or time-dependent preferences, belong in preferences with structured conditions.
 
 Full session history remains in `messages`. Prompt-fed session context is stored separately as durable session summaries and compacted context metadata. The session monitor updates this context after a session has been idle long enough or when the conversation exceeds the configured compaction threshold.
+
+Canonical user profile data is not modeled as first-class columns. Deployments may configure a customer profile retriever that loads profile data from an external database, API, CRM, identity provider, or Nexus and stores the normalized result in `users.metadata.profile` with `users.metadata.profile_source`. Prompt context includes only explicitly allowlisted profile fields.
 
 Retrieval should combine:
 

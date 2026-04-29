@@ -34,6 +34,7 @@ Same-session runs are serialized by the worker claim query. Different sessions m
 | Workflow executor | Durable DAG execution with node states, edge activations, model/tool/MCP/retrieval/memory/artifact/timer/background nodes. |
 | Artifacts | Durable input/output media metadata, processor calls, representations, provider-backed processors, and storage adapters. |
 | Session monitor | Idle-session compaction, memory/preference extraction, and active-time pattern tracking. |
+| Customer profile retriever | Optional external profile refresh into `users.metadata`, with prompt exposure controlled by an allowlist. |
 | Scheduler | PostgreSQL-backed cron jobs, reminder subscriptions, workflow timer wakeups, and deterministic idempotency keys. |
 | Outbound | Durable outbound intents for Nexus-owned delivery and delivery status callbacks. |
 | Observability | Durable audit events, run traces, counters, `/metrics`, and optional OTLP export. |

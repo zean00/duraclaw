@@ -1,8 +1,10 @@
 package acp
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -17,28 +19,32 @@ import (
 	"duraclaw/internal/mcp"
 	"duraclaw/internal/observability"
 	"duraclaw/internal/policy"
+	"duraclaw/internal/profiles"
 	"duraclaw/internal/providers"
 	"duraclaw/internal/scheduler"
 	"duraclaw/internal/tools"
 	"duraclaw/internal/workflow"
+
+	"github.com/jackc/pgx/v5"
 )
 
 const maxJSONBodyBytes = 2 << 20
 
 type Handler struct {
-	store          *db.Store
-	workflow       *workflow.Executor
-	artifactPolicy policy.ArtifactRule
-	adminToken     string
-	acpToken       string
-	requireAuth    bool
-	counters       *observability.Counters
-	embedder       embeddings.Provider
-	mcpManager     *mcp.Manager
-	providers      *providers.Registry
-	modelConfig    providers.ModelConfig
-	mediaBlobStore tools.MediaBlobStore
-	logger         *slog.Logger
+	store            *db.Store
+	workflow         *workflow.Executor
+	artifactPolicy   policy.ArtifactRule
+	adminToken       string
+	acpToken         string
+	requireAuth      bool
+	counters         *observability.Counters
+	embedder         embeddings.Provider
+	mcpManager       *mcp.Manager
+	providers        *providers.Registry
+	modelConfig      providers.ModelConfig
+	mediaBlobStore   tools.MediaBlobStore
+	profileRetriever profiles.Retriever
+	logger           *slog.Logger
 }
 
 func NewHandler(store *db.Store) *Handler {
@@ -109,6 +115,11 @@ func (h *Handler) WithProviders(registry *providers.Registry, cfg providers.Mode
 
 func (h *Handler) WithMediaBlobStore(store tools.MediaBlobStore) *Handler {
 	h.mediaBlobStore = store
+	return h
+}
+
+func (h *Handler) WithProfileRetriever(retriever profiles.Retriever) *Handler {
+	h.profileRetriever = retriever
 	return h
 }
 
@@ -1567,6 +1578,10 @@ func (h *Handler) ensureSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	if err := h.refreshUserProfile(r.Context(), c); err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"session_id": c.SessionID, "state": "ready"})
 }
 
@@ -1614,6 +1629,21 @@ func (h *Handler) startRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	if existing, err := h.store.RunByIdempotencyKey(r.Context(), c.CustomerID, c.SessionID, c.IdempotencyKey); err == nil {
+		writeJSON(w, http.StatusAccepted, existing)
+		return
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if err := h.store.EnsureSession(r.Context(), c); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if err := h.refreshUserProfile(r.Context(), c); err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
 	run, err := h.store.CreateRun(r.Context(), c, payload)
 	if err != nil {
 		if db.IsQuotaExceeded(err) && h.counters != nil {
@@ -1624,6 +1654,31 @@ func (h *Handler) startRun(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = h.store.AddObservabilityEvent(r.Context(), c.CustomerID, run.ID, "acp_run_created", map[string]any{"request_id": c.RequestID})
 	writeJSON(w, http.StatusAccepted, run)
+}
+
+func (h *Handler) refreshUserProfile(ctx context.Context, c db.ACPContext) error {
+	if h.profileRetriever == nil {
+		return nil
+	}
+	result, err := h.profileRetriever.RetrieveProfile(ctx, profiles.Request{
+		CustomerID: c.CustomerID, UserID: c.UserID, AgentInstanceID: c.AgentInstanceID, SessionID: c.SessionID,
+	})
+	if err != nil {
+		return err
+	}
+	if result == nil || len(result.Profile) == 0 {
+		return nil
+	}
+	metadata, err := h.store.UserMetadata(ctx, c.CustomerID, c.UserID)
+	if err != nil {
+		return err
+	}
+	metadata = profiles.MergeMetadata(metadata, result, "customer_profile_retriever", time.Now().UTC())
+	if err := h.store.UpdateUserMetadata(ctx, c.CustomerID, c.UserID, metadata); err != nil {
+		return err
+	}
+	_ = h.store.AddObservabilityEvent(ctx, c.CustomerID, "", "user_profile_refreshed", map[string]any{"user_id": c.UserID, "session_id": c.SessionID})
+	return nil
 }
 
 func (h *Handler) attachArtifacts(w http.ResponseWriter, r *http.Request) {

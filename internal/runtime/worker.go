@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"duraclaw/internal/outbound"
 	"duraclaw/internal/policy"
 	"duraclaw/internal/preferences"
+	"duraclaw/internal/profiles"
 	"duraclaw/internal/prompt"
 	"duraclaw/internal/providers"
 	"duraclaw/internal/tools"
@@ -43,6 +45,7 @@ type Worker struct {
 	outbound       *outbound.Service
 	policy         *policy.Engine
 	mediaBlobStore tools.MediaBlobStore
+	profileFields  []string
 	owner          string
 	leaseFor       time.Duration
 	maxIterations  int
@@ -108,6 +111,11 @@ func (w *Worker) WithMediaBlobStore(store tools.MediaBlobStore) *Worker {
 	if w.tools != nil && w.store != nil {
 		registerMediaGenerationTools(w.tools, w.providers, w.store, w.modelConfig, store)
 	}
+	return w
+}
+
+func (w *Worker) WithProfilePromptFields(fields []string) *Worker {
+	w.profileFields = append([]string(nil), fields...)
 	return w
 }
 
@@ -1415,6 +1423,10 @@ func (w *Worker) policyContext(run *db.Run, stepID, subject, content string) pol
 }
 
 func (w *Worker) userProfileContext(ctx context.Context, run *db.Run) (string, error) {
+	metadata, err := w.store.UserMetadata(ctx, run.CustomerID, run.UserID)
+	if err != nil {
+		return "", err
+	}
 	memories, err := w.store.ListMemories(ctx, run.CustomerID, run.UserID, 8)
 	if err != nil {
 		return "", err
@@ -1424,11 +1436,21 @@ func (w *Worker) userProfileContext(ctx context.Context, run *db.Run) (string, e
 		return "", err
 	}
 	matchedPreferences := preferences.Match(allPreferences, preferenceContext(time.Now()))
-	if len(memories) == 0 && len(matchedPreferences) == 0 {
+	allowedProfile := profiles.AllowedProfile(metadata, w.profileFields)
+	if len(allowedProfile) == 0 && len(memories) == 0 && len(matchedPreferences) == 0 {
 		return "", nil
 	}
 	var b strings.Builder
+	if len(allowedProfile) > 0 {
+		b.WriteString("External user profile:\n")
+		for _, key := range sortedMapKeys(allowedProfile) {
+			fmt.Fprintf(&b, "- %s: %v\n", key, allowedProfile[key])
+		}
+	}
 	if len(memories) > 0 {
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
 		b.WriteString("Stable user facts:\n")
 		for _, m := range memories {
 			fmt.Fprintf(&b, "- %s: %s\n", m.Type, m.Content)
@@ -1448,6 +1470,15 @@ func (w *Worker) userProfileContext(ctx context.Context, run *db.Run) (string, e
 		}
 	}
 	return strings.TrimSpace(b.String()), nil
+}
+
+func sortedMapKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func preferenceContext(now time.Time) map[string]any {

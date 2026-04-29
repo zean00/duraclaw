@@ -149,6 +149,15 @@ func TestBuildMediaBlobStore(t *testing.T) {
 	}
 }
 
+func TestBuildProfileRetriever(t *testing.T) {
+	if got := buildProfileRetriever(config{}); got != nil {
+		t.Fatalf("expected nil retriever")
+	}
+	if got := buildProfileRetriever(config{CustomerProfileURL: "http://profiles.test", CustomerProfileToken: "token"}); got == nil {
+		t.Fatalf("expected profile retriever")
+	}
+}
+
 func TestBuildModelConfigPrefixesProvider(t *testing.T) {
 	cfg := buildModelConfig(config{Provider: "openai", ProviderModel: "gpt-x", ProviderFallbacks: []string{"mock/duraclaw"}})
 	if cfg.Primary != "openai/gpt-x" || len(cfg.Fallbacks) != 1 {
