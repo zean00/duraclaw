@@ -143,9 +143,9 @@ type ToolCallRecord struct {
 	Error     *string         `json:"error,omitempty"`
 }
 
-type Store struct{ pool *Pool }
+type Store struct{ pool Pool }
 
-func NewStore(pool *Pool) *Store { return &Store{pool: pool} }
+func NewStore(pool Pool) *Store { return &Store{pool: pool} }
 
 func (s *Store) Ping(ctx context.Context) error {
 	return Ping(ctx, s.pool)

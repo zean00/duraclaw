@@ -63,6 +63,26 @@ func TestOpenAICompatibleProviderChat(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleProviderChatErrors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":"bad"}`, http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+	_, err := (OpenAICompatibleProvider{BaseURL: server.URL}).Chat(t.Context(), []Message{{Role: "user", Content: "hi"}}, nil, "", nil)
+	if err == nil || !strings.Contains(err.Error(), "status 429") {
+		t.Fatalf("err=%v", err)
+	}
+
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[]}`))
+	}))
+	defer server.Close()
+	_, err = (OpenAICompatibleProvider{BaseURL: server.URL}).Chat(t.Context(), []Message{{Role: "user", Content: "hi"}}, nil, "", nil)
+	if err == nil || !strings.Contains(err.Error(), "no choices") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
 func TestOpenAIProviderUsesOpenAIDefaultBaseURL(t *testing.T) {
 	p := OpenAIProvider{APIKey: "key", DefaultModel: "gpt-test"}
 	compatible := p.compatible()
@@ -88,6 +108,46 @@ func TestResponseContentTextHandlesArrayContent(t *testing.T) {
 		map[string]any{"type": "output_text", "text": "world"},
 	})
 	if got != "hello\nworld" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestProviderMediaHelpers(t *testing.T) {
+	extensions := map[string]string{
+		"audio/mpeg":      ".mp3",
+		"audio/x-wav":     ".wav",
+		"audio/mp4":       ".mp4",
+		"audio/webm":      ".webm",
+		"application/pdf": ".pdf",
+		"text/plain":      ".txt",
+		"image/png":       "",
+	}
+	for input, want := range extensions {
+		if got := extensionForMediaType(input); got != want {
+			t.Fatalf("extensionForMediaType(%q)=%q want %q", input, got, want)
+		}
+	}
+	mediaTypes := map[string]string{
+		"opus": "audio/opus",
+		"aac":  "audio/aac",
+		"flac": "audio/flac",
+		"wav":  "audio/wav",
+		"pcm":  "audio/L16",
+		"mp3":  "audio/mpeg",
+	}
+	for input, want := range mediaTypes {
+		if got := audioMediaType(input); got != want {
+			t.Fatalf("audioMediaType(%q)=%q want %q", input, got, want)
+		}
+	}
+}
+
+func TestResponseContentTextIgnoresNonTextParts(t *testing.T) {
+	got := responseContentText([]any{
+		map[string]any{"type": "image_url", "url": "https://example.test"},
+		"not-an-object",
+	})
+	if got != "" {
 		t.Fatalf("got %q", got)
 	}
 }
@@ -145,6 +205,25 @@ func TestOpenAICompatibleProviderTranscribeAudio(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleProviderTranscribeAudioValidationAndTextFormat(t *testing.T) {
+	if _, err := (OpenAICompatibleProvider{}).TranscribeAudio(t.Context(), AudioTranscriptionRequest{}); err == nil {
+		t.Fatalf("expected data validation error")
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(" transcript text "))
+	}))
+	defer server.Close()
+	got, err := (OpenAICompatibleProvider{BaseURL: server.URL}).TranscribeAudio(t.Context(), AudioTranscriptionRequest{
+		Data: []byte("audio"), ResponseFormat: "text",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Text != "transcript text" {
+		t.Fatalf("got=%#v", got)
+	}
+}
+
 func TestOpenAICompatibleProviderUploadFile(t *testing.T) {
 	var sawPurpose string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -170,6 +249,20 @@ func TestOpenAICompatibleProviderUploadFile(t *testing.T) {
 	}
 	if sawPurpose != "user_data" || got.ID != "file_1" || got.Bytes != 5 {
 		t.Fatalf("purpose=%q got=%#v", sawPurpose, got)
+	}
+}
+
+func TestOpenAICompatibleProviderUploadFileValidationAndMissingID(t *testing.T) {
+	if _, err := (OpenAICompatibleProvider{}).UploadFile(t.Context(), FileUploadRequest{}); err == nil {
+		t.Fatalf("expected data validation error")
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"filename": "doc.txt"})
+	}))
+	defer server.Close()
+	_, err := (OpenAICompatibleProvider{BaseURL: server.URL}).UploadFile(t.Context(), FileUploadRequest{Data: []byte("hello")})
+	if err == nil || !strings.Contains(err.Error(), "no id") {
+		t.Fatalf("err=%v", err)
 	}
 }
 
@@ -222,5 +315,37 @@ func TestOpenAICompatibleProviderGenerateMedia(t *testing.T) {
 	}
 	if sawVideoPath != "/videos" || len(video.Videos) != 1 || video.Videos[0].ID != "video_1" {
 		t.Fatalf("video=%#v path=%q", video, sawVideoPath)
+	}
+}
+
+func TestOpenAICompatibleProviderGenerateMediaValidationAndEmptyResponses(t *testing.T) {
+	p := OpenAICompatibleProvider{}
+	if _, err := p.GenerateImage(t.Context(), ImageGenerationRequest{}); err == nil {
+		t.Fatalf("expected image prompt validation error")
+	}
+	if _, err := p.GenerateAudio(t.Context(), AudioGenerationRequest{}); err == nil {
+		t.Fatalf("expected audio text validation error")
+	}
+	if _, err := p.GenerateVideo(t.Context(), VideoGenerationRequest{}); err == nil {
+		t.Fatalf("expected video prompt validation error")
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/images/generations":
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{}})
+		case "/videos":
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "queued"})
+		default:
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	p = OpenAICompatibleProvider{BaseURL: server.URL}
+	if _, err := p.GenerateImage(t.Context(), ImageGenerationRequest{Prompt: "draw"}); err == nil || !strings.Contains(err.Error(), "no images") {
+		t.Fatalf("err=%v", err)
+	}
+	if _, err := p.GenerateVideo(t.Context(), VideoGenerationRequest{Prompt: "video"}); err == nil || !strings.Contains(err.Error(), "no id") {
+		t.Fatalf("err=%v", err)
 	}
 }

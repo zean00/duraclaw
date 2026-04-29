@@ -90,3 +90,65 @@ func TestRegistryRecoversPanics(t *testing.T) {
 		t.Fatalf("expected panic recovery result")
 	}
 }
+
+func TestValidateArgsTypeCoverage(t *testing.T) {
+	schema := map[string]any{
+		"required":             []string{"name"},
+		"additionalProperties": true,
+		"properties": map[string]any{
+			"name":    map[string]any{"type": "string"},
+			"count":   map[string]any{"type": "integer"},
+			"price":   map[string]any{"type": "number"},
+			"enabled": map[string]any{"type": "boolean"},
+			"tags":    map[string]any{"type": "array"},
+			"nested": map[string]any{
+				"type":       "object",
+				"required":   []any{"child"},
+				"properties": map[string]any{"child": map[string]any{"type": "string"}},
+			},
+		},
+	}
+	valid := map[string]any{
+		"name": "duraclaw", "count": float64(3), "price": 1.25, "enabled": true, "tags": []any{"a"}, "nested": map[string]any{"child": "ok"}, "extra": true,
+	}
+	if err := ValidateArgs(schema, valid); err != nil {
+		t.Fatalf("valid args rejected: %v", err)
+	}
+	invalidCases := []map[string]any{
+		{"count": 1},
+		{"name": 42},
+		{"name": "x", "count": 1.5},
+		{"name": "x", "price": "1"},
+		{"name": "x", "enabled": "true"},
+		{"name": "x", "tags": "a"},
+		{"name": "x", "nested": "bad"},
+		{"name": "x", "nested": map[string]any{}},
+	}
+	for _, args := range invalidCases {
+		if err := ValidateArgs(schema, args); err == nil {
+			t.Fatalf("expected validation error for %#v", args)
+		}
+	}
+}
+
+func TestRegistryExecuteMissingAndNilResult(t *testing.T) {
+	r := NewRegistry()
+	if res := r.Execute(context.Background(), ExecutionContext{}, "missing", nil); !res.IsError {
+		t.Fatalf("expected missing tool error")
+	}
+	r.Register(nilTool{name: "nil"})
+	if res := r.Execute(context.Background(), ExecutionContext{}, "nil", nil); !res.IsError {
+		t.Fatalf("expected nil result error")
+	}
+}
+
+type nilTool struct {
+	name string
+}
+
+func (t nilTool) Name() string               { return t.name }
+func (t nilTool) Description() string        { return "nil" }
+func (t nilTool) Parameters() map[string]any { return nil }
+func (t nilTool) Execute(context.Context, ExecutionContext, map[string]any) *Result {
+	return nil
+}

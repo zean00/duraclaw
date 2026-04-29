@@ -95,6 +95,17 @@ func TestEngineUsesPinnedPolicyPacksWhenPresent(t *testing.T) {
 	}
 }
 
+func TestEnforceReturnsDenyErrorAndDefaultAllow(t *testing.T) {
+	if decision, err := (*Engine)(nil).Enforce(context.Background(), "pre_run", Context{}); err != nil || decision.Action != "allow" {
+		t.Fatalf("decision=%#v err=%v", decision, err)
+	}
+	store := &fakeRuleStore{rules: []db.PolicyRule{{ID: "deny", RuleType: "deny", EnforcementMode: "pre_run", Action: "deny"}}}
+	decision, err := NewEngine(store).Enforce(context.Background(), "pre_run", Context{})
+	if err == nil || !strings.Contains(err.Error(), "policy denied") || decision.Action != "deny" {
+		t.Fatalf("decision=%#v err=%v", decision, err)
+	}
+}
+
 func TestRuleMatchesCompositeConditions(t *testing.T) {
 	condition := json.RawMessage(`{"all":[{"prefix":{"key":"tool_name","value":"duraclaw."}},{"in":{"key":"workflow_id","values":["wf-1","wf-2"]}},{"not":{"contains":{"key":"content","value":"blocked"}}}]}`)
 	store := &fakeRuleStore{rules: []db.PolicyRule{{ID: "r", PolicyPackID: "p", RuleType: "deny", EnforcementMode: "pre_tool", Action: "deny", Condition: condition}}}
@@ -104,6 +115,33 @@ func TestRuleMatchesCompositeConditions(t *testing.T) {
 	}
 	if decision.Action != "deny" {
 		t.Fatalf("decision=%#v", decision)
+	}
+}
+
+func TestRuleMatchesAdditionalConditionTypes(t *testing.T) {
+	cases := []struct {
+		name      string
+		condition json.RawMessage
+		context   Context
+		want      string
+	}{
+		{name: "equals", condition: json.RawMessage(`{"equals":{"key":"customer_id","value":"c1"}}`), context: Context{CustomerID: "c1"}, want: "modify"},
+		{name: "not_equals", condition: json.RawMessage(`{"not_equals":{"key":"user_id","value":"blocked"}}`), context: Context{UserID: "u1"}, want: "modify"},
+		{name: "suffix", condition: json.RawMessage(`{"suffix":{"key":"artifact_id","value":".pdf"}}`), context: Context{ArtifactID: "doc.pdf"}, want: "modify"},
+		{name: "any", condition: json.RawMessage(`{"any":[{"equals":{"key":"processor","value":"ocr"}},{"equals":{"key":"additional","value":"match"}}]}`), context: Context{AdditionalFields: map[string]any{"additional": "match"}}, want: "modify"},
+		{name: "invalid", condition: json.RawMessage(`{"matches":{"key":"content","pattern":"["}}`), context: Context{Content: "x"}, want: "allow"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &fakeRuleStore{rules: []db.PolicyRule{{ID: "r", PolicyPackID: "p", RuleType: "style", EnforcementMode: "prompt", Action: "modify", Condition: tc.condition}}}
+			decision, err := NewEngine(store).Evaluate(context.Background(), "prompt", tc.context)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if decision.Action != tc.want {
+				t.Fatalf("decision=%#v", decision)
+			}
+		})
 	}
 }
 
@@ -136,5 +174,22 @@ func TestRedactContextPayload(t *testing.T) {
 	nested := pc.AdditionalFields["nested"].(map[string]any)
 	if strings.Contains(nested["note"].(string), "4111") {
 		t.Fatalf("nested value not redacted: %#v", nested)
+	}
+}
+
+func TestRedactValueHandlesSlicesAndNilMaps(t *testing.T) {
+	if got := RedactMap(nil); got != nil {
+		t.Fatalf("got=%#v", got)
+	}
+	got := RedactValue([]any{"email a@example.com", map[string]any{"api_key": "secret"}}).([]any)
+	if got[0] != "email [REDACTED_EMAIL]" {
+		t.Fatalf("got=%#v", got)
+	}
+	nested := got[1].(map[string]any)
+	if nested["api_key"] != "[REDACTED]" {
+		t.Fatalf("nested=%#v", nested)
+	}
+	if strength("unknown") != 1 || strength("deny") <= strength("modify") {
+		t.Fatalf("unexpected strength ordering")
 	}
 }

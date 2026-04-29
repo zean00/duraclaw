@@ -7,6 +7,8 @@ import (
 
 	"duraclaw/internal/db"
 	"duraclaw/internal/outbound"
+	"duraclaw/internal/providers"
+	"duraclaw/internal/tools"
 )
 
 func TestExtractTextFromContentParts(t *testing.T) {
@@ -91,6 +93,106 @@ func TestWorkflowOutputTextPrefersText(t *testing.T) {
 	if got != "hello" {
 		t.Fatalf("got %q", got)
 	}
+}
+
+func TestWorkflowIDFromInputSupportsAliasesAndTrimming(t *testing.T) {
+	raw, _ := json.Marshal(map[string]any{"workflow_definition_id": "  wf-1  "})
+	if got := workflowIDFromInput(raw); got != "wf-1" {
+		t.Fatalf("got %q", got)
+	}
+	raw, _ = json.Marshal(map[string]any{"workflow_id": "wf-2", "workflow_definition_id": "wf-1"})
+	if got := workflowIDFromInput(raw); got != "wf-2" {
+		t.Fatalf("got %q", got)
+	}
+	if got := workflowIDFromInput(json.RawMessage(`not-json`)); got != "" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestInputMapReturnsEmptyMapForInvalidJSON(t *testing.T) {
+	got := inputMap(json.RawMessage(`not-json`))
+	if got == nil || len(got) != 0 {
+		t.Fatalf("got=%#v", got)
+	}
+}
+
+func TestWorkflowOutputTextFallsBackToJSON(t *testing.T) {
+	got := workflowOutputText(map[string]any{"ok": true})
+	if got != `{"ok":true}` {
+		t.Fatalf("got %q", got)
+	}
+	if got := workflowOutputText(nil); got != "" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestMediaFormat(t *testing.T) {
+	cases := map[string]string{
+		"":           "",
+		"audio/mpeg": "mpeg",
+		"mp3":        "mp3",
+	}
+	for input, want := range cases {
+		if got := mediaFormat(input); got != want {
+			t.Fatalf("mediaFormat(%q)=%q want %q", input, got, want)
+		}
+	}
+}
+
+func TestExtractJSONObject(t *testing.T) {
+	cases := map[string]string{
+		`{"ok":true}`:            `{"ok":true}`,
+		"prefix {\"ok\":true} x": `{"ok":true}`,
+		"no json":                "no json",
+	}
+	for input, want := range cases {
+		if got := extractJSONObject(input); got != want {
+			t.Fatalf("extractJSONObject(%q)=%q want %q", input, got, want)
+		}
+	}
+}
+
+func TestStringSetTrimsAndDropsEmptyValues(t *testing.T) {
+	got := stringSet([]string{" a ", "", "b"})
+	if len(got) != 2 || !got["a"] || !got["b"] {
+		t.Fatalf("got=%#v", got)
+	}
+}
+
+func TestInternalToolDefinitionsAndPlanning(t *testing.T) {
+	defs := internalToolDefinitions()
+	if len(defs) != 2 || defs[0].Function.Name != "duraclaw.run_workflow" || defs[1].Function.Name != "duraclaw.ask_user" {
+		t.Fatalf("defs=%#v", defs)
+	}
+	w := &Worker{}
+	if !w.isInternalTool("duraclaw.ask_user") || w.isInternalTool("echo") {
+		t.Fatalf("internal tool classification failed")
+	}
+	registry := tools.NewRegistry()
+	registry.Register(nonRetryableTool{name: "remember_once"})
+	calls := []providers.ToolCall{
+		{Function: providers.FunctionCall{Name: "duraclaw.ask_user"}},
+		{Function: providers.FunctionCall{Name: "remember_once", Arguments: map[string]any{"content": "tea"}}},
+		{Function: providers.FunctionCall{Name: "echo", Arguments: map[string]any{"message": "hi"}}},
+	}
+	completed := map[string]db.ToolCallRecord{
+		"remember_once:" + db.StableArgsHash("remember_once", map[string]any{"content": "tea"}): {},
+	}
+	if got := w.plannedToolExecutions(registry, completed, calls); got != 2 {
+		t.Fatalf("planned=%d", got)
+	}
+}
+
+type nonRetryableTool struct {
+	name string
+}
+
+func (t nonRetryableTool) Name() string               { return t.name }
+func (t nonRetryableTool) Description() string        { return "non-retryable" }
+func (t nonRetryableTool) Parameters() map[string]any { return nil }
+func (t nonRetryableTool) Retryable() bool            { return false }
+func (t nonRetryableTool) Execute(context.Context, tools.ExecutionContext, map[string]any) *tools.Result {
+	return tools.NewResult("ok")
 }
 
 type fakeOutboundStore struct {

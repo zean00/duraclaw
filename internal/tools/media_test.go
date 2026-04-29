@@ -82,6 +82,33 @@ func TestGenerateImageToolAttachesArtifact(t *testing.T) {
 	}
 }
 
+func TestMediaGenerationToolMetadata(t *testing.T) {
+	cases := []struct {
+		kind        string
+		name        string
+		description string
+		hasField    string
+	}{
+		{kind: "", name: "duraclaw.generate_image", description: "Generate an image", hasField: "quality"},
+		{kind: "audio", name: "duraclaw.generate_audio", description: "Generate speech", hasField: "voice"},
+		{kind: "video", name: "duraclaw.generate_video", description: "Start video", hasField: "seconds"},
+	}
+	for _, tc := range cases {
+		tool := MediaGenerationTool{Kind: tc.kind}
+		if tool.Name() != tc.name || !strings.Contains(tool.Description(), tc.description) {
+			t.Fatalf("tool=%#v name=%q desc=%q", tool, tool.Name(), tool.Description())
+		}
+		props := tool.Parameters()["properties"].(map[string]any)
+		if _, ok := props[tc.hasField]; !ok {
+			t.Fatalf("missing field %q in %#v", tc.hasField, props)
+		}
+	}
+	unknown := MediaGenerationTool{Kind: "document"}
+	if !strings.Contains(unknown.Description(), "Generate provider media") {
+		t.Fatalf("desc=%q", unknown.Description())
+	}
+}
+
 func TestGenerateImageToolHonorsArtifactPolicy(t *testing.T) {
 	store := &fakeArtifactStore{}
 	tool := MediaGenerationTool{
@@ -182,5 +209,56 @@ func TestHTTPMediaBlobStoreCanAppendToBaseURL(t *testing.T) {
 	}
 	if sawPath != "/objects/img-1.png" || ref != "object://bucket/generated/img-1.png" {
 		t.Fatalf("path=%q ref=%q", sawPath, ref)
+	}
+}
+
+func TestMediaUtilityHelpers(t *testing.T) {
+	if got := dataURI("image/png", "ZmFrZQ=="); got != "data:image/png;base64,ZmFrZQ==" {
+		t.Fatalf("dataURI=%q", got)
+	}
+	if got := dataURI("image/png", " "); got != "" {
+		t.Fatalf("dataURI=%q", got)
+	}
+	joined, err := joinURLPath("https://objects.example.test/base/", "img 1.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if joined != "https://objects.example.test/base/img%201.png" {
+		t.Fatalf("joined=%q", joined)
+	}
+	if _, err := joinURLPath("/relative", "img.png"); err == nil {
+		t.Fatalf("expected absolute URL error")
+	}
+	extensions := map[string]string{
+		"image/jpeg":      ".jpg",
+		"image/png":       ".png",
+		"image/webp":      ".webp",
+		"audio/wav":       ".wav",
+		"audio/aac":       ".aac",
+		"audio/flac":      ".flac",
+		"audio/opus":      ".opus",
+		"audio/mpeg":      ".mp3",
+		"video/mp4":       ".mp4",
+		"video/webm":      ".webm",
+		"application/pdf": ".pdf",
+		"text/plain":      ".txt",
+		"unknown":         ".bin",
+	}
+	for input, want := range extensions {
+		if got := mediaExtension(input); got != want {
+			t.Fatalf("mediaExtension(%q)=%q want %q", input, got, want)
+		}
+	}
+	if got := safeArtifactFilename(" img/1?.png "); got != "img-1--png" {
+		t.Fatalf("safeArtifactFilename=%q", got)
+	}
+	if got := intArg(map[string]any{"i": int64(7), "f": 3.9}, "i"); got != 7 {
+		t.Fatalf("intArg int64=%d", got)
+	}
+	if got := intArg(map[string]any{"f": 3.9}, "f"); got != 3 {
+		t.Fatalf("intArg float=%d", got)
+	}
+	if got := firstNonEmpty("", "  second ", "third"); got != "second" {
+		t.Fatalf("firstNonEmpty=%q", got)
 	}
 }

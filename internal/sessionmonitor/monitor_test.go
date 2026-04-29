@@ -56,3 +56,29 @@ func TestTranscriptExtractsTextParts(t *testing.T) {
 		t.Fatalf("transcript=%q", got)
 	}
 }
+
+func TestMessageTextPrefersTopLevelText(t *testing.T) {
+	raw, _ := json.Marshal(map[string]any{
+		"text":  "top",
+		"parts": []map[string]any{{"type": "text", "text": "part"}},
+	})
+	if got := messageText(raw); got != "top" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestNormalizeAndExtractJSONObject(t *testing.T) {
+	if got := normalize("  Hello   WORLD "); got != "hello world" {
+		t.Fatalf("normalize=%q", got)
+	}
+	cases := map[string]string{
+		`{"ok":true}`:            `{"ok":true}`,
+		"prefix {\"ok\":true} x": `{"ok":true}`,
+		"no json":                "no json",
+	}
+	for input, want := range cases {
+		if got := extractJSONObject(input); got != want {
+			t.Fatalf("extractJSONObject(%q)=%q want %q", input, got, want)
+		}
+	}
+}

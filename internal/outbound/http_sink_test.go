@@ -47,6 +47,9 @@ func TestHTTPSinkTopicURLOverride(t *testing.T) {
 	if got := sink.URLForTopic("other"); got != "http://default" {
 		t.Fatalf("got %q", got)
 	}
+	if err := (HTTPSink{}).Handle(t.Context(), db.OutboxItem{ID: 1, Payload: []byte(`{}`)}); err == nil {
+		t.Fatalf("expected missing URL error")
+	}
 }
 
 func TestHTTPSinkPostsBatchPayload(t *testing.T) {
@@ -85,5 +88,30 @@ func TestHTTPSinkDoesNotSupportBatchWithoutBatchURL(t *testing.T) {
 	}
 	if err := sink.HandleBatch(t.Context(), "topic", []db.OutboxItem{{ID: 1, Topic: "topic"}}); err == nil {
 		t.Fatalf("expected missing batch URL error")
+	}
+	if err := sink.HandleBatch(t.Context(), "topic", nil); err != nil {
+		t.Fatalf("empty batch should be a no-op: %v", err)
+	}
+}
+
+func TestHTTPSinkBatchTopicOverrideAndStatusError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad batch", http.StatusBadGateway)
+	}))
+	defer server.Close()
+	sink := HTTPSink{BatchURL: "http://default", BatchURLs: map[string]string{"topic": server.URL}}
+	if !sink.SupportsBatch("topic") || sink.BatchURLForTopic("topic") != server.URL || sink.BatchURLForTopic("other") != "http://default" {
+		t.Fatalf("batch routing failed")
+	}
+	if err := sink.HandleBatch(t.Context(), "topic", []db.OutboxItem{{ID: 1, Topic: "topic"}}); err == nil {
+		t.Fatalf("expected batch status error")
+	}
+}
+
+func TestBatchItemsUsesEmptyObjectForMissingPayload(t *testing.T) {
+	got := batchItems([]db.OutboxItem{{ID: 1, Topic: "topic"}})
+	payload, ok := got[0]["payload"].(map[string]any)
+	if len(got) != 1 || !ok || len(payload) != 0 {
+		t.Fatalf("items=%#v", got)
 	}
 }

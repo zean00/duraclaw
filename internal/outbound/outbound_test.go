@@ -38,3 +38,21 @@ func TestEmitRequiresRoutingFields(t *testing.T) {
 		t.Fatalf("expected validation error")
 	}
 }
+
+func TestEmitRequiresStoreAndHandlesEmptyPayload(t *testing.T) {
+	if _, _, err := NewService(nil).Emit(context.Background(), Intent{
+		CustomerID: "c", UserID: "u", SessionID: "s", Type: "message",
+	}); err == nil {
+		t.Fatalf("expected nil store error")
+	}
+	store := &fakeStore{}
+	_, _, err := NewService(store).Emit(context.Background(), Intent{
+		CustomerID: "c", UserID: "u", SessionID: "s", Type: "message",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(store.intent.Payload) != "null" {
+		t.Fatalf("payload=%s", store.intent.Payload)
+	}
+}

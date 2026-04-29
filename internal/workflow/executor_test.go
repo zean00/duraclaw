@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"duraclaw/internal/db"
@@ -12,21 +13,23 @@ import (
 )
 
 type fakeWorkflowStore struct {
-	runStates      []string
-	workflowStates []string
-	nodeState      string
-	events         []string
-	nodes          []db.WorkflowNode
-	edges          []db.WorkflowEdge
-	current        *db.WorkflowRun
-	states         map[string]db.WorkflowNodeState
-	activations    []db.WorkflowEdgeActivation
-	memories       []db.Memory
-	preferences    []db.Preference
-	knowledge      []db.KnowledgeChunk
-	artifacts      []db.Artifact
-	reps           []db.ArtifactRepresentation
-	policyRules    []db.PolicyRule
+	runStates       []string
+	workflowStates  []string
+	nodeState       string
+	events          []string
+	nodes           []db.WorkflowNode
+	edges           []db.WorkflowEdge
+	current         *db.WorkflowRun
+	states          map[string]db.WorkflowNodeState
+	activations     []db.WorkflowEdgeActivation
+	memories        []db.Memory
+	preferences     []db.Preference
+	knowledge       []db.KnowledgeChunk
+	artifacts       []db.Artifact
+	reps            []db.ArtifactRepresentation
+	policyRules     []db.PolicyRule
+	backgroundInput any
+	outboundIntent  db.OutboundIntent
 }
 
 type testTool struct{}
@@ -256,7 +259,8 @@ func (s *fakeWorkflowStore) CompleteProcessorCall(context.Context, string, strin
 	return nil
 }
 
-func (s *fakeWorkflowStore) CreateOutboundIntent(context.Context, db.OutboundIntent) (string, int64, error) {
+func (s *fakeWorkflowStore) CreateOutboundIntent(_ context.Context, intent db.OutboundIntent) (string, int64, error) {
+	s.outboundIntent = intent
 	return "outbound-1", 1, nil
 }
 
@@ -264,7 +268,8 @@ func (s *fakeWorkflowStore) CreateRun(context.Context, db.ACPContext, any) (*db.
 	return &db.Run{ID: "run-background"}, nil
 }
 
-func (s *fakeWorkflowStore) CreateBackgroundRun(context.Context, db.ACPContext, any, any) (*db.Run, error) {
+func (s *fakeWorkflowStore) CreateBackgroundRun(_ context.Context, _ db.ACPContext, input any, _ any) (*db.Run, error) {
+	s.backgroundInput = input
 	return &db.Run{ID: "run-background"}, nil
 }
 
@@ -396,6 +401,45 @@ func TestExecuteGraphUsesConditionalEdges(t *testing.T) {
 	}
 	if got.CurrentNode != "b" {
 		t.Fatalf("got=%#v", got)
+	}
+}
+
+func TestWorkflowConditionAndValueHelpers(t *testing.T) {
+	output := map[string]any{"status": "ok", "nested": map[string]any{"value": "deep"}}
+	if !edgeMatches(db.WorkflowEdge{Condition: json.RawMessage(`{"not_equals":{"key":"status","value":"bad"}}`)}, output) {
+		t.Fatalf("expected not_equals edge match")
+	}
+	if edgeMatches(db.WorkflowEdge{Condition: json.RawMessage(`{bad`)}, output) {
+		t.Fatalf("invalid edge condition should not match")
+	}
+	if !conditionMatches(map[string]any{"equals": map[string]any{"key": "nested.value", "value": "deep"}}, output) {
+		t.Fatalf("expected nested equals match")
+	}
+	if conditionMatches(map[string]any{"not_equals": map[string]any{"key": "nested.value", "value": "deep"}}, output) {
+		t.Fatalf("expected nested not_equals mismatch")
+	}
+	if got := valueAt(output, "nested.value"); got != "deep" {
+		t.Fatalf("valueAt=%#v", got)
+	}
+	if got := valueAt(output, "nested.missing.value"); got != nil {
+		t.Fatalf("valueAt missing=%#v", got)
+	}
+}
+
+func TestWorkflowPolicyHelpers(t *testing.T) {
+	if got := maxAttempts(db.WorkflowNode{RetryPolicy: json.RawMessage(`{"attempts":3}`)}); got != 3 {
+		t.Fatalf("maxAttempts=%d", got)
+	}
+	if got := intValue(json.Number("7")); got != 7 {
+		t.Fatalf("intValue=%d", got)
+	}
+	ctx, cancel := nodeContext(context.Background(), db.WorkflowNode{TimeoutPolicy: json.RawMessage(`{"timeout_seconds":1}`)})
+	defer cancel()
+	if _, ok := ctx.Deadline(); !ok {
+		t.Fatalf("expected deadline")
+	}
+	if _, err := configMap(db.WorkflowNode{Config: json.RawMessage(`{bad`)}); err == nil {
+		t.Fatalf("expected invalid config error")
 	}
 }
 
@@ -574,6 +618,29 @@ func TestExecuteGraphLLMConditionRoutesByJSON(t *testing.T) {
 	}
 }
 
+func TestExecuteGraphModelCallStrictJSON(t *testing.T) {
+	registry := providers.NewRegistry("mock")
+	registry.Register("mock", routeProvider{})
+	store := &fakeWorkflowStore{
+		nodes: []db.WorkflowNode{{NodeKey: "model", NodeType: "model_call", Config: json.RawMessage(`{"prompt":"route","strict_json":true}`)}},
+	}
+	got, err := NewExecutor(store).WithProviders(registry, providers.ModelConfig{Primary: "mock/route"}).ExecuteGraph(context.Background(), GraphRequest{RunID: "run-1", WorkflowDefinitionID: "wf-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Output["route"] != "approved" || got.Output["reason"] != "ok" {
+		t.Fatalf("got=%#v", got)
+	}
+}
+
+func TestExecuteGraphModelCallRequiresProviderRegistry(t *testing.T) {
+	store := &fakeWorkflowStore{nodes: []db.WorkflowNode{{NodeKey: "model", NodeType: "model_call"}}}
+	_, err := NewExecutor(store).ExecuteGraph(context.Background(), GraphRequest{RunID: "run-1", WorkflowDefinitionID: "wf-1"})
+	if err == nil {
+		t.Fatalf("expected provider registry error")
+	}
+}
+
 func TestExecuteGraphRetriesThenFails(t *testing.T) {
 	store := &fakeWorkflowStore{
 		nodes: []db.WorkflowNode{{NodeKey: "tool", NodeType: "tool", RetryPolicy: json.RawMessage(`{"max_attempts":2}`)}},
@@ -584,6 +651,27 @@ func TestExecuteGraphRetriesThenFails(t *testing.T) {
 	}
 	if store.states["tool"].Attempts != 2 || store.workflowStates[len(store.workflowStates)-1] != "failed" {
 		t.Fatalf("states=%#v workflow=%#v", store.states, store.workflowStates)
+	}
+}
+
+func TestExecuteGraphWriteArtifactNode(t *testing.T) {
+	store := &fakeWorkflowStore{
+		nodes: []db.WorkflowNode{{NodeKey: "write", NodeType: "write_artifact", Config: json.RawMessage(`{"artifact_id":"art-1","storage_ref":"object://bucket/doc.txt","media_type":"text/plain","filename":"doc.txt"}`)}},
+	}
+	got, err := NewExecutor(store).ExecuteGraph(context.Background(), GraphRequest{RunID: "run-1", WorkflowDefinitionID: "wf-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Output["artifact_id"] != "art-1" || len(store.artifacts) != 1 || store.artifacts[0].StorageRef != "object://bucket/doc.txt" {
+		t.Fatalf("got=%#v artifacts=%#v", got, store.artifacts)
+	}
+}
+
+func TestExecuteGraphWriteArtifactRequiresStorageRef(t *testing.T) {
+	store := &fakeWorkflowStore{nodes: []db.WorkflowNode{{NodeKey: "write", NodeType: "write_artifact", Config: json.RawMessage(`{"artifact_id":"art-1"}`)}}}
+	_, err := NewExecutor(store).ExecuteGraph(context.Background(), GraphRequest{RunID: "run-1", WorkflowDefinitionID: "wf-1"})
+	if err == nil {
+		t.Fatalf("expected storage_ref error")
 	}
 }
 
@@ -653,6 +741,45 @@ func TestExecuteGraphTransformAndOutboundNodes(t *testing.T) {
 	}
 	if got.CurrentNode != "outbound" {
 		t.Fatalf("got=%#v", got)
+	}
+	if store.outboundIntent.Type != "message" || store.outboundIntent.RunID == nil || *store.outboundIntent.RunID != "run-1" {
+		t.Fatalf("intent=%#v", store.outboundIntent)
+	}
+}
+
+func TestExecuteGraphLoopNodeLimitsItems(t *testing.T) {
+	store := &fakeWorkflowStore{
+		nodes: []db.WorkflowNode{
+			{NodeKey: "transform", NodeType: "transform", Config: json.RawMessage(`{"set":{"items":[1,2,3]}}`)},
+			{NodeKey: "loop", NodeType: "loop", Config: json.RawMessage(`{"items_key":"items","max_items":2}`)},
+		},
+		edges: []db.WorkflowEdge{{FromNodeKey: "transform", ToNodeKey: "loop"}},
+	}
+	got, err := NewExecutor(store).ExecuteGraph(context.Background(), GraphRequest{RunID: "run-1", WorkflowDefinitionID: "wf-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, _ := got.Output["items"].([]any)
+	if fmt.Sprint(got.Output["iterations"]) != "2" || len(items) != 2 {
+		t.Fatalf("got=%#v", got)
+	}
+}
+
+func TestExecuteGraphCreateBackgroundJobNode(t *testing.T) {
+	store := &fakeWorkflowStore{
+		nodes: []db.WorkflowNode{
+			{NodeKey: "transform", NodeType: "transform", Config: json.RawMessage(`{"set":{"text":"background"}}`)},
+			{NodeKey: "background", NodeType: "create_background_job", Config: json.RawMessage(`{"idempotency_key":"fixed-key"}`)},
+		},
+		edges: []db.WorkflowEdge{{FromNodeKey: "transform", ToNodeKey: "background"}},
+	}
+	got, err := NewExecutor(store).ExecuteGraph(context.Background(), GraphRequest{RunID: "run-1", CustomerID: "c", UserID: "u", AgentInstanceID: "a", SessionID: "s", RequestID: "req", WorkflowDefinitionID: "wf-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, _ := store.backgroundInput.(map[string]any)
+	if got.Output["run_id"] != "run-background" || input["text"] != "background" {
+		t.Fatalf("got=%#v backgroundInput=%#v", got, store.backgroundInput)
 	}
 }
 

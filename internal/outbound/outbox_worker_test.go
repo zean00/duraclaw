@@ -136,3 +136,26 @@ func TestOutboxWorkerCompletesFallbackSinglesBeforeLaterFailure(t *testing.T) {
 		t.Fatalf("count=%d err=%v completed=%#v released=%#v batches=%#v", count, err, store.completed, store.released, sink.batches)
 	}
 }
+
+func TestOutboxWorkerRequiresStoreAndSink(t *testing.T) {
+	if _, err := NewOutboxWorker(nil, &fakeSink{}, "").RunOnce(context.Background()); err == nil {
+		t.Fatalf("expected nil store error")
+	}
+	if _, err := NewOutboxWorker(&fakeOutboxStore{}, nil, "").RunOnce(context.Background()); err == nil {
+		t.Fatalf("expected nil sink error")
+	}
+}
+
+func TestOutboxWorkerGroupsEmptyTopicAsDefault(t *testing.T) {
+	groups := groupByTopic([]db.OutboxItem{{ID: 1}, {ID: 2, Topic: "a"}, {ID: 3}})
+	if len(groups) != 2 || groups[0].topic != "default" || len(groups[0].items) != 2 || groups[1].topic != "a" {
+		t.Fatalf("groups=%#v", groups)
+	}
+	sink := &fakeBatchSink{support: map[string]bool{"default": true}}
+	if !batchSinkSupportsAnyTopic(sink, []db.OutboxItem{{ID: 1}}) {
+		t.Fatalf("expected default topic batch support")
+	}
+	if batchSinkSupportsAnyTopic(sink, []db.OutboxItem{{ID: 1, Topic: "other"}}) {
+		t.Fatalf("did not expect other topic batch support")
+	}
+}

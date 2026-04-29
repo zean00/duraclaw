@@ -9,23 +9,30 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 //go:embed migrations/*.sql
 var migrationFS embed.FS
 
-type Pool = pgxpool.Pool
+type Pool interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
+	Begin(context.Context) (pgx.Tx, error)
+	Ping(context.Context) error
+}
 
-func Connect(ctx context.Context, databaseURL string) (*Pool, error) {
+func Connect(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	return pgxpool.New(ctx, databaseURL)
 }
 
-func Ping(ctx context.Context, pool *Pool) error {
+func Ping(ctx context.Context, pool Pool) error {
 	return pool.Ping(ctx)
 }
 
-func Migrate(ctx context.Context, pool *Pool) error {
+func Migrate(ctx context.Context, pool Pool) error {
 	if _, err := pool.Exec(ctx, "CREATE TABLE IF NOT EXISTS schema_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())"); err != nil {
 		return err
 	}

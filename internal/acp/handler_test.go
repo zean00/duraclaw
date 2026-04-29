@@ -380,6 +380,21 @@ func TestDecodeJSONRejectsUnknownFields(t *testing.T) {
 	}
 }
 
+func TestDecodeJSONRejectsMultipleAndOversizedBodies(t *testing.T) {
+	var payload map[string]any
+	req := httptest.NewRequest(http.MethodPost, "/x", strings.NewReader(`{} {}`))
+	rec := httptest.NewRecorder()
+	if err := decodeJSON(rec, req, &payload); err == nil || !strings.Contains(err.Error(), "single JSON") {
+		t.Fatalf("expected multiple value error, got %v", err)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/x", strings.NewReader(`{"x":"`+strings.Repeat("a", maxJSONBodyBytes)+`"}`))
+	rec = httptest.NewRecorder()
+	if err := decodeJSON(rec, req, &payload); err == nil {
+		t.Fatalf("expected oversized body error")
+	}
+}
+
 func TestCreateWorkflowValidatesPayloadBeforeStore(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/admin/workflows", strings.NewReader(`{"version":0}`))
 	rec := httptest.NewRecorder()
@@ -904,5 +919,31 @@ func TestOutboundIntentStatusRejectsInvalidCallbackStatus(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "invalid outbound intent status") {
 		t.Fatalf("body=%s", rec.Body.String())
+	}
+}
+
+func TestQueryLimitBounds(t *testing.T) {
+	cases := []struct {
+		raw      string
+		fallback int
+		want     int
+	}{
+		{raw: "", fallback: 25, want: 25},
+		{raw: "10", fallback: 25, want: 10},
+		{raw: "0", fallback: 25, want: 25},
+		{raw: "501", fallback: 25, want: 25},
+		{raw: "bad", fallback: 25, want: 25},
+	}
+	for _, tc := range cases {
+		req := httptest.NewRequest(http.MethodGet, "/?limit="+tc.raw, nil)
+		if got := queryLimit(req, tc.fallback); got != tc.want {
+			t.Fatalf("queryLimit(%q)=%d want %d", tc.raw, got, tc.want)
+		}
+	}
+}
+
+func TestMustJSONString(t *testing.T) {
+	if got := mustJSONString(map[string]any{"ok": true}); got != `{"ok":true}` {
+		t.Fatalf("got %q", got)
 	}
 }

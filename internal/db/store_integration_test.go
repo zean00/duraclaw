@@ -27,7 +27,7 @@ func integrationStore(t *testing.T) (*Store, func()) {
 	return NewStore(pool), pool.Close
 }
 
-func cleanupIntegrationData(t *testing.T, ctx context.Context, pool *Pool) {
+func cleanupIntegrationData(t *testing.T, ctx context.Context, pool Pool) {
 	t.Helper()
 	const sql = `
 DO $$

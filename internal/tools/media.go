@@ -433,7 +433,7 @@ func joinURLPath(base, name string) (string, error) {
 	if parsed.Scheme == "" || parsed.Host == "" {
 		return "", fmt.Errorf("generated media HTTP base URL must be absolute")
 	}
-	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/" + url.PathEscape(name)
+	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/" + name
 	return parsed.String(), nil
 }
 
