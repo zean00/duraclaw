@@ -144,3 +144,24 @@ func TestDirectWorkflowRunsEnforceWorkflowPolicy(t *testing.T) {
 		t.Fatalf("direct workflow path should enforce post_workflow before completing the step")
 	}
 }
+
+func TestScopeJudgeUsesTwoPassImplicitIntent(t *testing.T) {
+	raw, err := os.ReadFile("worker.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(raw)
+	for _, want := range []string{
+		`Intent              string  ` + "`json:\"intent\"`",
+		`Classify intent as "direct"`,
+		`strings.EqualFold(strings.TrimSpace(judgement.Intent), "implicit")`,
+		"scopeJudgeContext(ctx, run)",
+		`"pass": "context"`,
+		"Recent conversation:",
+		"sessionSummaryContext(ctx, run)",
+	} {
+		if !strings.Contains(src, want) {
+			t.Fatalf("scope judge two-pass behavior missing %q", want)
+		}
+	}
+}

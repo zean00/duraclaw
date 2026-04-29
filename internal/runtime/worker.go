@@ -1029,6 +1029,7 @@ func (w *Worker) agentProfileInstructions(ctx context.Context, run *db.Run) (str
 
 type scopeJudgement struct {
 	InScope             bool    `json:"in_scope"`
+	Intent              string  `json:"intent"`
 	Confidence          float64 `json:"confidence"`
 	Reason              string  `json:"reason"`
 	RecommendedResponse string  `json:"recommended_response"`
@@ -1054,30 +1055,82 @@ func (w *Worker) judgeScope(ctx context.Context, run *db.Run, content string) (s
 	if threshold <= 0 || threshold > 1 {
 		threshold = 0.5
 	}
-	promptText := fmt.Sprintf(`Decide whether the user request is within the configured agent domain.
-Return only JSON with keys: in_scope boolean, confidence number from 0 to 1, reason string, recommended_response string.
-Allowed domains: %s
-Forbidden domains: %s
-Out-of-scope guidance: %s
-Available tool names: %s
-User request:
-%s`, strings.Join(cfg.DomainScope.AllowedDomains, ", "), strings.Join(cfg.DomainScope.ForbiddenDomains, ", "), cfg.DomainScope.OutOfScopeGuidance, strings.Join(w.toolNames(ctx, run), ", "), content)
-	result, err := w.providers.ChatWithFallback(ctx, modelConfig, []providers.Message{
-		{Role: "system", Content: "You are a strict scope classifier for an assistant runtime. Return valid JSON only."},
-		{Role: "user", Content: promptText},
-	}, nil, map[string]any{"response_format": "json_object", "purpose": "scope_judge"})
+	judgement, result, err := w.runScopeJudge(ctx, run, modelConfig, cfg, content, "")
 	if err != nil {
 		return scopeJudgement{}, err
 	}
-	_ = w.store.AddEvent(ctx, run.ID, "scope.judged", map[string]any{"provider": result.Provider, "model": result.Model})
-	var judgement scopeJudgement
-	if err := json.Unmarshal([]byte(extractJSONObject(result.Response.Content)), &judgement); err != nil {
-		return scopeJudgement{InScope: false, Confidence: 0, Reason: "scope judge returned invalid JSON", RecommendedResponse: "I cannot determine whether that request is within my configured scope, so I cannot help with it."}, nil
+	_ = w.store.AddEvent(ctx, run.ID, "scope.judged", map[string]any{"provider": result.Provider, "model": result.Model, "intent": judgement.Intent, "pass": "initial"})
+	if strings.EqualFold(strings.TrimSpace(judgement.Intent), "implicit") {
+		scopeContext, err := w.scopeJudgeContext(ctx, run)
+		if err != nil {
+			return scopeJudgement{}, err
+		}
+		if strings.TrimSpace(scopeContext) != "" {
+			judgement, result, err = w.runScopeJudge(ctx, run, modelConfig, cfg, content, scopeContext)
+			if err != nil {
+				return scopeJudgement{}, err
+			}
+			_ = w.store.AddEvent(ctx, run.ID, "scope.judged", map[string]any{"provider": result.Provider, "model": result.Model, "intent": judgement.Intent, "pass": "context"})
+		}
 	}
 	if !judgement.InScope || judgement.Confidence < threshold {
 		judgement.InScope = false
 	}
 	return judgement, nil
+}
+
+func (w *Worker) runScopeJudge(ctx context.Context, run *db.Run, modelConfig providers.ModelConfig, cfg agentProfileConfig, content, scopeContext string) (scopeJudgement, *providers.FallbackResult, error) {
+	promptText := fmt.Sprintf(`Decide whether the user request is within the configured agent domain.
+Classify intent as "direct" when the current request is understandable by itself, or "implicit" when it depends on prior conversation.
+Return only JSON with keys: intent string ("direct" or "implicit"), in_scope boolean, confidence number from 0 to 1, reason string, recommended_response string.
+Allowed domains: %s
+Forbidden domains: %s
+Out-of-scope guidance: %s
+Available tool names: %s`, strings.Join(cfg.DomainScope.AllowedDomains, ", "), strings.Join(cfg.DomainScope.ForbiddenDomains, ", "), cfg.DomainScope.OutOfScopeGuidance, strings.Join(w.toolNames(ctx, run), ", "))
+	if strings.TrimSpace(scopeContext) != "" {
+		promptText += "\n\nSummarized conversation context:\n" + strings.TrimSpace(scopeContext)
+	}
+	promptText += "\n\nUser request:\n" + content
+	result, err := w.providers.ChatWithFallback(ctx, modelConfig, []providers.Message{
+		{Role: "system", Content: "You are a strict scope classifier for an assistant runtime. Return valid JSON only."},
+		{Role: "user", Content: promptText},
+	}, nil, map[string]any{"response_format": "json_object", "purpose": "scope_judge"})
+	if err != nil {
+		return scopeJudgement{}, nil, err
+	}
+	var judgement scopeJudgement
+	if err := json.Unmarshal([]byte(extractJSONObject(result.Response.Content)), &judgement); err != nil {
+		return scopeJudgement{Intent: "direct", InScope: false, Confidence: 0, Reason: "scope judge returned invalid JSON", RecommendedResponse: "I cannot determine whether that request is within my configured scope, so I cannot help with it."}, result, nil
+	}
+	if strings.TrimSpace(judgement.Intent) == "" {
+		judgement.Intent = "direct"
+	}
+	return judgement, result, nil
+}
+
+func (w *Worker) scopeJudgeContext(ctx context.Context, run *db.Run) (string, error) {
+	var sections []string
+	if summary, err := w.sessionSummaryContext(ctx, run); err != nil {
+		return "", err
+	} else if strings.TrimSpace(summary) != "" {
+		sections = append(sections, summary)
+	}
+	history, err := w.store.RecentMessages(ctx, run.CustomerID, run.SessionID, 6)
+	if err != nil {
+		return "", err
+	}
+	var lines []string
+	for _, msg := range history {
+		text := strings.TrimSpace(messageText(msg.Content))
+		if text == "" {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("%s: %s", msg.Role, text))
+	}
+	if len(lines) > 0 {
+		sections = append(sections, "Recent conversation:\n"+strings.Join(lines, "\n"))
+	}
+	return strings.Join(sections, "\n\n"), nil
 }
 
 func (w *Worker) toolNames(ctx context.Context, run *db.Run) []string {
