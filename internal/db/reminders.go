@@ -38,6 +38,16 @@ type ReminderSubscriptionSpec struct {
 	Metadata        any
 }
 
+type ReminderSubscriptionUpdate struct {
+	Title     *string
+	Schedule  *string
+	Timezone  *string
+	Payload   any
+	NextRunAt *time.Time
+	Metadata  any
+	Enabled   *bool
+}
+
 func (s *Store) CreateReminderSubscription(ctx context.Context, spec ReminderSubscriptionSpec) (*ReminderSubscription, error) {
 	if spec.CustomerID == "" || spec.UserID == "" || spec.SessionID == "" || spec.AgentInstanceID == "" || spec.Schedule == "" || spec.NextRunAt.IsZero() {
 		return nil, fmt.Errorf("customer_id, user_id, session_id, agent_instance_id, schedule, and next_run_at are required")
@@ -160,4 +170,97 @@ func (s *Store) SetReminderSubscriptionEnabled(ctx context.Context, id, customer
 		return fmt.Errorf("reminder subscription not found")
 	}
 	return nil
+}
+
+func (s *Store) UpdateUserReminderSubscription(ctx context.Context, id, customerID, userID string, update ReminderSubscriptionUpdate) (*ReminderSubscription, error) {
+	if id == "" || customerID == "" || userID == "" {
+		return nil, fmt.Errorf("subscription_id, customer_id, and user_id are required")
+	}
+	if update.Title == nil && update.Schedule == nil && update.Timezone == nil && update.Payload == nil && update.NextRunAt == nil && update.Metadata == nil && update.Enabled == nil {
+		return nil, fmt.Errorf("at least one reminder field is required")
+	}
+	var payload []byte
+	if update.Payload != nil {
+		payload, _ = json.Marshal(update.Payload)
+		if len(payload) == 0 || string(payload) == "null" {
+			payload = []byte(`{}`)
+		}
+	}
+	var metadata []byte
+	if update.Metadata != nil {
+		metadata, _ = json.Marshal(update.Metadata)
+		if len(metadata) == 0 || string(metadata) == "null" {
+			metadata = []byte(`{}`)
+		}
+	}
+	title := nullableString(update.Title)
+	schedule := nullableString(update.Schedule)
+	timezone := nullableString(update.Timezone)
+	nextRunAt := nullableTime(update.NextRunAt)
+	enabled := nullableBool(update.Enabled)
+	var sub ReminderSubscription
+	err := s.pool.QueryRow(ctx, `
+		UPDATE reminder_subscriptions
+		SET title=COALESCE($4::text, title),
+			schedule=COALESCE($5::text, schedule),
+			timezone=COALESCE($6::text, timezone),
+			payload=COALESCE($7::jsonb, payload),
+			next_run_at=COALESCE($8::timestamptz, next_run_at),
+			metadata=COALESCE($9::jsonb, metadata),
+			enabled=COALESCE($10::boolean, enabled),
+			lease_owner=NULL,
+			lease_expires_at=NULL,
+			updated_at=now()
+		WHERE id=$1 AND customer_id=$2 AND user_id=$3
+		RETURNING id::text, customer_id, user_id, session_id, agent_instance_id, title, schedule, timezone, payload, enabled, next_run_at, last_fired_at, metadata`,
+		id, customerID, userID, title, schedule, timezone, nullableBytes(payload), nextRunAt, nullableBytes(metadata), enabled).
+		Scan(&sub.ID, &sub.CustomerID, &sub.UserID, &sub.SessionID, &sub.AgentInstanceID, &sub.Title, &sub.Schedule, &sub.Timezone, &sub.Payload, &sub.Enabled, &sub.NextRunAt, &sub.LastFiredAt, &sub.Metadata)
+	if err != nil {
+		return nil, err
+	}
+	return &sub, nil
+}
+
+func (s *Store) DeleteUserReminderSubscription(ctx context.Context, id, customerID, userID string) error {
+	if id == "" || customerID == "" || userID == "" {
+		return fmt.Errorf("subscription_id, customer_id, and user_id are required")
+	}
+	tag, err := s.pool.Exec(ctx, `
+		DELETE FROM reminder_subscriptions
+		WHERE id=$1 AND customer_id=$2 AND user_id=$3`, id, customerID, userID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("reminder subscription not found")
+	}
+	return nil
+}
+
+func nullableBytes(b []byte) any {
+	if b == nil {
+		return nil
+	}
+	return b
+}
+
+func nullableString(s *string) any {
+	if s == nil {
+		return nil
+	}
+	return *s
+}
+
+func nullableTime(t *time.Time) any {
+	if t == nil {
+		return nil
+	}
+	return *t
+}
+
+func nullableBool(b *bool) any {
+	if b == nil {
+		return nil
+	}
+	return *b
 }

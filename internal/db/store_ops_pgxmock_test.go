@@ -52,6 +52,19 @@ func TestStoreReminderSubscriptionMethodsWithPgxMock(t *testing.T) {
 	if err := store.SetReminderSubscriptionEnabled(ctx, "sub-1", "c1", false); err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("expected not found, got %v", err)
 	}
+	title := "updated"
+	enabled := false
+	mock.ExpectQuery("UPDATE reminder_subscriptions").
+		WithArgs("sub-1", "c1", "u1", title, nil, nil, nil, nil, nil, enabled).
+		WillReturnRows(reminderRows().AddRow("sub-1", "c1", "u1", "s1", "a1", title, "* * * * *", "UTC", []byte(`{}`), false, later, nil, []byte(`{}`)))
+	updated, err := store.UpdateUserReminderSubscription(ctx, "sub-1", "c1", "u1", ReminderSubscriptionUpdate{Title: &title, Enabled: &enabled})
+	if err != nil || updated.Title != title || updated.Enabled {
+		t.Fatalf("updated=%#v err=%v", updated, err)
+	}
+	mock.ExpectExec("DELETE FROM reminder_subscriptions").WithArgs("sub-1", "c1", "u1").WillReturnResult(pgxmock.NewResult("DELETE", 1))
+	if err := store.DeleteUserReminderSubscription(ctx, "sub-1", "c1", "u1"); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

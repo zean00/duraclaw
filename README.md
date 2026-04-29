@@ -255,6 +255,10 @@ The GitHub Actions workflow runs the full suite with a `pgvector/pgvector:pg17` 
 - `POST /acp/runs/{run_id}/resume`
 - `POST /acp/runs/{run_id}/cancel`
 - `POST /acp/outbound-intents/{intent_id}/status`
+- `POST /acp/reminders`
+- `GET /acp/reminders?customer_id={customer_id}&user_id={user_id}`
+- `PATCH /acp/reminders/{subscription_id}`
+- `DELETE /acp/reminders/{subscription_id}?customer_id={customer_id}&user_id={user_id}`
 - `GET /acp/sessions/{session_id}/runs/latest`
 - `GET /acp/sessions/{session_id}/runs/by-idempotency-key/{key}`
 

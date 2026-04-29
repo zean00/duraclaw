@@ -277,6 +277,42 @@ func TestUpdateReminderSubscriptionRequiresEnabled(t *testing.T) {
 	}
 }
 
+func TestListUserReminderSubscriptionsRequiresUserScope(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/acp/reminders?customer_id=c", nil)
+	rec := httptest.NewRecorder()
+	NewHandler(nil).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "user_id") {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+}
+
+func TestUpdateUserReminderSubscriptionValidatesSchedule(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPatch, "/acp/reminders/sub-1", strings.NewReader(`{"customer_id":"c","user_id":"u","schedule":" "}`))
+	rec := httptest.NewRecorder()
+	NewHandler(nil).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "schedule") {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+}
+
+func TestDeleteUserReminderSubscriptionRequiresUserScope(t *testing.T) {
+	req := httptest.NewRequest(http.MethodDelete, "/acp/reminders/sub-1?customer_id=c", nil)
+	rec := httptest.NewRecorder()
+	NewHandler(nil).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "user_id") {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+}
+
 func TestUpsertWorkflowNodeRequiresNodeType(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPut, "/admin/workflows/wf-1/nodes/start", strings.NewReader(`{}`))
 	rec := httptest.NewRecorder()

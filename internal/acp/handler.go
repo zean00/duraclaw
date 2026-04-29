@@ -900,6 +900,86 @@ func (h *Handler) updateReminderSubscription(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, map[string]any{"subscription_id": r.PathValue("subscription_id"), "enabled": *payload.Enabled})
 }
 
+func (h *Handler) listUserReminderSubscriptions(w http.ResponseWriter, r *http.Request) {
+	customerID := r.URL.Query().Get("customer_id")
+	userID := r.URL.Query().Get("user_id")
+	if customerID == "" || userID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id and user_id are required"))
+		return
+	}
+	subs, err := h.store.ListReminderSubscriptions(r.Context(), customerID, userID, queryLimit(r, 100))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"reminders": subs})
+}
+
+func (h *Handler) updateUserReminderSubscription(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		CustomerID string         `json:"customer_id"`
+		UserID     string         `json:"user_id"`
+		Title      *string        `json:"title"`
+		Schedule   *string        `json:"schedule"`
+		Timezone   *string        `json:"timezone"`
+		Payload    map[string]any `json:"payload"`
+		NextRunAt  time.Time      `json:"next_run_at"`
+		Metadata   map[string]any `json:"metadata"`
+		Enabled    *bool          `json:"enabled"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if r.PathValue("subscription_id") == "" || payload.CustomerID == "" || payload.UserID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("subscription_id, customer_id, and user_id are required"))
+		return
+	}
+	if payload.Schedule != nil {
+		schedule := strings.TrimSpace(*payload.Schedule)
+		if schedule == "" {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("schedule cannot be empty"))
+			return
+		}
+		payload.Schedule = &schedule
+		if payload.NextRunAt.IsZero() {
+			next, err := scheduler.Next(schedule, time.Now().UTC())
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			payload.NextRunAt = next
+		}
+	}
+	var nextRunAt *time.Time
+	if !payload.NextRunAt.IsZero() {
+		nextRunAt = &payload.NextRunAt
+	}
+	sub, err := h.store.UpdateUserReminderSubscription(r.Context(), r.PathValue("subscription_id"), payload.CustomerID, payload.UserID, db.ReminderSubscriptionUpdate{
+		Title: payload.Title, Schedule: payload.Schedule, Timezone: payload.Timezone,
+		Payload: payload.Payload, NextRunAt: nextRunAt, Metadata: payload.Metadata, Enabled: payload.Enabled,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sub)
+}
+
+func (h *Handler) deleteUserReminderSubscription(w http.ResponseWriter, r *http.Request) {
+	customerID := r.URL.Query().Get("customer_id")
+	userID := r.URL.Query().Get("user_id")
+	if r.PathValue("subscription_id") == "" || customerID == "" || userID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("subscription_id, customer_id, and user_id are required"))
+		return
+	}
+	if err := h.store.DeleteUserReminderSubscription(r.Context(), r.PathValue("subscription_id"), customerID, userID); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"subscription_id": r.PathValue("subscription_id"), "deleted": true})
+}
+
 func (h *Handler) createSchedulerJob(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
 		CustomerID      string         `json:"customer_id"`
