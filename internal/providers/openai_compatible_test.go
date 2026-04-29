@@ -63,6 +63,16 @@ func TestOpenAICompatibleProviderChat(t *testing.T) {
 	}
 }
 
+func TestUsageInfoParsesCostAliases(t *testing.T) {
+	var usage UsageInfo
+	if err := json.Unmarshal([]byte(`{"prompt_tokens":2,"completion_tokens":3,"total_cost":"0.000007"}`), &usage); err != nil {
+		t.Fatal(err)
+	}
+	if usage.InputTokens != 2 || usage.OutputTokens != 3 || usage.TotalTokens != 5 || usage.CostMicros != 7 {
+		t.Fatalf("usage=%#v", usage)
+	}
+}
+
 func TestOpenAICompatibleProviderChatErrors(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"bad"}`, http.StatusTooManyRequests)

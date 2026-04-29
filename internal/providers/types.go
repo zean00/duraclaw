@@ -159,6 +159,7 @@ func (u *UsageInfo) UnmarshalJSON(raw []byte) error {
 		PromptTokens     int `json:"prompt_tokens,omitempty"`
 		CompletionTokens int `json:"completion_tokens,omitempty"`
 		Cost             any `json:"cost,omitempty"`
+		TotalCost        any `json:"total_cost,omitempty"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return err
@@ -175,6 +176,9 @@ func (u *UsageInfo) UnmarshalJSON(raw []byte) error {
 	}
 	if u.CostMicros == 0 {
 		u.CostMicros = costMicros(payload.Cost)
+	}
+	if u.CostMicros == 0 {
+		u.CostMicros = costMicros(payload.TotalCost)
 	}
 	return nil
 }

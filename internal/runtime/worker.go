@@ -625,15 +625,15 @@ func (w *Worker) chat(ctx context.Context, run *db.Run, messages []providers.Mes
 			}
 			if err == nil {
 				w.recordModelUsage(resp.Usage)
+				if completeErr := w.store.CompleteModelCall(ctx, callID, run.ID, map[string]any{"finish_reason": resp.FinishReason, "content_length": len(resp.Content), "usage": resp.Usage}, nil); completeErr != nil {
+					return nil, completeErr
+				}
 				if err := w.store.RecordModelUsage(ctx, db.ModelUsage{
 					CustomerID: run.CustomerID, AgentInstanceID: run.AgentInstanceID, RunID: run.ID, ModelCallID: callID,
 					Provider: candidate.Provider, Model: candidate.Model,
 					InputTokens: resp.Usage.InputTokens, OutputTokens: resp.Usage.OutputTokens, TotalTokens: resp.Usage.TotalTokens, CostMicros: int64(resp.Usage.CostMicros),
 				}); err != nil {
 					return nil, err
-				}
-				if completeErr := w.store.CompleteModelCall(ctx, callID, run.ID, map[string]any{"finish_reason": resp.FinishReason, "content_length": len(resp.Content), "usage": resp.Usage}, nil); completeErr != nil {
-					return nil, completeErr
 				}
 				return resp, nil
 			}

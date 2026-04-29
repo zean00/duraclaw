@@ -181,8 +181,7 @@ func TestStoreModelUsageQuotaWithPgxMock(t *testing.T) {
 			"max_daily_tokens", "max_weekly_tokens", "max_monthly_tokens", "max_daily_model_cost_micros", "max_weekly_model_cost_micros", "max_monthly_model_cost_micros",
 			"metadata", "updated_at",
 		}).AddRow("c1", nil, nil, nil, nil, nil, nil, nil, &dailyTokens, nil, nil, &dailyCost, nil, nil, []byte(`{}`), now))
-	mock.ExpectQuery("SELECT customer_id").WithArgs("c1", "a1").WillReturnError(pgx.ErrNoRows)
-	mock.ExpectQuery("SELECT COALESCE\\(sum\\(total_tokens\\),0\\)").WithArgs("c1", "a1", pgxmock.AnyArg()).
+	mock.ExpectQuery("SELECT COALESCE\\(sum\\(total_tokens\\),0\\)").WithArgs("c1", pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"sum"}).AddRow(int64(10)))
 	if err := store.EnforceModelUsageQuota(ctx, "c1", "a1"); !IsQuotaExceeded(err) {
 		t.Fatalf("expected token quota exceeded, got %v", err)

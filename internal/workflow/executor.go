@@ -627,6 +627,9 @@ func (e *Executor) executeLLMCondition(ctx context.Context, req GraphRequest, no
 				} else if strings.TrimSpace(fmt.Sprint(out["route"])) == "" {
 					err = fmt.Errorf("llm_condition response missing route")
 				} else {
+					if err := e.store.CompleteModelCall(ctx, callID, req.RunID, map[string]any{"finish_reason": resp.FinishReason, "content_length": len(resp.Content), "usage": resp.Usage}, nil); err != nil {
+						return nil, "", err
+					}
 					if err := e.store.RecordModelUsage(ctx, db.ModelUsage{
 						CustomerID: req.CustomerID, AgentInstanceID: req.AgentInstanceID, RunID: req.RunID, ModelCallID: callID,
 						Provider: candidate.Provider, Model: candidate.Model,
@@ -634,7 +637,6 @@ func (e *Executor) executeLLMCondition(ctx context.Context, req GraphRequest, no
 					}); err != nil {
 						return nil, "", err
 					}
-					_ = e.store.CompleteModelCall(ctx, callID, req.RunID, map[string]any{"finish_reason": resp.FinishReason, "content_length": len(resp.Content), "usage": resp.Usage}, nil)
 					return out, "succeeded", nil
 				}
 			}
@@ -686,6 +688,9 @@ func (e *Executor) executeModelCall(ctx context.Context, req GraphRequest, node 
 					}
 				}
 				if err == nil {
+					if err := e.store.CompleteModelCall(ctx, callID, req.RunID, map[string]any{"finish_reason": resp.FinishReason, "content_length": len(resp.Content), "usage": resp.Usage}, nil); err != nil {
+						return nil, "", err
+					}
 					if err := e.store.RecordModelUsage(ctx, db.ModelUsage{
 						CustomerID: req.CustomerID, AgentInstanceID: req.AgentInstanceID, RunID: req.RunID, ModelCallID: callID,
 						Provider: candidate.Provider, Model: candidate.Model,
@@ -693,7 +698,6 @@ func (e *Executor) executeModelCall(ctx context.Context, req GraphRequest, node 
 					}); err != nil {
 						return nil, "", err
 					}
-					_ = e.store.CompleteModelCall(ctx, callID, req.RunID, map[string]any{"finish_reason": resp.FinishReason, "content_length": len(resp.Content), "usage": resp.Usage}, nil)
 					return out, "succeeded", nil
 				}
 			}
