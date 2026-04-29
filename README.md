@@ -202,6 +202,8 @@ The GitHub Actions workflow runs the full suite with a `pgvector/pgvector:pg17` 
 - `GET /metrics`
 - `POST /admin/agent-instances/{agent_instance_id}/versions`
 - `GET /admin/agent-instances/{agent_instance_id}/versions?customer_id={customer_id}`
+- `POST /admin/agent-instances/{agent_instance_id}/versions/import?format=json|yaml`
+- `GET /admin/agent-instances/{agent_instance_id}/versions/{version_id}/export?format=json|yaml`
 - `POST /admin/agent-instances/{agent_instance_id}/versions/{version_id}/activate`
 - `POST /admin/workflows`
 - `GET /admin/workflows`

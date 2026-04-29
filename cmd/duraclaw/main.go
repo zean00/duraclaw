@@ -32,6 +32,12 @@ func main() {
 	slog.SetDefault(logger)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	if handled, err := runAgentConfigCLI(ctx, os.Args[1:]); handled {
+		if err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	cfg, err := loadConfig()
 	if err != nil {
 		log.Fatal(err)

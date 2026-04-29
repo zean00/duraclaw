@@ -172,6 +172,23 @@ func TestAgentInstanceVersionRoutesValidateBeforeStore(t *testing.T) {
 	}
 }
 
+func TestAgentInstanceVersionImportExportRoutesExist(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/admin/agent-instances/a1/versions/import", strings.NewReader(`agent_instance_id: other`))
+	req.Header.Set("Content-Type", "application/yaml")
+	rec := httptest.NewRecorder()
+	NewHandler(nil).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "does not match route") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/admin/agent-instances/a1/versions/v1/export", nil)
+	rec = httptest.NewRecorder()
+	NewHandler(nil).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestCreateSchedulerJobValidatesSchedule(t *testing.T) {
 	body := `{"customer_id":"c1","user_id":"u1","agent_instance_id":"a1","session_id":"s1","schedule":"not cron"}`
 	req := httptest.NewRequest(http.MethodPost, "/admin/scheduler/jobs", strings.NewReader(body))

@@ -9,6 +9,8 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /metrics", h.metrics)
 	mux.HandleFunc("POST /admin/agent-instances/{agent_instance_id}/versions", h.requireAdmin(h.createAgentInstanceVersion))
 	mux.HandleFunc("GET /admin/agent-instances/{agent_instance_id}/versions", h.requireAdmin(h.listAgentInstanceVersions))
+	mux.HandleFunc("POST /admin/agent-instances/{agent_instance_id}/versions/import", h.requireAdmin(h.importAgentInstanceVersion))
+	mux.HandleFunc("GET /admin/agent-instances/{agent_instance_id}/versions/{version_id}/export", h.requireAdmin(h.exportAgentInstanceVersion))
 	mux.HandleFunc("POST /admin/agent-instances/{agent_instance_id}/versions/{version_id}/activate", h.requireAdmin(h.activateAgentInstanceVersion))
 	mux.HandleFunc("POST /admin/workflows", h.requireAdmin(h.createWorkflow))
 	mux.HandleFunc("GET /admin/workflows", h.requireAdmin(h.listWorkflows))

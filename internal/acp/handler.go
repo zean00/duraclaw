@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"duraclaw/internal/agentconfig"
 	"duraclaw/internal/db"
 	"duraclaw/internal/embeddings"
 	"duraclaw/internal/knowledge"
@@ -180,6 +181,71 @@ func (h *Handler) listAgentInstanceVersions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"versions": versions})
+}
+
+func (h *Handler) importAgentInstanceVersion(w http.ResponseWriter, r *http.Request) {
+	format := r.URL.Query().Get("format")
+	if format == "" {
+		format = contentFormat(r.Header.Get("Content-Type"))
+	}
+	doc, err := agentconfig.Decode(r.Body, format)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if doc.AgentInstanceID == "" {
+		doc.AgentInstanceID = r.PathValue("agent_instance_id")
+	}
+	if doc.AgentInstanceID != r.PathValue("agent_instance_id") {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("agent_instance_id does not match route"))
+		return
+	}
+	if doc.CustomerID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id is required"))
+		return
+	}
+	if h.store == nil {
+		writeError(w, http.StatusInternalServerError, fmt.Errorf("store is unavailable"))
+		return
+	}
+	version, err := agentconfig.Import(r.Context(), h.store, doc)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, version)
+}
+
+func (h *Handler) exportAgentInstanceVersion(w http.ResponseWriter, r *http.Request) {
+	if h.store == nil {
+		writeError(w, http.StatusInternalServerError, fmt.Errorf("store is unavailable"))
+		return
+	}
+	doc, err := agentconfig.Export(r.Context(), h.store, r.PathValue("version_id"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if doc.AgentInstanceID != r.PathValue("agent_instance_id") {
+		writeError(w, http.StatusNotFound, fmt.Errorf("agent instance version not found"))
+		return
+	}
+	format := r.URL.Query().Get("format")
+	if format == "" {
+		format = "json"
+	}
+	raw, err := agentconfig.Encode(doc, format)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if strings.EqualFold(format, "yaml") || strings.EqualFold(format, "yml") {
+		w.Header().Set("Content-Type", "application/yaml")
+	} else {
+		w.Header().Set("Content-Type", "application/json")
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(append(raw, '\n'))
 }
 
 func (h *Handler) activateAgentInstanceVersion(w http.ResponseWriter, r *http.Request) {
@@ -2299,6 +2365,18 @@ func queryLimit(r *http.Request, fallback int) int {
 func mustJSONString(v any) string {
 	b, _ := json.Marshal(v)
 	return string(b)
+}
+
+func contentFormat(contentType string) string {
+	contentType = strings.ToLower(contentType)
+	switch {
+	case strings.Contains(contentType, "yaml"), strings.Contains(contentType, "yml"):
+		return "yaml"
+	case strings.Contains(contentType, "json"):
+		return "json"
+	default:
+		return ""
+	}
 }
 
 func writeError(w http.ResponseWriter, status int, err error) {

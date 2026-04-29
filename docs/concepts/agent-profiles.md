@@ -114,3 +114,55 @@ curl -X POST http://localhost:8080/admin/agent-instances/agent-1/versions \
     "activate_immediately": true
   }'
 ```
+
+## Import And Export Profiles
+
+Agent instance versions can be imported and exported as JSON or YAML so profile seeds can live as local data files instead of Go code.
+
+YAML example:
+
+```yaml
+customer_id: customer-1
+agent_instance_id: agent-1
+name: Support Agent v1
+model_config:
+  primary: openrouter/openai/gpt-4.1-mini
+system_instructions: Help the user with the product.
+profile_config:
+  personality: calm and practical
+  communication_style: short answers first, details when needed
+  language_capabilities: [en, id]
+  domain_scope:
+    allowed_domains: [product support, billing]
+    forbidden_domains: [legal advice]
+    out_of_scope_guidance: Say this is outside support scope and redirect to product support topics.
+  recommendation:
+    enabled: true
+    timeout_ms: 1500
+    model: openrouter/openai/gpt-4.1-mini
+    merge_model: openrouter/openai/gpt-4.1-mini
+    max_candidates: 5
+    allow_sponsored: true
+    disclosure_style: soft
+activate_immediately: true
+```
+
+CLI:
+
+```bash
+DATABASE_URL=postgres://user:pass@localhost:5432/duraclaw?sslmode=disable \
+duraclaw agent-config import --file ./agent.yaml --activate
+
+DATABASE_URL=postgres://user:pass@localhost:5432/duraclaw?sslmode=disable \
+duraclaw agent-config export --version-id {version_id} --format yaml --file ./agent.yaml
+```
+
+Admin HTTP:
+
+```bash
+curl -X POST 'http://localhost:8080/admin/agent-instances/agent-1/versions/import?format=yaml' \
+  -H 'Content-Type: application/yaml' \
+  --data-binary @agent.yaml
+
+curl 'http://localhost:8080/admin/agent-instances/agent-1/versions/{version_id}/export?format=yaml'
+```

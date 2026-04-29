@@ -108,6 +108,11 @@ Supported part types include `text`, `artifact_ref`, `location`, `structured_dat
 - Retention cleanup.
 - Admin media generation.
 
+Agent instance config import/export:
+
+- `POST /admin/agent-instances/{agent_instance_id}/versions/import?format=json|yaml`
+- `GET /admin/agent-instances/{agent_instance_id}/versions/{version_id}/export?format=json|yaml`
+
 Admin recommendation routes:
 
 - `POST /admin/recommendations/items`
