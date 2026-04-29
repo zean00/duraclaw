@@ -14,21 +14,29 @@ import (
 )
 
 type fakeStore struct {
-	limits    db.EffectiveRuntimeLimits
-	agentIDs  []string
-	enqueued  []db.AsyncWriteSpec
-	claimed   []db.AsyncWriteJob
-	completed []string
-	released  []int64
-	events    []string
+	limits     db.EffectiveRuntimeLimits
+	enqueueErr error
+	claimErr   error
+	agentIDs   []string
+	enqueued   []db.AsyncWriteSpec
+	claimed    []db.AsyncWriteJob
+	completed  []string
+	released   []int64
+	events     []string
 }
 
 func (s *fakeStore) EnqueueAsyncWrite(_ context.Context, spec db.AsyncWriteSpec) (int64, error) {
+	if s.enqueueErr != nil {
+		return 0, s.enqueueErr
+	}
 	s.enqueued = append(s.enqueued, spec)
 	return int64(len(s.enqueued)), nil
 }
 
 func (s *fakeStore) ClaimAsyncWriteJobs(context.Context, string, int, time.Duration) ([]db.AsyncWriteJob, error) {
+	if s.claimErr != nil {
+		return nil, s.claimErr
+	}
 	jobs := s.claimed
 	s.claimed = nil
 	return jobs, nil
@@ -72,6 +80,33 @@ func TestWriterEnqueuesAndFlushesBufferedJobs(t *testing.T) {
 	}
 }
 
+func TestWriterDefaultsNilAndOverflowPaths(t *testing.T) {
+	NewWriter(&fakeStore{}, "", 0).Enqueue(context.Background(), db.AsyncWriteSpec{CustomerID: "c", JobType: "observability_event"})
+	(*Writer)(nil).Enqueue(context.Background(), db.AsyncWriteSpec{CustomerID: "c", JobType: "observability_event"})
+	if _, err := (*Writer)(nil).RunOnce(context.Background()); err == nil {
+		t.Fatal("expected nil writer error")
+	}
+
+	store := &fakeStore{}
+	writer := NewWriter(store, "test", 1)
+	writer.Enqueue(context.Background(), db.AsyncWriteSpec{CustomerID: "c", JobType: "first"})
+	writer.Enqueue(context.Background(), db.AsyncWriteSpec{CustomerID: "c", JobType: "second"})
+	if len(store.enqueued) != 1 || store.enqueued[0].JobType != "second" {
+		t.Fatalf("enqueued=%#v", store.enqueued)
+	}
+}
+
+func TestWriterDropsWhenOverflowPersistFails(t *testing.T) {
+	counters := observability.NewCounters()
+	store := &fakeStore{enqueueErr: errors.New("db down")}
+	writer := NewWriter(store, "test", 1).WithCounters(counters)
+	writer.Enqueue(context.Background(), db.AsyncWriteSpec{CustomerID: "c", JobType: "first"})
+	writer.Enqueue(context.Background(), db.AsyncWriteSpec{CustomerID: "c", JobType: "second"})
+	if counters.Snapshot()["async_write_dropped_total"] != 1 {
+		t.Fatalf("counters=%#v", counters.Snapshot())
+	}
+}
+
 func TestWriterDegradesLargePayloads(t *testing.T) {
 	counters := observability.NewCounters()
 	store := &fakeStore{limits: db.EffectiveRuntimeLimits{AsyncBufferSize: 1, AsyncDegradeThresholdBytes: 8, MaxAsyncPayloadBytes: 1000}}
@@ -91,6 +126,22 @@ func TestWriterDegradesLargePayloads(t *testing.T) {
 	}
 }
 
+func TestWriterDropsTooLargePayloads(t *testing.T) {
+	counters := observability.NewCounters()
+	store := &fakeStore{limits: db.EffectiveRuntimeLimits{AsyncBufferSize: 1, AsyncDegradeThresholdBytes: 8, MaxAsyncPayloadBytes: 10}}
+	writer := NewWriter(store, "test", 1).WithCounters(counters)
+	writer.Enqueue(context.Background(), db.AsyncWriteSpec{CustomerID: "c", JobType: "observability_event", Payload: map[string]any{"big": "this is large"}})
+	if _, err := writer.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.enqueued) != 1 || store.enqueued[0].State != "dropped" {
+		t.Fatalf("enqueued=%#v", store.enqueued)
+	}
+	if counters.Snapshot()["async_write_dropped_total"] != 1 {
+		t.Fatalf("counters=%#v", counters.Snapshot())
+	}
+}
+
 func TestWriterUsesAgentScopedLimits(t *testing.T) {
 	store := &fakeStore{limits: db.EffectiveRuntimeLimits{AsyncBufferSize: 1, AsyncDegradeThresholdBytes: 8, MaxAsyncPayloadBytes: 1000}}
 	writer := NewWriter(store, "test", 1)
@@ -106,6 +157,14 @@ func TestWriterUsesAgentScopedLimits(t *testing.T) {
 	}
 }
 
+func TestWriterPropagatesClaimErrors(t *testing.T) {
+	store := &fakeStore{claimErr: errors.New("claim failed")}
+	writer := NewWriter(store, "test", 1)
+	if _, err := writer.RunOnce(context.Background()); err == nil {
+		t.Fatal("expected claim error")
+	}
+}
+
 func TestWriterAppliesClaimedObservabilityJob(t *testing.T) {
 	payload, _ := json.Marshal(map[string]any{"event_type": "async.event", "payload": map[string]any{"ok": true}})
 	store := &fakeStore{claimed: []db.AsyncWriteJob{{ID: 1, CustomerID: "c", JobType: "observability_event", Payload: payload}}}
@@ -114,6 +173,17 @@ func TestWriterAppliesClaimedObservabilityJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(store.events) != 1 || store.events[0] != "async.event" || len(store.completed) != 1 || store.completed[0] != "completed" {
+		t.Fatalf("events=%#v completed=%#v", store.events, store.completed)
+	}
+}
+
+func TestWriterUsesDefaultsForClaimedJobs(t *testing.T) {
+	store := &fakeStore{claimed: []db.AsyncWriteJob{{ID: 1, CustomerID: "c", JobType: "observability_event", State: "dropped", Payload: json.RawMessage(`{}`)}}}
+	writer := NewWriter(store, "test", 1)
+	if _, err := writer.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.events) != 1 || store.events[0] != "async_write" || len(store.completed) != 1 || store.completed[0] != "dropped" {
 		t.Fatalf("events=%#v completed=%#v", store.events, store.completed)
 	}
 }

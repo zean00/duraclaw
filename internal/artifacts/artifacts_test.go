@@ -3,6 +3,7 @@ package artifacts
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -53,6 +54,23 @@ func TestRegistrySelectsProcessor(t *testing.T) {
 	}
 }
 
+func TestRegistryHandlesNilAndRegister(t *testing.T) {
+	var nilRegistry *Registry
+	if _, ok := nilRegistry.ProcessorFor(Artifact{Modality: "image"}); ok {
+		t.Fatal("nil registry should not return a processor")
+	}
+
+	reg := NewRegistry()
+	reg.Register(nil)
+	if _, ok := reg.ProcessorFor(Artifact{Modality: "image"}); ok {
+		t.Fatal("nil processor should be ignored")
+	}
+	reg.Register(MockProcessor{})
+	if processor, ok := reg.ProcessorFor(Artifact{Modality: "document"}); !ok || processor.Name() != "mock_processor" {
+		t.Fatalf("processor=%v ok=%v", processor, ok)
+	}
+}
+
 func TestProviderAdapterFiltersByModalityAndMediaType(t *testing.T) {
 	p := ProviderAdapter{
 		NameValue:  "ocr",
@@ -67,6 +85,38 @@ func TestProviderAdapterFiltersByModalityAndMediaType(t *testing.T) {
 	}
 	if p.CanProcess(Artifact{Modality: "audio", MediaType: "audio/wav"}) {
 		t.Fatalf("unexpected adapter match")
+	}
+	if p.Name() != "ocr" {
+		t.Fatalf("name=%q", p.Name())
+	}
+	reps, err := p.Process(context.Background(), ProcessorContext{}, Artifact{Modality: "image", MediaType: "image/png"})
+	if err != nil || len(reps) != 1 || reps[0].Summary != "ok" {
+		t.Fatalf("reps=%#v err=%v", reps, err)
+	}
+}
+
+func TestProviderAdapterDefaultNameAndMissingProcess(t *testing.T) {
+	p := ProviderAdapter{}
+	if p.Name() != "provider_adapter" {
+		t.Fatalf("name=%q", p.Name())
+	}
+	if p.CanProcess(Artifact{Modality: "image"}) {
+		t.Fatal("adapter without process func should not process")
+	}
+	if _, err := p.Process(context.Background(), ProcessorContext{}, Artifact{Modality: "image"}); err == nil {
+		t.Fatal("expected missing process func error")
+	}
+}
+
+func TestMockProcessorHonorsContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := (MockProcessor{}).Process(ctx, ProcessorContext{}, Artifact{Modality: "image"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err=%v", err)
+	}
+	reps, err := (MockProcessor{}).Process(context.Background(), ProcessorContext{}, Artifact{Modality: "audio", MediaType: "audio/wav"})
+	if err != nil || len(reps) != 1 || reps[0].Metadata["media_type"] != "audio/wav" {
+		t.Fatalf("reps=%#v err=%v", reps, err)
 	}
 }
 
@@ -87,6 +137,25 @@ func TestProviderProcessorProcessesImage(t *testing.T) {
 	}
 }
 
+func TestProviderProcessorCanProcessFilters(t *testing.T) {
+	withProvider := ProviderProcessor{Provider: &fakeLLMProvider{}, Modalities: map[string]bool{"image": true}, MediaTypes: map[string]bool{"image/png": true}}
+	if !withProvider.CanProcess(Artifact{Modality: "image", MediaType: "image/png"}) {
+		t.Fatal("expected image/png to be supported")
+	}
+	for _, artifact := range []Artifact{
+		{Modality: "image", MediaType: "image/jpeg"},
+		{Modality: "audio", MediaType: "image/png"},
+		{Modality: "contact", MediaType: "text/vcard"},
+	} {
+		if withProvider.CanProcess(artifact) {
+			t.Fatalf("unexpected support for %#v", artifact)
+		}
+	}
+	if (ProviderProcessor{}).CanProcess(Artifact{Modality: "image"}) {
+		t.Fatal("processor without provider should not process")
+	}
+}
+
 func TestProviderProcessorProcessesAudioTranscript(t *testing.T) {
 	provider := &fakeLLMProvider{}
 	processor := ProviderProcessor{Provider: provider, Model: "audio"}
@@ -101,6 +170,26 @@ func TestProviderProcessorProcessesAudioTranscript(t *testing.T) {
 	}
 	if provider.messages[0].ContentParts[1].InputAudio == nil {
 		t.Fatalf("messages=%#v", provider.messages)
+	}
+}
+
+func TestProviderProcessorProcessesVideoURL(t *testing.T) {
+	provider := &fakeLLMProvider{}
+	processor := ProviderProcessor{Provider: provider, Model: "video"}
+	reps, err := processor.Process(context.Background(), ProcessorContext{RequestedRepresentations: []string{"scene_notes"}}, Artifact{
+		ID: "vid-1", Modality: "video", MediaType: "video/mp4", Metadata: map[string]any{"video_url": "https://example.test/video.mp4"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reps) != 1 || reps[0].Type != "scene_notes" {
+		t.Fatalf("reps=%#v", reps)
+	}
+	if provider.messages[0].ContentParts[1].VideoURL == nil {
+		t.Fatalf("messages=%#v", provider.messages)
+	}
+	if !strings.Contains(provider.messages[0].ContentParts[0].Text, "scene_notes") {
+		t.Fatalf("prompt=%q", provider.messages[0].ContentParts[0].Text)
 	}
 }
 
@@ -167,6 +256,20 @@ func TestProviderProcessorUploadsFetchedDocumentWhenSupported(t *testing.T) {
 	}
 }
 
+func TestProviderProcessorRejectsMissingProviderAndEmptyContent(t *testing.T) {
+	if _, err := (ProviderProcessor{}).Process(context.Background(), ProcessorContext{}, Artifact{ID: "img", Modality: "image"}); err == nil {
+		t.Fatal("expected missing provider error")
+	}
+
+	provider := &fakeLLMProvider{}
+	processor := ProviderProcessor{Provider: provider}
+	provider.messages = nil
+	_, err := processor.Process(context.Background(), ProcessorContext{}, Artifact{ID: "img", Modality: "image", StorageRef: ""})
+	if err == nil {
+		t.Fatal("expected missing image url error")
+	}
+}
+
 func TestProviderProcessorUsesTranscriptionEndpointForAudio(t *testing.T) {
 	provider := &fakeTranscriptionProvider{}
 	processor := ProviderProcessor{Provider: provider, Model: "audio"}
@@ -184,6 +287,25 @@ func TestProviderProcessorUsesTranscriptionEndpointForAudio(t *testing.T) {
 	}
 	if len(provider.messages) != 0 {
 		t.Fatalf("chat should not be called: %#v", provider.messages)
+	}
+}
+
+func TestProviderProcessorPayloadHelpers(t *testing.T) {
+	payload, err := parseDataURI("data:text/plain;base64,aGVsbG8=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(payload.Data) != "hello" || payload.MediaType != "text/plain" {
+		t.Fatalf("payload=%#v", payload)
+	}
+	if _, err := parseDataURI("not-data"); err == nil {
+		t.Fatal("expected invalid data URI error")
+	}
+	if mediaFormat("audio/mpeg") != "mpeg" || mediaFormat("wav") != "wav" || mediaFormat("") != "" {
+		t.Fatalf("unexpected media formats")
+	}
+	if filenameFromContentDisposition(`attachment; filename="report.pdf"`) != "report.pdf" {
+		t.Fatalf("unexpected content-disposition filename")
 	}
 }
 
@@ -207,6 +329,25 @@ func TestHTTPProcessorPostsContextAndArtifact(t *testing.T) {
 	}
 	if sawCustomer != "c" || sawAuth != "Bearer tok" || sawArtifact != "art" || sawProcessor != "pc" || sawTrace == "" || sawBody["processor_call_id"] != "pc" || len(reps) != 1 || reps[0].Summary != "hello" {
 		t.Fatalf("headers customer=%q auth=%q artifact=%q processor=%q trace=%q body=%#v reps=%#v", sawCustomer, sawAuth, sawArtifact, sawProcessor, sawTrace, sawBody, reps)
+	}
+}
+
+func TestHTTPProcessorNameAndCanProcess(t *testing.T) {
+	processor := HTTPProcessor{NameValue: "http_ocr", BaseURL: "https://processor.example", Modalities: map[string]bool{"image": true}, MediaTypes: map[string]bool{"image/png": true}}
+	if processor.Name() != "http_ocr" {
+		t.Fatalf("name=%q", processor.Name())
+	}
+	if !processor.CanProcess(Artifact{Modality: "image", MediaType: "image/png"}) {
+		t.Fatal("expected image/png to be supported")
+	}
+	if processor.CanProcess(Artifact{Modality: "image", MediaType: "image/jpeg"}) {
+		t.Fatal("unexpected image/jpeg support")
+	}
+	if (HTTPProcessor{}).Name() != "http_processor" {
+		t.Fatalf("default name=%q", (HTTPProcessor{}).Name())
+	}
+	if (HTTPProcessor{}).CanProcess(Artifact{Modality: "image"}) {
+		t.Fatal("processor without base URL should not process")
 	}
 }
 
