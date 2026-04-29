@@ -154,6 +154,8 @@ func TestScopeJudgeUsesTwoPassImplicitIntent(t *testing.T) {
 	for _, want := range []string{
 		`Intent              string  ` + "`json:\"intent\"`",
 		`Classify intent as "direct"`,
+		`intent is "implicit", set in_scope to true`,
+		"normalizeInitialScopeJudgement(judgement, threshold)",
 		`strings.EqualFold(strings.TrimSpace(judgement.Intent), "implicit")`,
 		"scopeJudgeContext(ctx, run)",
 		`"pass": "context"`,

@@ -152,6 +152,23 @@ func TestExtractJSONObject(t *testing.T) {
 	}
 }
 
+func TestNormalizeInitialScopeJudgementKeepsImplicitProvisionallyInScope(t *testing.T) {
+	got := normalizeInitialScopeJudgement(scopeJudgement{
+		Intent:     " implicit ",
+		InScope:    false,
+		Confidence: 0.1,
+		Reason:     "needs prior context",
+	}, 0.65)
+	if got.Intent != "implicit" || !got.InScope || got.Confidence != 0.65 {
+		t.Fatalf("got=%#v", got)
+	}
+
+	direct := normalizeInitialScopeJudgement(scopeJudgement{Intent: "direct", InScope: false, Confidence: 0.1}, 0.65)
+	if direct.InScope || direct.Confidence != 0.1 {
+		t.Fatalf("direct judgement should not be changed: %#v", direct)
+	}
+}
+
 func TestStringSetTrimsAndDropsEmptyValues(t *testing.T) {
 	got := stringSet([]string{" a ", "", "b"})
 	if len(got) != 2 || !got["a"] || !got["b"] {

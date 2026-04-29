@@ -1059,6 +1059,7 @@ func (w *Worker) judgeScope(ctx context.Context, run *db.Run, content string) (s
 	if err != nil {
 		return scopeJudgement{}, err
 	}
+	judgement = normalizeInitialScopeJudgement(judgement, threshold)
 	_ = w.store.AddEvent(ctx, run.ID, "scope.judged", map[string]any{"provider": result.Provider, "model": result.Model, "intent": judgement.Intent, "pass": "initial"})
 	if strings.EqualFold(strings.TrimSpace(judgement.Intent), "implicit") {
 		scopeContext, err := w.scopeJudgeContext(ctx, run)
@@ -1082,6 +1083,7 @@ func (w *Worker) judgeScope(ctx context.Context, run *db.Run, content string) (s
 func (w *Worker) runScopeJudge(ctx context.Context, run *db.Run, modelConfig providers.ModelConfig, cfg agentProfileConfig, content, scopeContext string) (scopeJudgement, *providers.FallbackResult, error) {
 	promptText := fmt.Sprintf(`Decide whether the user request is within the configured agent domain.
 Classify intent as "direct" when the current request is understandable by itself, or "implicit" when it depends on prior conversation.
+When this prompt does not include summarized conversation context and intent is "implicit", set in_scope to true because the final scope decision requires the context pass.
 Return only JSON with keys: intent string ("direct" or "implicit"), in_scope boolean, confidence number from 0 to 1, reason string, recommended_response string.
 Allowed domains: %s
 Forbidden domains: %s
@@ -1106,6 +1108,17 @@ Available tool names: %s`, strings.Join(cfg.DomainScope.AllowedDomains, ", "), s
 		judgement.Intent = "direct"
 	}
 	return judgement, result, nil
+}
+
+func normalizeInitialScopeJudgement(judgement scopeJudgement, threshold float64) scopeJudgement {
+	if strings.EqualFold(strings.TrimSpace(judgement.Intent), "implicit") {
+		judgement.Intent = "implicit"
+		judgement.InScope = true
+		if judgement.Confidence < threshold {
+			judgement.Confidence = threshold
+		}
+	}
+	return judgement
 }
 
 func (w *Worker) scopeJudgeContext(ctx context.Context, run *db.Run) (string, error) {
