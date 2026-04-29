@@ -1910,12 +1910,54 @@ func (h *Handler) events(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
 		w.Header().Set("Content-Type", "text/event-stream")
-		for _, e := range events {
-			fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", e.ID, e.Type, e.Payload)
+		flusher, _ := w.(http.Flusher)
+		for _, event := range events {
+			writeSSEEvent(w, event)
+			after = event.ID
 		}
-		return
+		if flusher != nil {
+			flusher.Flush()
+		}
+		if r.URL.Query().Get("follow") != "true" && r.URL.Query().Get("follow") != "1" {
+			return
+		}
+		heartbeat := time.NewTicker(15 * time.Second)
+		poll := time.NewTicker(500 * time.Millisecond)
+		defer heartbeat.Stop()
+		defer poll.Stop()
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-heartbeat.C:
+				_, _ = fmt.Fprint(w, ": keepalive\n\n")
+				if flusher != nil {
+					flusher.Flush()
+				}
+			case <-poll.C:
+				page, err := h.store.EventsPage(r.Context(), run.ID, after, limit)
+				if err != nil {
+					_, _ = fmt.Fprintf(w, "event: error\ndata: %q\n\n", err.Error())
+					if flusher != nil {
+						flusher.Flush()
+					}
+					return
+				}
+				for _, event := range page {
+					writeSSEEvent(w, event)
+					after = event.ID
+				}
+				if len(page) > 0 && flusher != nil {
+					flusher.Flush()
+				}
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"events": events})
+}
+
+func writeSSEEvent(w io.Writer, event db.Event) {
+	_, _ = fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", event.ID, event.Type, event.Payload)
 }
 
 func (h *Handler) resume(w http.ResponseWriter, r *http.Request) {

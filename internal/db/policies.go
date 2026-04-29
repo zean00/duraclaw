@@ -356,6 +356,48 @@ func (s *Store) PolicyRulesForScope(ctx context.Context, customerID, agentInstan
 	return out, rows.Err()
 }
 
+func (s *Store) PolicyRulesForScopeAndPacks(ctx context.Context, customerID, agentInstanceID, enforcementMode string, policyPackIDs []string) ([]PolicyRule, error) {
+	if len(policyPackIDs) == 0 {
+		return s.PolicyRulesForScope(ctx, customerID, agentInstanceID, enforcementMode)
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT r.id::text, r.policy_pack_id::text, r.rule_type, r.enforcement_mode, r.priority, r.condition, r.action, r.instruction_text, r.status, r.created_at
+		FROM policy_rules r
+		JOIN policy_packs p ON p.id=r.policy_pack_id
+		JOIN policy_assignments a ON a.policy_pack_id=p.id
+		WHERE p.status='active'
+		AND r.status='active'
+		AND a.enabled=true
+		AND r.enforcement_mode=$1
+		AND r.policy_pack_id::text = ANY($2)
+		AND (
+			(a.customer_id='' AND a.agent_instance_id='')
+			OR (a.customer_id=$3 AND a.agent_instance_id='')
+			OR (a.customer_id=$3 AND a.agent_instance_id=$4)
+		)
+		ORDER BY
+			CASE
+				WHEN a.customer_id='' AND a.agent_instance_id='' THEN 1
+				WHEN a.customer_id=$3 AND a.agent_instance_id='' THEN 2
+				ELSE 3
+			END,
+			r.priority DESC,
+			r.created_at ASC`, enforcementMode, policyPackIDs, customerID, agentInstanceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PolicyRule
+	for rows.Next() {
+		var rule PolicyRule
+		if err := rows.Scan(&rule.ID, &rule.PolicyPackID, &rule.RuleType, &rule.EnforcementMode, &rule.Priority, &rule.Condition, &rule.Action, &rule.InstructionText, &rule.Status, &rule.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, rule)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) RecordPolicyEvaluation(ctx context.Context, ev PolicyEvaluation) error {
 	b := ev.Payload
 	if len(b) == 0 {

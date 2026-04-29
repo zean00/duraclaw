@@ -88,6 +88,8 @@ func TestWorkerAppliesVersionRuntimeConfig(t *testing.T) {
 		"knowledgeContext",
 		"updateSessionSummary",
 		"policyConfigInstructions",
+		"policyPackIDsForRun",
+		"PolicyPackIDs",
 		"pre_artifact_read",
 		"artifactRepresentationSummaries",
 		"ArtifactRepresentations",

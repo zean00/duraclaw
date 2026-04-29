@@ -96,6 +96,24 @@ func TestGeneratedArtifactRouteIsRegistered(t *testing.T) {
 	}
 }
 
+func TestEventsRouteSupportsFollowSSE(t *testing.T) {
+	raw, err := os.ReadFile("handler.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(raw)
+	for _, want := range []string{
+		`r.URL.Query().Get("follow")`,
+		"writeSSEEvent",
+		"keepalive",
+		"EventsPage(r.Context(), run.ID, after, limit)",
+	} {
+		if !strings.Contains(src, want) {
+			t.Fatalf("handler missing follow SSE hook %q", want)
+		}
+	}
+}
+
 func TestStatusForErrorMapsQuotaToTooManyRequests(t *testing.T) {
 	if got := statusForError(db.QuotaExceededError{Kind: "queued_runs", Limit: 1, Count: 2}); got != http.StatusTooManyRequests {
 		t.Fatalf("status=%d", got)

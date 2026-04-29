@@ -213,7 +213,10 @@ func validateAgentInstanceVersionSpec(spec AgentInstanceVersionSpec) error {
 	if err := validateObjectConfig("workflow_config", spec.WorkflowConfig, []string{"allowed_workflows", "disabled_workflows"}); err != nil {
 		return err
 	}
-	if err := validateObjectConfig("policy_config", spec.PolicyConfig, []string{"instructions", "blocked_terms"}); err != nil {
+	if err := validateObjectConfig("policy_config", spec.PolicyConfig, []string{"instructions", "blocked_terms", "policy_pack_ids"}); err != nil {
+		return err
+	}
+	if err := validatePolicyConfigValues(spec.PolicyConfig); err != nil {
 		return err
 	}
 	if err := validateObjectConfig("mcp_config", spec.MCPConfig, []string{"servers"}); err != nil {
@@ -257,6 +260,21 @@ func decodeConfigObject(name string, value any) (map[string]any, error) {
 		return nil, fmt.Errorf("%s must be a JSON object: %w", name, err)
 	}
 	return obj, nil
+}
+
+func validatePolicyConfigValues(value any) error {
+	obj, err := decodeConfigObject("policy_config", value)
+	if err != nil || obj == nil {
+		return err
+	}
+	for _, key := range []string{"instructions", "blocked_terms", "policy_pack_ids"} {
+		if raw, ok := obj[key]; ok {
+			if err := validateStringArray("policy_config."+key, raw); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func validateToolConfigValues(value any) error {

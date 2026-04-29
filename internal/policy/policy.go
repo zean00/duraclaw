@@ -45,6 +45,10 @@ type RuleStore interface {
 	RecordPolicyEvaluation(ctx context.Context, ev db.PolicyEvaluation) error
 }
 
+type PinnedRuleStore interface {
+	PolicyRulesForScopeAndPacks(ctx context.Context, customerID, agentInstanceID, enforcementMode string, policyPackIDs []string) ([]db.PolicyRule, error)
+}
+
 type Context struct {
 	CustomerID       string         `json:"customer_id,omitempty"`
 	UserID           string         `json:"user_id,omitempty"`
@@ -59,6 +63,7 @@ type Context struct {
 	ArtifactID       string         `json:"artifact_id,omitempty"`
 	Processor        string         `json:"processor,omitempty"`
 	Content          string         `json:"content,omitempty"`
+	PolicyPackIDs    []string       `json:"policy_pack_ids,omitempty"`
 	AdditionalFields map[string]any `json:"additional_fields,omitempty"`
 }
 
@@ -87,7 +92,17 @@ func (e *Engine) Evaluate(ctx context.Context, mode string, pc Context) (Decisio
 	if e == nil || e.store == nil || mode == "" {
 		return Decision{Action: "allow"}, nil
 	}
-	rules, err := e.store.PolicyRulesForScope(ctx, pc.CustomerID, pc.AgentInstanceID, mode)
+	var rules []db.PolicyRule
+	var err error
+	if len(pc.PolicyPackIDs) > 0 {
+		if pinned, ok := e.store.(PinnedRuleStore); ok {
+			rules, err = pinned.PolicyRulesForScopeAndPacks(ctx, pc.CustomerID, pc.AgentInstanceID, mode, pc.PolicyPackIDs)
+		} else {
+			rules, err = e.store.PolicyRulesForScope(ctx, pc.CustomerID, pc.AgentInstanceID, mode)
+		}
+	} else {
+		rules, err = e.store.PolicyRulesForScope(ctx, pc.CustomerID, pc.AgentInstanceID, mode)
+	}
 	if err != nil {
 		return Decision{}, err
 	}

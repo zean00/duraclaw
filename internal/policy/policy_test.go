@@ -32,12 +32,19 @@ func TestRejectRawArtifactMetadata(t *testing.T) {
 }
 
 type fakeRuleStore struct {
-	rules []db.PolicyRule
-	evals []db.PolicyEvaluation
+	rules       []db.PolicyRule
+	pinnedRules []db.PolicyRule
+	pinnedIDs   []string
+	evals       []db.PolicyEvaluation
 }
 
 func (s *fakeRuleStore) PolicyRulesForScope(context.Context, string, string, string) ([]db.PolicyRule, error) {
 	return s.rules, nil
+}
+
+func (s *fakeRuleStore) PolicyRulesForScopeAndPacks(_ context.Context, _, _, _ string, policyPackIDs []string) ([]db.PolicyRule, error) {
+	s.pinnedIDs = policyPackIDs
+	return s.pinnedRules, nil
 }
 
 func (s *fakeRuleStore) RecordPolicyEvaluation(_ context.Context, ev db.PolicyEvaluation) error {
@@ -71,6 +78,20 @@ func TestPromptInstructionsReturnsMatchedInstructions(t *testing.T) {
 	}
 	if len(got) != 1 || got[0] != "Be concise." {
 		t.Fatalf("got=%#v", got)
+	}
+}
+
+func TestEngineUsesPinnedPolicyPacksWhenPresent(t *testing.T) {
+	store := &fakeRuleStore{
+		rules:       []db.PolicyRule{{ID: "global", PolicyPackID: "global", RuleType: "style", EnforcementMode: "prompt", Action: "modify", InstructionText: "global"}},
+		pinnedRules: []db.PolicyRule{{ID: "pinned", PolicyPackID: "pack-1", RuleType: "style", EnforcementMode: "prompt", Action: "modify", InstructionText: "pinned"}},
+	}
+	got, err := NewEngine(store).PromptInstructions(context.Background(), Context{PolicyPackIDs: []string{"pack-1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "pinned" || len(store.pinnedIDs) != 1 || store.pinnedIDs[0] != "pack-1" {
+		t.Fatalf("got=%#v pinned=%#v", got, store.pinnedIDs)
 	}
 }
 

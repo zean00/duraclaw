@@ -157,6 +157,31 @@ func TestEventsPageHasLimit(t *testing.T) {
 	}
 }
 
+func TestPolicyRulesCanBePinnedByAgentVersion(t *testing.T) {
+	policies, err := os.ReadFile("policies.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	agents, err := os.ReadFile("agent_instances.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(policies) + string(agents)
+	for _, want := range []string{
+		"PolicyRulesForScopeAndPacks",
+		"r.policy_pack_id::text = ANY($2)",
+		"JOIN policy_assignments a ON a.policy_pack_id=p.id",
+		"a.enabled=true",
+		"(a.customer_id=$3 AND a.agent_instance_id=$4)",
+		`"policy_pack_ids"`,
+		"validatePolicyConfigValues",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("pinned policy pack support missing %q", want)
+		}
+	}
+}
+
 func TestRunByIdempotencyKeyIsCustomerScoped(t *testing.T) {
 	raw, err := os.ReadFile("store.go")
 	if err != nil {

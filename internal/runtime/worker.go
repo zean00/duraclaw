@@ -1166,6 +1166,26 @@ func (w *Worker) policyConfigInstructions(ctx context.Context, run *db.Run) (str
 	return "Agent policy configuration:\n- " + strings.Join(lines, "\n- "), nil
 }
 
+func (w *Worker) policyPackIDsForRun(ctx context.Context, run *db.Run) ([]string, error) {
+	version, err := w.store.AgentInstanceVersion(ctx, run.AgentInstanceVersionID)
+	if err != nil || version == nil || len(version.PolicyConfig) == 0 {
+		return nil, err
+	}
+	var cfg struct {
+		PolicyPackIDs []string `json:"policy_pack_ids"`
+	}
+	if err := json.Unmarshal(version.PolicyConfig, &cfg); err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, id := range cfg.PolicyPackIDs {
+		if trimmed := strings.TrimSpace(id); trimmed != "" {
+			ids = append(ids, trimmed)
+		}
+	}
+	return ids, nil
+}
+
 func (w *Worker) enforcePolicyConfigForRun(ctx context.Context, run *db.Run, content string) error {
 	version, err := w.store.AgentInstanceVersion(ctx, run.AgentInstanceVersionID)
 	if err != nil || version == nil || len(version.PolicyConfig) == 0 {
@@ -1223,6 +1243,9 @@ func (w *Worker) policyContext(run *db.Run, stepID, subject, content string) pol
 	pc := policy.Context{
 		CustomerID: run.CustomerID, UserID: run.UserID, AgentInstanceID: run.AgentInstanceID,
 		SessionID: run.SessionID, RunID: run.ID, StepID: stepID, Content: content,
+	}
+	if ids, err := w.policyPackIDsForRun(context.Background(), run); err == nil && len(ids) > 0 {
+		pc.PolicyPackIDs = ids
 	}
 	if strings.HasPrefix(subject, "duraclaw.") || subject == "echo" || subject == "remember" || subject == "list_memories" || subject == "save_preference" || subject == "list_preferences" {
 		pc.ToolName = subject
