@@ -100,12 +100,19 @@ func (r *Registry) ToProviderDefs() []providers.ToolDefinition {
 	defs := make([]providers.ToolDefinition, 0, len(names))
 	for _, name := range names {
 		tool := r.tools[name]
+		parameters := tool.Parameters()
+		if parameters == nil {
+			parameters = map[string]any{}
+		}
+		if _, ok := parameters["type"]; !ok {
+			parameters["type"] = "object"
+		}
 		defs = append(defs, providers.ToolDefinition{
 			Type: "function",
 			Function: providers.ToolFunctionDefinition{
 				Name:        tool.Name(),
 				Description: tool.Description(),
-				Parameters:  tool.Parameters(),
+				Parameters:  parameters,
 			},
 		})
 	}

@@ -467,7 +467,7 @@ func (w *Worker) agentLoopPhase(ctx context.Context, run *db.Run, text string, m
 		if err != nil {
 			return nil, err
 		}
-		messages = append(messages, providers.Message{Role: "assistant", Content: "Tool calls requested."})
+		messages = append(messages, providers.Message{Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls})
 		toolResults, err := w.executeToolCalls(ctx, run, toolStepID, resp.ToolCalls)
 		if err != nil {
 			msg := err.Error()
@@ -477,7 +477,9 @@ func (w *Worker) agentLoopPhase(ctx context.Context, run *db.Run, text string, m
 		if err := w.store.CompleteRunStep(ctx, run.ID, toolStepID, "succeeded", map[string]any{"tool_results": len(toolResults), "iteration": iteration}, nil); err != nil {
 			return nil, err
 		}
-		messages = append(messages, providers.Message{Role: "tool", Content: strings.Join(toolResults, "\n")})
+		for _, result := range toolResults {
+			messages = append(messages, providers.Message{Role: "tool", Content: result.Content, ToolCallID: result.ToolCallID})
+		}
 		if err := w.store.Checkpoint(ctx, run.ID, "tools_complete", map[string]any{"tool_calls": len(toolResults)}); err != nil {
 			return nil, err
 		}
@@ -1934,7 +1936,12 @@ func (w *Worker) toolDefinitions(ctx context.Context, run *db.Run) ([]providers.
 	return filtered, nil
 }
 
-func (w *Worker) executeToolCalls(ctx context.Context, run *db.Run, stepID string, calls []providers.ToolCall) ([]string, error) {
+type toolExecutionResult struct {
+	ToolCallID string
+	Content    string
+}
+
+func (w *Worker) executeToolCalls(ctx context.Context, run *db.Run, stepID string, calls []providers.ToolCall) ([]toolExecutionResult, error) {
 	ctx, span := observability.StartSpan(ctx, "tool_loop", attribute.String("duraclaw.run_id", run.ID), attribute.Int("duraclaw.tool_calls", len(calls)))
 	defer span.End()
 	if w.tools == nil {
@@ -1962,7 +1969,7 @@ func (w *Worker) executeToolCalls(ctx context.Context, run *db.Run, stepID strin
 			return nil, fmt.Errorf("tool call count %d exceeds configured limit %d", existing+planned, maxToolCalls)
 		}
 	}
-	results := make([]string, 0, len(calls))
+	results := make([]toolExecutionResult, 0, len(calls))
 	for _, call := range calls {
 		if err := w.toolAllowedForRun(ctx, run, call.Function.Name); err != nil {
 			return nil, err
@@ -1972,7 +1979,7 @@ func (w *Worker) executeToolCalls(ctx context.Context, run *db.Run, stepID strin
 			if err != nil {
 				return nil, err
 			}
-			results = append(results, result)
+			results = append(results, toolExecutionResult{ToolCallID: call.ID, Content: result})
 			continue
 		}
 		if _, err := w.policyEngine().Enforce(ctx, "pre_tool", w.policyContext(run, stepID, call.Function.Name, "")); err != nil {
@@ -1985,7 +1992,7 @@ func (w *Worker) executeToolCalls(ctx context.Context, run *db.Run, stepID strin
 		argsHash := db.StableArgsHash(call.Function.Name, call.Function.Arguments)
 		if !retryable {
 			if prior, ok := completed[call.Function.Name+":"+argsHash]; ok {
-				results = append(results, call.Function.Name+": "+string(prior.Result))
+				results = append(results, toolExecutionResult{ToolCallID: call.ID, Content: call.Function.Name + ": " + string(prior.Result)})
 				continue
 			}
 		}
@@ -2020,7 +2027,7 @@ func (w *Worker) executeToolCalls(ctx context.Context, run *db.Run, stepID strin
 		if _, err := w.policyEngine().Enforce(ctx, "post_tool", w.policyContext(run, stepID, call.Function.Name, result.ForLLM)); err != nil {
 			return nil, err
 		}
-		results = append(results, call.Function.Name+": "+result.ForLLM)
+		results = append(results, toolExecutionResult{ToolCallID: call.ID, Content: call.Function.Name + ": " + result.ForLLM})
 	}
 	return results, nil
 }

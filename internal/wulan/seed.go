@@ -30,6 +30,7 @@ type SeedResult struct {
 
 type Store interface {
 	CreateAgentInstanceVersion(ctx context.Context, spec db.AgentInstanceVersionSpec) (*db.AgentInstanceVersion, error)
+	CreateRecommendationItem(ctx context.Context, spec db.RecommendationItemSpec) (*db.RecommendationItem, error)
 	CreatePolicyPack(ctx context.Context, name string, version int, ownerScope string) (string, error)
 	UpsertPolicyRule(ctx context.Context, rule db.PolicyRule) (string, error)
 	AssignPolicyPack(ctx context.Context, policyPackID, customerID, agentInstanceID string, enabled bool) (string, error)
@@ -68,7 +69,7 @@ func Seed(ctx context.Context, store Store, now time.Time) (*SeedResult, error) 
 		Name:                "Wulan Assistant v1",
 		ModelConfig:         map[string]any{"primary": "openrouter/openai/gpt-4.1-mini", "fallbacks": []string{}},
 		SystemInstructions:  SystemInstructions,
-		ToolConfig:          map[string]any{"allowed_tools": []string{"remember", "list_memories", "save_preference", "list_preferences"}, "max_iterations": 4, "max_tool_calls_per_run": 3},
+		ToolConfig:          map[string]any{"allowed_tools": []string{"remember", "list_memories", "save_preference", "list_preferences"}, "max_iterations": 8, "max_tool_calls_per_run": 8},
 		WorkflowConfig:      map[string]any{"allowed_workflows": []string{}},
 		PolicyConfig:        policyConfig(packID),
 		ProfileConfig:       ProfileConfig(),
@@ -123,6 +124,9 @@ func Seed(ctx context.Context, store Store, now time.Time) (*SeedResult, error) 
 	}
 	result.BroadcastID = broadcastID
 	result.BroadcastTargetCount = count
+	if err := SeedRecommendationCatalog(ctx, store); err != nil {
+		return nil, err
+	}
 	return result, nil
 }
 
@@ -150,7 +154,50 @@ func ProfileConfig() map[string]any {
 			"scope_judge_model":     "openrouter/openai/gpt-4.1-mini",
 			"confidence_threshold":  0.65,
 		},
+		"recommendation": map[string]any{
+			"enabled":          true,
+			"timeout_ms":       5000,
+			"model":            "openrouter/openai/gpt-4.1-mini",
+			"merge_model":      "openrouter/openai/gpt-4.1-mini",
+			"max_candidates":   5,
+			"allow_sponsored":  true,
+			"disclosure_style": "soft",
+		},
 	}
+}
+
+func SeedRecommendationCatalog(ctx context.Context, store Store) error {
+	items := []db.RecommendationItemSpec{
+		{
+			CustomerID:  CustomerID,
+			Kind:        "activity",
+			Title:       "Paket Rutinitas 3 Prioritas",
+			Description: "Template ringan untuk memilih tiga prioritas harian, menyisipkan jeda Quran, dan review malam singkat bersama Wulan.",
+			Tags:        []string{"prioritas", "rutinitas", "quran", "produktif"},
+			Priority:    100,
+			Status:      "active",
+			Metadata:    map[string]any{"source": "wulan-e2e"},
+		},
+		{
+			CustomerID:  CustomerID,
+			Kind:        "promotion",
+			Title:       "Wulan Premium Reminder Pack",
+			Description: "Paket sponsor untuk pengingat rutinitas, checklist meeting, dan reminder ibadah ringan.",
+			Tags:        []string{"reminder", "meeting", "ibadah", "premium"},
+			URL:         "https://wulan.ai/",
+			Priority:    90,
+			Sponsored:   true,
+			SponsorName: "Wulan",
+			Status:      "active",
+			Metadata:    map[string]any{"source": "wulan-e2e", "disclosure": "soft"},
+		},
+	}
+	for _, item := range items {
+		if _, err := store.CreateRecommendationItem(ctx, item); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func policyConfig(packID string) map[string]any {

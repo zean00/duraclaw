@@ -52,6 +52,61 @@ func TestMessageMarshalsContentParts(t *testing.T) {
 	}
 }
 
+func TestMessageMarshalsToolCallsAndToolCallID(t *testing.T) {
+	raw, err := json.Marshal(Message{
+		Role: "assistant",
+		ToolCalls: []ToolCall{{
+			ID:   "call-1",
+			Type: "function",
+			Function: FunctionCall{
+				Name:      "list_memories",
+				Arguments: map[string]any{"limit": 3},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var assistant map[string]any
+	if err := json.Unmarshal(raw, &assistant); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := assistant["tool_calls"].([]any); !ok {
+		t.Fatalf("assistant tool calls missing: %s", raw)
+	}
+	call := assistant["tool_calls"].([]any)[0].(map[string]any)
+	fn := call["function"].(map[string]any)
+	if _, ok := fn["arguments"].(string); !ok {
+		t.Fatalf("function arguments must marshal as JSON string: %s", raw)
+	}
+	raw, err = json.Marshal(Message{Role: "tool", Content: "ok", ToolCallID: "call-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tool map[string]any
+	if err := json.Unmarshal(raw, &tool); err != nil {
+		t.Fatal(err)
+	}
+	if tool["tool_call_id"] != "call-1" || tool["content"] != "ok" {
+		t.Fatalf("tool response malformed: %s", raw)
+	}
+}
+
+func TestFunctionCallUnmarshalsStringAndObjectArguments(t *testing.T) {
+	for _, raw := range []string{
+		`{"name":"list_memories","arguments":"{\"limit\":3}"}`,
+		`{"name":"list_memories","arguments":{"limit":3}}`,
+	} {
+		var call FunctionCall
+		if err := json.Unmarshal([]byte(raw), &call); err != nil {
+			t.Fatal(err)
+		}
+		if call.Name != "list_memories" || call.Arguments["limit"] == nil {
+			t.Fatalf("call=%#v", call)
+		}
+	}
+}
+
 func TestMessageTextUsesContentPartsWhenContentBlank(t *testing.T) {
 	got := Message{ContentParts: []ContentPart{
 		{Type: "image_url", ImageURL: &ImageURLContent{URL: "https://example.test/image.png"}},

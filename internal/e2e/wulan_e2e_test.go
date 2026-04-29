@@ -311,6 +311,81 @@ func TestWulanOpenRouterLiveSmoke(t *testing.T) {
 	}
 }
 
+func TestWulanOpenRouterLiveScopeRecommendationE2E(t *testing.T) {
+	key := os.Getenv("OPENROUTER_API_KEY")
+	if key == "" {
+		t.Skip("OPENROUTER_API_KEY is not set")
+	}
+	store, pool, cleanup := e2eStore(t)
+	defer cleanup()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	if _, err := wulan.Seed(ctx, store, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	nexus := &nexusSink{}
+	registry := providers.NewRegistry("openrouter")
+	registry.Register("openrouter", providers.OpenRouterProvider{
+		APIKey: key, DefaultModel: "openai/gpt-4.1-mini", Referer: "https://duraclaw.local/e2e", Title: "Duraclaw Wulan E2E",
+	})
+	worker := runtime.NewWorkerWithProviders(store, registry, providers.ModelConfig{Primary: "openrouter/openai/gpt-4.1-mini"}, "wulan-live-e2e-worker")
+	worker.WithOutbound(outbound.NewService(store))
+	drainOutboxIfAny(t, ctx, store, nexus)
+
+	priorRun, err := store.CreateRun(ctx, db.ACPContext{
+		CustomerID: wulan.CustomerID, UserID: wulan.UserID, SessionID: "wulan-e2e-live-scope-rec", AgentInstanceID: wulan.AgentInstanceID,
+		RequestID: "nexus-cli-live-scope-rec-prior", IdempotencyKey: "nexus-cli-live-scope-rec-prior",
+	}, map[string]any{"text": "Besok aku ada meeting penting dan ingin tetap sempat baca Quran."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetRunState(ctx, priorRun.ID, "completed", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.InsertMessage(ctx, wulan.CustomerID, "wulan-e2e-live-scope-rec", priorRun.ID, "assistant", map[string]any{"text": "Siap, besok kita susun rencana ringan untuk meeting dan jeda Quran."}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertSessionSummary(ctx, wulan.CustomerID, "wulan-e2e-live-scope-rec", "", "Pengguna sedang menyiapkan hari dengan meeting penting dan ingin menjaga rutinitas Quran ringan.", map[string]any{"source": "live_e2e"}); err != nil {
+		t.Fatal(err)
+	}
+	run, err := store.CreateRun(ctx, db.ACPContext{
+		CustomerID: wulan.CustomerID, UserID: wulan.UserID, SessionID: "wulan-e2e-live-scope-rec", AgentInstanceID: wulan.AgentInstanceID,
+		RequestID: "nexus-cli-live-scope-rec", IdempotencyKey: "nexus-cli-live-scope-rec-" + fmt.Sprint(time.Now().UnixNano()),
+	}, map[string]any{"text": "Bantu susun itu jadi rencana ringan."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := worker.RunOnce(ctx); err != nil || !ok {
+		t.Fatalf("live worker ok=%v err=%v", ok, err)
+	}
+	assertRunState(t, store, run.ID, "completed")
+	answer := latestAssistantText(t, pool, run.ID)
+	lower := strings.ToLower(answer)
+	if !strings.Contains(lower, "meeting") || !strings.Contains(lower, "quran") {
+		t.Fatalf("live answer did not use implicit context: %q", answer)
+	}
+	scopeEvents := scopeJudgedEvents(t, pool, run.ID)
+	if !hasScopePass(scopeEvents, "initial") || !hasScopePass(scopeEvents, "context") {
+		t.Fatalf("expected two-pass scope events, got %#v", scopeEvents)
+	}
+	decisions, err := store.ListRecommendationDecisions(ctx, wulan.CustomerID, run.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(decisions) == 0 {
+		t.Fatalf("expected recommendation decision")
+	}
+	if decisions[0].ContextMode != "implicit_context" {
+		t.Fatalf("recommendation context mode=%q decisions=%#v", decisions[0].ContextMode, decisions)
+	}
+	if decisions[0].DeliveryStatus == "failed" || decisions[0].DeliveryStatus == "timeout" {
+		t.Fatalf("recommendation failed: %#v", decisions[0])
+	}
+	t.Logf("live Wulan answer: %s", answer)
+	t.Logf("scope events: %#v", scopeEvents)
+	t.Logf("recommendation decision: status=%s item=%v reason=%s", decisions[0].DeliveryStatus, decisions[0].SelectedItemID, decisions[0].Reason)
+}
+
 type scriptedProvider struct {
 	mu           sync.Mutex
 	FailMainOnce bool
@@ -522,6 +597,40 @@ func countPolicyMode(t *testing.T, pool db.Pool, runID, mode string) int {
 
 func countRunEvents(t *testing.T, pool db.Pool, runID, typ string) int {
 	return countWhere(t, pool, `SELECT count(*) FROM run_events WHERE run_id=$1 AND event_type=$2`, runID, typ)
+}
+
+func scopeJudgedEvents(t *testing.T, pool db.Pool, runID string) []map[string]any {
+	t.Helper()
+	rows, err := pool.Query(context.Background(), `SELECT payload FROM run_events WHERE run_id=$1 AND event_type='scope.judged' ORDER BY id`, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var events []map[string]any
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			t.Fatal(err)
+		}
+		var event map[string]any
+		if err := json.Unmarshal(raw, &event); err != nil {
+			t.Fatal(err)
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return events
+}
+
+func hasScopePass(events []map[string]any, pass string) bool {
+	for _, event := range events {
+		if got, _ := event["pass"].(string); got == pass {
+			return true
+		}
+	}
+	return false
 }
 
 func countWorkflowRuns(t *testing.T, pool db.Pool, runID string) int {

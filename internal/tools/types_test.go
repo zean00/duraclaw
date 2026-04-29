@@ -45,6 +45,18 @@ func TestRegistryConvertsToProviderDefs(t *testing.T) {
 	if defs[0].Type != "function" || defs[0].Function.Name != "echo" {
 		t.Fatalf("defs=%#v", defs)
 	}
+	if defs[0].Function.Parameters["type"] != "object" {
+		t.Fatalf("provider tool parameters must include JSON Schema object type: %#v", defs[0].Function.Parameters)
+	}
+}
+
+func TestRegistryConvertsNilParametersToObjectSchema(t *testing.T) {
+	r := NewRegistry()
+	r.Register(nilTool{name: "nil"})
+	defs := r.ToProviderDefs()
+	if len(defs) != 1 || defs[0].Function.Parameters["type"] != "object" {
+		t.Fatalf("defs=%#v", defs)
+	}
 }
 
 func TestRegistryRetryableDefaults(t *testing.T) {

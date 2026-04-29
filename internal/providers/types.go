@@ -16,17 +16,24 @@ type Message struct {
 	Role         string        `json:"role"`
 	Content      string        `json:"-"`
 	ContentParts []ContentPart `json:"-"`
+	ToolCalls    []ToolCall    `json:"-"`
+	ToolCallID   string        `json:"-"`
 }
 
 func (m Message) MarshalJSON() ([]byte, error) {
 	type wire struct {
-		Role    string `json:"role"`
-		Content any    `json:"content"`
+		Role       string     `json:"role"`
+		Content    any        `json:"content,omitempty"`
+		ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+		ToolCallID string     `json:"tool_call_id,omitempty"`
+	}
+	if m.Role == "tool" {
+		return json.Marshal(wire{Role: m.Role, Content: m.Content, ToolCallID: m.ToolCallID})
 	}
 	if len(m.ContentParts) > 0 {
-		return json.Marshal(wire{Role: m.Role, Content: m.ContentParts})
+		return json.Marshal(wire{Role: m.Role, Content: m.ContentParts, ToolCalls: m.ToolCalls})
 	}
-	return json.Marshal(wire{Role: m.Role, Content: m.Content})
+	return json.Marshal(wire{Role: m.Role, Content: m.Content, ToolCalls: m.ToolCalls})
 }
 
 func (m Message) Text() string {
@@ -91,6 +98,46 @@ type ToolCall struct {
 type FunctionCall struct {
 	Name      string         `json:"name"`
 	Arguments map[string]any `json:"arguments"`
+}
+
+func (f FunctionCall) MarshalJSON() ([]byte, error) {
+	rawArgs, err := json.Marshal(f.Arguments)
+	if err != nil {
+		return nil, err
+	}
+	type wire struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	}
+	return json.Marshal(wire{Name: f.Name, Arguments: string(rawArgs)})
+}
+
+func (f *FunctionCall) UnmarshalJSON(raw []byte) error {
+	var payload struct {
+		Name      string `json:"name"`
+		Arguments any    `json:"arguments"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return err
+	}
+	f.Name = payload.Name
+	switch args := payload.Arguments.(type) {
+	case string:
+		if strings.TrimSpace(args) == "" {
+			f.Arguments = map[string]any{}
+			return nil
+		}
+		if err := json.Unmarshal([]byte(args), &f.Arguments); err != nil {
+			return err
+		}
+	case map[string]any:
+		f.Arguments = args
+	case nil:
+		f.Arguments = map[string]any{}
+	default:
+		return fmt.Errorf("function arguments must be object or JSON string")
+	}
+	return nil
 }
 
 type UsageInfo struct {

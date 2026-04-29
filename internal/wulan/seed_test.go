@@ -28,6 +28,13 @@ func TestProfileConfigMatchesDuraclawShape(t *testing.T) {
 			ScopeJudgeModel     string   `json:"scope_judge_model"`
 			ConfidenceThreshold float64  `json:"confidence_threshold"`
 		} `json:"domain_scope"`
+		Recommendation struct {
+			Enabled       bool   `json:"enabled"`
+			TimeoutMS     int    `json:"timeout_ms"`
+			Model         string `json:"model"`
+			MergeModel    string `json:"merge_model"`
+			MaxCandidates int    `json:"max_candidates"`
+		} `json:"recommendation"`
 	}
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		t.Fatal(err)
@@ -43,6 +50,9 @@ func TestProfileConfigMatchesDuraclawShape(t *testing.T) {
 	}
 	if cfg.DomainScope.ScopeJudgeModel != "openrouter/openai/gpt-4.1-mini" {
 		t.Fatalf("scope judge model=%q", cfg.DomainScope.ScopeJudgeModel)
+	}
+	if !cfg.Recommendation.Enabled || cfg.Recommendation.TimeoutMS <= 0 || cfg.Recommendation.Model == "" || cfg.Recommendation.MergeModel == "" || cfg.Recommendation.MaxCandidates == 0 {
+		t.Fatalf("recommendation config not populated: %#v", cfg.Recommendation)
 	}
 }
 
@@ -148,6 +158,13 @@ func TestSeedAgainstPostgres(t *testing.T) {
 	}
 	if len(broadcasts) != 1 || broadcasts[0].Title != "Wulan Daily Nudge" {
 		t.Fatalf("broadcasts=%#v", broadcasts)
+	}
+	items, err := store.ListRecommendationItems(ctx, CustomerID, "active", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) < 2 {
+		t.Fatalf("recommendation items=%#v", items)
 	}
 }
 
