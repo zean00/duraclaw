@@ -104,6 +104,20 @@ func TestStoreSessionTransferAndBackgroundRunsWithPgxMock(t *testing.T) {
 	if err != nil || len(runs) != 1 {
 		t.Fatalf("runs=%#v err=%v", runs, err)
 	}
+	mock.ExpectQuery("SELECT id").WithArgs("c1", "u1", "", 100).
+		WillReturnRows(runRows().AddRow("run-1", "c1", "u1", "a1", "v1", "s1", "req", "idem", "queued", []byte(`{}`), nil, now, now, nil))
+	userRuns, err := store.UserBackgroundRuns(ctx, "c1", "u1", "", 0)
+	if err != nil || len(userRuns) != 1 {
+		t.Fatalf("userRuns=%#v err=%v", userRuns, err)
+	}
+	mock.ExpectQuery("SELECT id").WithArgs("run-1", "c1", "u1").WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow("run-1"))
+	mock.ExpectExec("UPDATE runs").WithArgs("run-1", "cancelled", (*string)(nil)).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectExec("INSERT INTO run_events").WithArgs("run-1", "run.cancelled", pgxmock.AnyArg()).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectQuery("SELECT customer_id").WithArgs("run-1").WillReturnRows(pgxmock.NewRows([]string{"customer_id"}).AddRow("c1"))
+	mock.ExpectExec("INSERT INTO observability_events").WithArgs("c1", "run-1", "run_state_changed", pgxmock.AnyArg()).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	if err := store.CancelUserBackgroundRun(ctx, "run-1", "c1", "u1"); err != nil {
+		t.Fatal(err)
+	}
 	if backgroundQuotaLockKey("c1", "a1") == 0 {
 		t.Fatal("unexpected lock key")
 	}

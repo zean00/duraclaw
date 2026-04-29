@@ -93,6 +93,24 @@ func TestStoreSchedulerJobMethodsWithPgxMock(t *testing.T) {
 	if err := store.SetSchedulerJobEnabled(ctx, "job-1", "c1", false); err != nil {
 		t.Fatal(err)
 	}
+	mock.ExpectQuery("SELECT id").WithArgs("c1", "u1", 100).
+		WillReturnRows(schedulerRows().AddRow("job-1", "c1", "cron", "* * * * *", later, []byte(`{"user_id":"u1"}`), true, nil, nil, nil, []byte(`{}`)))
+	userJobs, err := store.ListUserSchedulerJobs(ctx, "c1", "u1", 0)
+	if err != nil || len(userJobs) != 1 {
+		t.Fatalf("userJobs=%#v err=%v", userJobs, err)
+	}
+	enabled := true
+	mock.ExpectQuery("UPDATE scheduler_jobs").
+		WithArgs("job-1", "c1", "u1", nil, nil, []byte(`{"text":"go"}`), nil, enabled).
+		WillReturnRows(schedulerRows().AddRow("job-1", "c1", "cron", "* * * * *", later, []byte(`{"user_id":"u1","input":{"text":"go"}}`), true, nil, nil, nil, []byte(`{}`)))
+	updated, err := store.UpdateUserSchedulerJob(ctx, "job-1", "c1", "u1", SchedulerJobUpdate{Input: map[string]any{"text": "go"}, Enabled: &enabled})
+	if err != nil || updated.ID != "job-1" {
+		t.Fatalf("updated=%#v err=%v", updated, err)
+	}
+	mock.ExpectExec("DELETE FROM scheduler_jobs").WithArgs("job-1", "c1", "u1").WillReturnResult(pgxmock.NewResult("DELETE", 1))
+	if err := store.DeleteUserSchedulerJob(ctx, "job-1", "c1", "u1"); err != nil {
+		t.Fatal(err)
+	}
 	mock.ExpectExec("UPDATE scheduler_jobs").WithArgs("job-1", now).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	if err := store.CompleteSchedulerJob(ctx, "job-1", now, time.Time{}); err != nil {
 		t.Fatal(err)

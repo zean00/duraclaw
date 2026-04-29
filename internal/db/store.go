@@ -122,6 +122,14 @@ type SchedulerJobSpec struct {
 	Metadata        any
 }
 
+type SchedulerJobUpdate struct {
+	Schedule  *string
+	NextRunAt *time.Time
+	Input     any
+	Metadata  any
+	Enabled   *bool
+}
+
 type OutboxItem struct {
 	ID          int64           `json:"id"`
 	Topic       string          `json:"topic"`
@@ -877,11 +885,96 @@ func (s *Store) ListSchedulerJobs(ctx context.Context, customerID string, limit 
 	return jobs, rows.Err()
 }
 
+func (s *Store) ListUserSchedulerJobs(ctx context.Context, customerID, userID string, limit int) ([]SchedulerJob, error) {
+	if customerID == "" || userID == "" {
+		return nil, fmt.Errorf("customer_id and user_id are required")
+	}
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT id::text, customer_id, job_type, schedule, next_run_at, payload, enabled, lease_owner, lease_expires_at, last_fired_at, metadata
+		FROM scheduler_jobs
+		WHERE customer_id=$1 AND payload->>'user_id'=$2
+		ORDER BY next_run_at ASC
+		LIMIT $3`, customerID, userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var jobs []SchedulerJob
+	for rows.Next() {
+		var job SchedulerJob
+		if err := rows.Scan(&job.ID, &job.CustomerID, &job.JobType, &job.Schedule, &job.NextRunAt, &job.Payload, &job.Enabled, &job.LeaseOwner, &job.LeaseExpiresAt, &job.LastFiredAt, &job.Metadata); err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, job)
+	}
+	return jobs, rows.Err()
+}
+
 func (s *Store) SetSchedulerJobEnabled(ctx context.Context, jobID, customerID string, enabled bool) error {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE scheduler_jobs
 		SET enabled=$3, lease_owner=NULL, lease_expires_at=NULL
 		WHERE id=$1 AND customer_id=$2`, jobID, customerID, enabled)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("scheduler job not found")
+	}
+	return nil
+}
+
+func (s *Store) UpdateUserSchedulerJob(ctx context.Context, jobID, customerID, userID string, update SchedulerJobUpdate) (*SchedulerJob, error) {
+	if jobID == "" || customerID == "" || userID == "" {
+		return nil, fmt.Errorf("job_id, customer_id, and user_id are required")
+	}
+	if update.Schedule == nil && update.NextRunAt == nil && update.Input == nil && update.Metadata == nil && update.Enabled == nil {
+		return nil, fmt.Errorf("at least one scheduler job field is required")
+	}
+	var input []byte
+	if update.Input != nil {
+		input, _ = json.Marshal(update.Input)
+		if len(input) == 0 || string(input) == "null" {
+			input = []byte(`{}`)
+		}
+	}
+	var metadata []byte
+	if update.Metadata != nil {
+		metadata, _ = json.Marshal(update.Metadata)
+		if len(metadata) == 0 || string(metadata) == "null" {
+			metadata = []byte(`{}`)
+		}
+	}
+	var job SchedulerJob
+	err := s.pool.QueryRow(ctx, `
+		UPDATE scheduler_jobs
+		SET schedule=COALESCE($4::text, schedule),
+			next_run_at=COALESCE($5::timestamptz, next_run_at),
+			payload=CASE WHEN $6::jsonb IS NULL THEN payload ELSE jsonb_set(payload, '{input}', $6::jsonb, true) END,
+			metadata=COALESCE($7::jsonb, metadata),
+			enabled=COALESCE($8::boolean, enabled),
+			lease_owner=NULL,
+			lease_expires_at=NULL
+		WHERE id=$1 AND customer_id=$2 AND payload->>'user_id'=$3
+		RETURNING id::text, customer_id, job_type, schedule, next_run_at, payload, enabled, lease_owner, lease_expires_at, last_fired_at, metadata`,
+		jobID, customerID, userID, nullableString(update.Schedule), nullableTime(update.NextRunAt), nullableBytes(input), nullableBytes(metadata), nullableBool(update.Enabled)).
+		Scan(&job.ID, &job.CustomerID, &job.JobType, &job.Schedule, &job.NextRunAt, &job.Payload, &job.Enabled, &job.LeaseOwner, &job.LeaseExpiresAt, &job.LastFiredAt, &job.Metadata)
+	if err != nil {
+		return nil, err
+	}
+	return &job, nil
+}
+
+func (s *Store) DeleteUserSchedulerJob(ctx context.Context, jobID, customerID, userID string) error {
+	if jobID == "" || customerID == "" || userID == "" {
+		return fmt.Errorf("job_id, customer_id, and user_id are required")
+	}
+	tag, err := s.pool.Exec(ctx, `
+		DELETE FROM scheduler_jobs
+		WHERE id=$1 AND customer_id=$2 AND payload->>'user_id'=$3`, jobID, customerID, userID)
 	if err != nil {
 		return err
 	}

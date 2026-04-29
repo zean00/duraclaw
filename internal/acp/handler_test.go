@@ -197,12 +197,72 @@ func TestListSchedulerJobsRequiresCustomer(t *testing.T) {
 	}
 }
 
+func TestListUserSchedulerJobsRequiresUserScope(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/acp/scheduler/jobs?customer_id=c", nil)
+	rec := httptest.NewRecorder()
+	NewHandler(nil).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "user_id") {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+}
+
+func TestUpdateUserSchedulerJobValidatesInput(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPatch, "/acp/scheduler/jobs/job-1", strings.NewReader(`{"customer_id":"c","user_id":"u","input":{"parts":"bad"}}`))
+	rec := httptest.NewRecorder()
+	NewHandler(nil).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "parts") {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+}
+
+func TestDeleteUserSchedulerJobRequiresUserScope(t *testing.T) {
+	req := httptest.NewRequest(http.MethodDelete, "/acp/scheduler/jobs/job-1?customer_id=c", nil)
+	rec := httptest.NewRecorder()
+	NewHandler(nil).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "user_id") {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+}
+
 func TestListBackgroundRunsRequiresCustomer(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/admin/background-runs", nil)
 	rec := httptest.NewRecorder()
 	NewHandler(nil).Routes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "customer_id") {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestListUserBackgroundRunsRequiresUserScope(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/acp/background-runs?customer_id=c", nil)
+	rec := httptest.NewRecorder()
+	NewHandler(nil).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "user_id") {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+}
+
+func TestCancelUserBackgroundRunRequiresUserScope(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/acp/background-runs/run-1/cancel", strings.NewReader(`{"customer_id":"c"}`))
+	rec := httptest.NewRecorder()
+	NewHandler(nil).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "user_id") {
+		t.Fatalf("body=%s", rec.Body.String())
 	}
 }
 

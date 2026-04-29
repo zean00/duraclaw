@@ -268,3 +268,49 @@ func (s *Store) BackgroundRuns(ctx context.Context, customerID, agentInstanceID 
 	}
 	return out, rows.Err()
 }
+
+func (s *Store) UserBackgroundRuns(ctx context.Context, customerID, userID, agentInstanceID string, limit int) ([]Run, error) {
+	if customerID == "" || userID == "" {
+		return nil, fmt.Errorf("customer_id and user_id are required")
+	}
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT id::text, customer_id, user_id, agent_instance_id, COALESCE(agent_instance_version_id::text,''), session_id, request_id, idempotency_key, state, input, error, created_at, updated_at, completed_at
+		FROM runs
+		WHERE customer_id=$1
+		AND user_id=$2
+		AND ($3='' OR agent_instance_id=$3)
+		AND run_mode='background'
+		ORDER BY created_at DESC
+		LIMIT $4`, customerID, userID, agentInstanceID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Run
+	for rows.Next() {
+		var r Run
+		if err := rows.Scan(&r.ID, &r.CustomerID, &r.UserID, &r.AgentInstanceID, &r.AgentInstanceVersionID, &r.SessionID, &r.RequestID, &r.IdempotencyKey, &r.State, &r.Input, &r.Error, &r.CreatedAt, &r.UpdatedAt, &r.CompletedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) CancelUserBackgroundRun(ctx context.Context, runID, customerID, userID string) error {
+	if runID == "" || customerID == "" || userID == "" {
+		return fmt.Errorf("run_id, customer_id, and user_id are required")
+	}
+	var id string
+	if err := s.pool.QueryRow(ctx, `
+		SELECT id::text
+		FROM runs
+		WHERE id=$1 AND customer_id=$2 AND user_id=$3 AND run_mode='background'`,
+		runID, customerID, userID).Scan(&id); err != nil {
+		return err
+	}
+	return s.SetRunState(ctx, id, "cancelled", nil)
+}

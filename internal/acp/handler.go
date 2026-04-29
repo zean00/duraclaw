@@ -1071,6 +1071,89 @@ func (h *Handler) updateSchedulerJob(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"job_id": r.PathValue("job_id"), "enabled": *payload.Enabled})
 }
 
+func (h *Handler) listUserSchedulerJobs(w http.ResponseWriter, r *http.Request) {
+	customerID := r.URL.Query().Get("customer_id")
+	userID := r.URL.Query().Get("user_id")
+	if customerID == "" || userID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id and user_id are required"))
+		return
+	}
+	jobs, err := h.store.ListUserSchedulerJobs(r.Context(), customerID, userID, queryLimit(r, 100))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"scheduler_jobs": jobs})
+}
+
+func (h *Handler) updateUserSchedulerJob(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		CustomerID string         `json:"customer_id"`
+		UserID     string         `json:"user_id"`
+		Schedule   *string        `json:"schedule"`
+		NextRunAt  time.Time      `json:"next_run_at"`
+		Input      map[string]any `json:"input"`
+		Metadata   map[string]any `json:"metadata"`
+		Enabled    *bool          `json:"enabled"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if r.PathValue("job_id") == "" || payload.CustomerID == "" || payload.UserID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("job_id, customer_id, and user_id are required"))
+		return
+	}
+	if payload.Input != nil {
+		if err := validateRunInput(payload.Input); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+	}
+	if payload.Schedule != nil {
+		schedule := strings.TrimSpace(*payload.Schedule)
+		if schedule == "" {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("schedule cannot be empty"))
+			return
+		}
+		payload.Schedule = &schedule
+		if payload.NextRunAt.IsZero() {
+			next, err := scheduler.Next(schedule, time.Now().UTC())
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			payload.NextRunAt = next
+		}
+	}
+	var nextRunAt *time.Time
+	if !payload.NextRunAt.IsZero() {
+		nextRunAt = &payload.NextRunAt
+	}
+	job, err := h.store.UpdateUserSchedulerJob(r.Context(), r.PathValue("job_id"), payload.CustomerID, payload.UserID, db.SchedulerJobUpdate{
+		Schedule: payload.Schedule, NextRunAt: nextRunAt, Input: payload.Input, Metadata: payload.Metadata, Enabled: payload.Enabled,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) deleteUserSchedulerJob(w http.ResponseWriter, r *http.Request) {
+	customerID := r.URL.Query().Get("customer_id")
+	userID := r.URL.Query().Get("user_id")
+	if r.PathValue("job_id") == "" || customerID == "" || userID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("job_id, customer_id, and user_id are required"))
+		return
+	}
+	if err := h.store.DeleteUserSchedulerJob(r.Context(), r.PathValue("job_id"), customerID, userID); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"job_id": r.PathValue("job_id"), "deleted": true})
+}
+
 func (h *Handler) listObservabilityEvents(w http.ResponseWriter, r *http.Request) {
 	customerID := r.URL.Query().Get("customer_id")
 	if customerID == "" {
@@ -1113,6 +1196,41 @@ func (h *Handler) listBackgroundRuns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"background_runs": runs})
+}
+
+func (h *Handler) listUserBackgroundRuns(w http.ResponseWriter, r *http.Request) {
+	customerID := r.URL.Query().Get("customer_id")
+	userID := r.URL.Query().Get("user_id")
+	if customerID == "" || userID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id and user_id are required"))
+		return
+	}
+	runs, err := h.store.UserBackgroundRuns(r.Context(), customerID, userID, r.URL.Query().Get("agent_instance_id"), queryLimit(r, 100))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"background_runs": runs})
+}
+
+func (h *Handler) cancelUserBackgroundRun(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		CustomerID string `json:"customer_id"`
+		UserID     string `json:"user_id"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if r.PathValue("run_id") == "" || payload.CustomerID == "" || payload.UserID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("run_id, customer_id, and user_id are required"))
+		return
+	}
+	if err := h.store.CancelUserBackgroundRun(r.Context(), r.PathValue("run_id"), payload.CustomerID, payload.UserID); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": r.PathValue("run_id"), "state": "cancelled"})
 }
 
 func (h *Handler) listMCPServers(w http.ResponseWriter, r *http.Request) {
