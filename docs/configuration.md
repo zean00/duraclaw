@@ -1,0 +1,171 @@
+# Configuration
+
+Duraclaw is configured with environment variables.
+
+## Required
+
+| Variable | Description |
+| --- | --- |
+| `DATABASE_URL` | PostgreSQL connection string. |
+
+## Server
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `ADDR` | `:8080` | HTTP listen address. |
+| `HOSTNAME` | empty | Worker owner name used for leases and jobs. |
+
+## Authentication
+
+Admin and ACP routes are open by default for local development.
+
+```bash
+DURACLAW_ADMIN_TOKEN=...
+DURACLAW_ACP_TOKEN=...
+DURACLAW_REQUIRE_AUTH=true
+```
+
+When enabled, admin routes require the admin bearer token and ACP routes require the ACP bearer token.
+
+## Chat Provider
+
+The default provider is `mock`.
+
+OpenAI:
+
+```bash
+DURACLAW_PROVIDER=openai
+DURACLAW_PROVIDER_API_KEY=...
+DURACLAW_PROVIDER_MODEL=gpt-4.1-mini
+DURACLAW_PROVIDER_FALLBACKS=mock/duraclaw
+```
+
+OpenRouter:
+
+```bash
+DURACLAW_PROVIDER=openrouter
+DURACLAW_PROVIDER_API_KEY=...
+DURACLAW_PROVIDER_MODEL=openai/gpt-4.1-mini
+DURACLAW_PROVIDER_REFERER=https://your-app.example
+DURACLAW_PROVIDER_TITLE=Duraclaw
+DURACLAW_PROVIDER_FALLBACKS=mock/duraclaw
+```
+
+OpenAI-compatible or local LLM:
+
+```bash
+DURACLAW_PROVIDER=openai-compatible
+DURACLAW_PROVIDER_BASE_URL=http://localhost:11434/v1
+DURACLAW_PROVIDER_API_KEY=...
+DURACLAW_PROVIDER_MODEL=llama3.1
+DURACLAW_PROVIDER_FALLBACKS=mock/duraclaw
+```
+
+OpenAI and OpenRouter chat requests support multimodal message content arrays. ACP run parts can include `text`, `image_url`, `file`, `input_audio`, and `video_url`.
+
+## Embeddings
+
+Default embeddings use a deterministic local hash provider for tests and local development.
+
+OpenAI-compatible embeddings:
+
+```bash
+DURACLAW_EMBEDDING_PROVIDER=openai-compatible
+DURACLAW_EMBEDDING_BASE_URL=https://api.openai.com/v1
+DURACLAW_EMBEDDING_API_KEY=...
+DURACLAW_EMBEDDING_MODEL=text-embedding-3-small
+DURACLAW_EMBEDDING_DIMENSIONS=768
+```
+
+OpenRouter embeddings:
+
+```bash
+DURACLAW_EMBEDDING_PROVIDER=openrouter
+DURACLAW_EMBEDDING_API_KEY=...
+DURACLAW_EMBEDDING_MODEL=openai/text-embedding-3-small
+```
+
+## Artifact Processors
+
+HTTP artifact processor:
+
+```bash
+DURACLAW_ARTIFACT_PROCESSOR_URL=http://processor.internal
+DURACLAW_ARTIFACT_PROCESSOR_TOKEN=...
+DURACLAW_ARTIFACT_PROCESSOR_NAME=media_processor
+DURACLAW_ARTIFACT_PROCESSOR_MODALITIES=audio,image,document
+DURACLAW_ARTIFACT_PROCESSOR_MEDIA_TYPES=audio/mpeg,image/png,application/pdf,text/plain
+DURACLAW_ARTIFACT_PROCESSOR_TIMEOUT_SECONDS=60
+DURACLAW_ARTIFACT_PROCESSOR_MAX_RESPONSE_BYTES=1048576
+DURACLAW_ARTIFACT_PROCESSOR_MAX_REPRESENTATIONS=16
+DURACLAW_ARTIFACT_PROCESSOR_RAW_MEDIA_ALLOWED=false
+DURACLAW_ARTIFACT_PROCESSOR_MAX_RETRIES=0
+```
+
+Provider-backed processor:
+
+```bash
+DURACLAW_ARTIFACT_PROCESSOR_PROVIDER=openai
+DURACLAW_ARTIFACT_PROCESSOR_API_KEY=...
+DURACLAW_ARTIFACT_PROCESSOR_MODEL=gpt-4.1-mini
+DURACLAW_ARTIFACT_PROCESSOR_MODALITIES=audio,image,document,video
+```
+
+Provider processors use multimodal chat prompts and persist artifact representations such as `vision_summary`, `document_text`, `transcript`, and `video_summary`.
+
+## Generated Media Storage
+
+File storage:
+
+```bash
+DURACLAW_GENERATED_MEDIA_DIR=/var/lib/duraclaw/generated-media
+DURACLAW_GENERATED_MEDIA_REF_PREFIX=file:///var/lib/duraclaw/generated-media
+```
+
+HTTP PUT storage:
+
+```bash
+DURACLAW_GENERATED_MEDIA_HTTP_PUT_URL=https://storage.example/upload-target
+DURACLAW_GENERATED_MEDIA_HTTP_BASE_URL=https://cdn.example/generated
+DURACLAW_GENERATED_MEDIA_HTTP_HEADERS=Authorization=Bearer token
+```
+
+## MCP
+
+Global MCP servers:
+
+```bash
+DURACLAW_MCP_CONFIG='{"servers":[{"name":"tools","transport":"http","base_url":"http://mcp.internal"}]}'
+```
+
+Agent instance versions may also define `mcp_config.servers`.
+
+## Outbound Delivery
+
+Log sink is the default. Nexus delivery:
+
+```bash
+DURACLAW_OUTBOX_SINK=nexus
+NEXUS_OUTBOUND_URL=http://nexus.internal/acp/outbound
+NEXUS_TOKEN=...
+```
+
+## Session Monitor
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `DURACLAW_SESSION_MONITOR_INTERVAL_SECONDS` | `60` | How often to scan idle sessions. |
+| `DURACLAW_SESSION_MONITOR_IDLE_SECONDS` | `1800` | Idle duration before a session is eligible. |
+| `DURACLAW_SESSION_MONITOR_LIMIT` | `25` | Sessions claimed per tick. |
+| `DURACLAW_SESSION_MONITOR_MESSAGE_LIMIT` | `40` | Recent messages loaded for compaction/extraction. |
+| `DURACLAW_SESSION_COMPACTION_THRESHOLD_CHARS` | `12000` | Transcript size before summary compaction. |
+
+## Observability
+
+```bash
+DURACLAW_OTLP_ENDPOINT=http://otel-collector:4318
+DURACLAW_OTLP_HEADERS=Authorization=Bearer token
+DURACLAW_OTEL_SERVICE_NAME=duraclaw
+DURACLAW_OTEL_EXPORT_INTERVAL_SECONDS=10
+DURACLAW_OTEL_INSECURE=true
+```

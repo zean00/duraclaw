@@ -2,6 +2,17 @@
 
 Duraclaw is an ACP-native durable agent runtime. Nexus owns channel adapters and calls Duraclaw over HTTP.
 
+## Documentation
+
+Full documentation is in `docs/` and can be generated with MkDocs:
+
+```bash
+pip install mkdocs
+mkdocs serve
+```
+
+The MkDocs entrypoint is `mkdocs.yml`.
+
 ## Run
 
 ```bash
