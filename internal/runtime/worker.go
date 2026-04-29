@@ -1369,6 +1369,13 @@ func (w *Worker) processRecommendationJob(ctx context.Context, job db.Recommenda
 		_ = json.Unmarshal(job.Config, &cfg)
 	}
 	run := &db.Run{ID: derefString(job.RunID), CustomerID: job.CustomerID, UserID: job.UserID, SessionID: job.SessionID}
+	if run.ID != "" {
+		loaded, err := w.store.GetRun(ctx, run.ID)
+		if err != nil {
+			return err
+		}
+		run = loaded
+	}
 	candidates, rec, err := w.runRecommendationSelection(ctx, run, cfg, job.RecommendationContext)
 	if err != nil {
 		return err

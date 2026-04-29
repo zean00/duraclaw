@@ -181,6 +181,7 @@ func TestRecommendationPipelineReusesScopeContextDecision(t *testing.T) {
 		"scopeJudgeContext(ctx, run)",
 		`return strings.TrimSpace(content), "direct_message", nil`,
 		"CreateRecommendationJob",
+		"loaded, err := w.store.GetRun(ctx, run.ID)",
 		`Type:       "recommendation"`,
 		"mergeRecommendation(ctx, run, content, result.Result)",
 	} {
