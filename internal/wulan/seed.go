@@ -66,7 +66,7 @@ func Seed(ctx context.Context, store Store, now time.Time) (*SeedResult, error) 
 		CustomerID:          CustomerID,
 		AgentInstanceID:     AgentInstanceID,
 		Name:                "Wulan Assistant v1",
-		ModelConfig:         map[string]any{"primary": "openai/gpt-4.1-mini", "fallbacks": []string{}},
+		ModelConfig:         map[string]any{"primary": "openrouter/openai/gpt-4.1-mini", "fallbacks": []string{}},
 		SystemInstructions:  SystemInstructions,
 		ToolConfig:          map[string]any{"allowed_tools": []string{"remember", "list_memories", "save_preference", "list_preferences"}, "max_iterations": 4, "max_tool_calls_per_run": 3},
 		WorkflowConfig:      map[string]any{"allowed_workflows": []string{}},
@@ -147,7 +147,7 @@ func ProfileConfig() map[string]any {
 			"allowed_domains":       []string{"pengingat harian", "jadwal dan rutinitas", "catatan pribadi", "to-do list dan prioritas", "produktivitas harian", "pengingat shalat dan ibadah", "refleksi Quran ringan", "quotes dan motivasi harian", "ringkasan dan terjemahan sederhana"},
 			"forbidden_domains":     []string{"fatwa agama otoritatif", "diagnosis medis", "nasihat hukum", "nasihat investasi", "konten seksual eksplisit", "instruksi kekerasan atau ilegal", "manipulasi politik", "permintaan di luar fungsi asisten personal"},
 			"out_of_scope_guidance": "Tolak dengan singkat dan ramah. Jelaskan bahwa Wulan fokus pada pengingat, catatan, produktivitas, rutinitas, dan pendamping ibadah ringan. Tawarkan bantuan yang masih relevan.",
-			"scope_judge_model":     "openai/gpt-4.1-mini",
+			"scope_judge_model":     "openrouter/openai/gpt-4.1-mini",
 			"confidence_threshold":  0.65,
 		},
 	}

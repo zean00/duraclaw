@@ -28,11 +28,10 @@ func TestWulanCriticalPathE2E(t *testing.T) {
 		t.Fatal(err)
 	}
 	nexus := &nexusSink{}
-	registry := providers.NewRegistry("e2e")
+	registry := providers.NewRegistry("openrouter")
 	fake := &scriptedProvider{}
-	registry.Register("e2e", fake)
-	registry.Register("openai", fake)
-	worker := runtime.NewWorkerWithProviders(store, registry, providers.ModelConfig{Primary: "e2e/wulan"}, "wulan-e2e-worker")
+	registry.Register("openrouter", fake)
+	worker := runtime.NewWorkerWithProviders(store, registry, providers.ModelConfig{Primary: "openrouter/openai/gpt-4.1-mini"}, "wulan-e2e-worker")
 	worker.WithOutbound(outbound.NewService(store))
 	drainOutboxIfAny(t, ctx, store, nexus)
 

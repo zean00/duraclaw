@@ -41,6 +41,9 @@ func TestProfileConfigMatchesDuraclawShape(t *testing.T) {
 	if cfg.DomainScope.ConfidenceThreshold != 0.65 {
 		t.Fatalf("threshold=%v", cfg.DomainScope.ConfidenceThreshold)
 	}
+	if cfg.DomainScope.ScopeJudgeModel != "openrouter/openai/gpt-4.1-mini" {
+		t.Fatalf("scope judge model=%q", cfg.DomainScope.ScopeJudgeModel)
+	}
 }
 
 func TestWulanPolicyRulesDenySecretsAndModifyStyle(t *testing.T) {
@@ -108,6 +111,15 @@ func TestSeedAgainstPostgres(t *testing.T) {
 	}
 	if profile["personality"] == "" {
 		t.Fatalf("profile=%#v", profile)
+	}
+	var modelConfig struct {
+		Primary string `json:"primary"`
+	}
+	if err := json.Unmarshal(versions[0].ModelConfig, &modelConfig); err != nil {
+		t.Fatal(err)
+	}
+	if modelConfig.Primary != "openrouter/openai/gpt-4.1-mini" {
+		t.Fatalf("primary model=%q", modelConfig.Primary)
 	}
 	rules, err := store.ListPolicyRules(ctx, result.PolicyPackID)
 	if err != nil {
