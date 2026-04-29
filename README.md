@@ -281,6 +281,35 @@ Retention cleanup accepts `artifact_days`, `event_days`, `outbox_days`, `async_w
 Run input may include `text` and a `parts` array. Supported part types are `text`, `artifact_ref`, `location`, and `structured_data`; `artifact_ref` parts must include `data.artifact_id`.
 Run input may also include `workflow_id` or `workflow_definition_id` to execute an assigned workflow graph before the normal agent loop.
 
+## User-Scoped Reminders And Jobs
+
+Duraclaw exposes both admin-scoped and ACP user-scoped APIs for reminders, cron/one-time scheduler jobs, and long-running background runs. ACP routes enforce `X-Customer-ID` and `X-User-ID` against the requested `customer_id` and `user_id`; mismatches return not found.
+
+Reminder subscriptions are durable cron-like subscriptions. Use `schedule` with a cron expression or `@once`; when `next_run_at` is omitted, Duraclaw computes the next fire time from `schedule`.
+
+- `POST /acp/reminders` creates a user reminder subscription. Body fields: `customer_id`, `user_id`, `session_id`, `agent_instance_id`, `title`, `schedule`, `timezone`, `payload`, optional `next_run_at`, and `metadata`.
+- `GET /acp/reminders?customer_id={customer_id}&user_id={user_id}&limit=100` lists that user's reminders.
+- `PATCH /acp/reminders/{subscription_id}` updates user-owned reminder fields: `title`, `schedule`, `timezone`, `payload`, `next_run_at`, `metadata`, and `enabled`.
+- `DELETE /acp/reminders/{subscription_id}?customer_id={customer_id}&user_id={user_id}` deletes a user-owned reminder.
+
+Scheduler jobs are lower-level durable run triggers for one-time or recurring work, including research/background jobs. The scheduler creates runs from the stored `input` when the job fires.
+
+- `POST /acp/scheduler/jobs` creates a user job. Body fields: `customer_id`, `user_id`, `agent_instance_id`, `session_id`, `job_type`, `schedule`, optional `next_run_at`, `input`, and `metadata`.
+- `GET /acp/scheduler/jobs?customer_id={customer_id}&user_id={user_id}&limit=100` lists that user's jobs.
+- `PATCH /acp/scheduler/jobs/{job_id}` updates user-owned job fields: `schedule`, `next_run_at`, `input`, `metadata`, and `enabled`.
+- `DELETE /acp/scheduler/jobs/{job_id}?customer_id={customer_id}&user_id={user_id}` deletes a user-owned job.
+
+Background runs are durable runs created for long-running or asynchronous work. User-scoped management supports listing and cancellation:
+
+- `GET /acp/background-runs?customer_id={customer_id}&user_id={user_id}&agent_instance_id={agent_instance_id}&limit=100`
+- `POST /acp/background-runs/{run_id}/cancel` with body `{"customer_id":"...","user_id":"..."}`
+
+Admin routes provide customer-wide management for the same primitives:
+
+- `POST /admin/reminders/subscriptions`, `GET /admin/reminders/subscriptions`, `PATCH /admin/reminders/subscriptions/{subscription_id}`
+- `POST /admin/scheduler/jobs`, `GET /admin/scheduler/jobs`, `PATCH /admin/scheduler/jobs/{job_id}`
+- `GET /admin/background-runs`
+
 Workflow graph execution v1 is a durable DAG runner. It persists node states and edge activations, runs dependency-ready nodes concurrently with a default limit of 4, treats merge nodes as `all_active` joins, and supports retry/timeout policies on nodes.
 
 Supported node types:
