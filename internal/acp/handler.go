@@ -847,6 +847,9 @@ func (h *Handler) createReminderSubscription(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id, user_id, session_id, agent_instance_id, and schedule are required"))
 		return
 	}
+	if strings.HasPrefix(r.URL.Path, "/acp/") && !requireACPIdentityMatch(w, r, payload.CustomerID, payload.UserID) {
+		return
+	}
 	if payload.NextRunAt.IsZero() {
 		next, err := scheduler.Next(payload.Schedule, time.Now().UTC())
 		if err != nil {
@@ -907,6 +910,9 @@ func (h *Handler) listUserReminderSubscriptions(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id and user_id are required"))
 		return
 	}
+	if !requireACPIdentityMatch(w, r, customerID, userID) {
+		return
+	}
 	subs, err := h.store.ListReminderSubscriptions(r.Context(), customerID, userID, queryLimit(r, 100))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -935,6 +941,9 @@ func (h *Handler) updateUserReminderSubscription(w http.ResponseWriter, r *http.
 		writeError(w, http.StatusBadRequest, fmt.Errorf("subscription_id, customer_id, and user_id are required"))
 		return
 	}
+	if !requireACPIdentityMatch(w, r, payload.CustomerID, payload.UserID) {
+		return
+	}
 	if payload.Schedule != nil {
 		schedule := strings.TrimSpace(*payload.Schedule)
 		if schedule == "" {
@@ -942,12 +951,12 @@ func (h *Handler) updateUserReminderSubscription(w http.ResponseWriter, r *http.
 			return
 		}
 		payload.Schedule = &schedule
+		if _, err := scheduler.Next(schedule, time.Now().UTC()); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
 		if payload.NextRunAt.IsZero() {
-			next, err := scheduler.Next(schedule, time.Now().UTC())
-			if err != nil {
-				writeError(w, http.StatusBadRequest, err)
-				return
-			}
+			next, _ := scheduler.Next(schedule, time.Now().UTC())
 			payload.NextRunAt = next
 		}
 	}
@@ -971,6 +980,9 @@ func (h *Handler) deleteUserReminderSubscription(w http.ResponseWriter, r *http.
 	userID := r.URL.Query().Get("user_id")
 	if r.PathValue("subscription_id") == "" || customerID == "" || userID == "" {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("subscription_id, customer_id, and user_id are required"))
+		return
+	}
+	if !requireACPIdentityMatch(w, r, customerID, userID) {
 		return
 	}
 	if err := h.store.DeleteUserReminderSubscription(r.Context(), r.PathValue("subscription_id"), customerID, userID); err != nil {
@@ -998,6 +1010,9 @@ func (h *Handler) createSchedulerJob(w http.ResponseWriter, r *http.Request) {
 	}
 	if payload.CustomerID == "" || payload.UserID == "" || payload.AgentInstanceID == "" || payload.SessionID == "" || payload.Schedule == "" {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id, user_id, agent_instance_id, session_id, and schedule are required"))
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/acp/") && !requireACPIdentityMatch(w, r, payload.CustomerID, payload.UserID) {
 		return
 	}
 	if payload.Input == nil {
@@ -1078,6 +1093,9 @@ func (h *Handler) listUserSchedulerJobs(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id and user_id are required"))
 		return
 	}
+	if !requireACPIdentityMatch(w, r, customerID, userID) {
+		return
+	}
 	jobs, err := h.store.ListUserSchedulerJobs(r.Context(), customerID, userID, queryLimit(r, 100))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -1104,6 +1122,9 @@ func (h *Handler) updateUserSchedulerJob(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, fmt.Errorf("job_id, customer_id, and user_id are required"))
 		return
 	}
+	if !requireACPIdentityMatch(w, r, payload.CustomerID, payload.UserID) {
+		return
+	}
 	if payload.Input != nil {
 		if err := validateRunInput(payload.Input); err != nil {
 			writeError(w, http.StatusBadRequest, err)
@@ -1117,12 +1138,12 @@ func (h *Handler) updateUserSchedulerJob(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		payload.Schedule = &schedule
+		if _, err := scheduler.Next(schedule, time.Now().UTC()); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
 		if payload.NextRunAt.IsZero() {
-			next, err := scheduler.Next(schedule, time.Now().UTC())
-			if err != nil {
-				writeError(w, http.StatusBadRequest, err)
-				return
-			}
+			next, _ := scheduler.Next(schedule, time.Now().UTC())
 			payload.NextRunAt = next
 		}
 	}
@@ -1145,6 +1166,9 @@ func (h *Handler) deleteUserSchedulerJob(w http.ResponseWriter, r *http.Request)
 	userID := r.URL.Query().Get("user_id")
 	if r.PathValue("job_id") == "" || customerID == "" || userID == "" {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("job_id, customer_id, and user_id are required"))
+		return
+	}
+	if !requireACPIdentityMatch(w, r, customerID, userID) {
 		return
 	}
 	if err := h.store.DeleteUserSchedulerJob(r.Context(), r.PathValue("job_id"), customerID, userID); err != nil {
@@ -1205,6 +1229,9 @@ func (h *Handler) listUserBackgroundRuns(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id and user_id are required"))
 		return
 	}
+	if !requireACPIdentityMatch(w, r, customerID, userID) {
+		return
+	}
 	runs, err := h.store.UserBackgroundRuns(r.Context(), customerID, userID, r.URL.Query().Get("agent_instance_id"), queryLimit(r, 100))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -1224,6 +1251,9 @@ func (h *Handler) cancelUserBackgroundRun(w http.ResponseWriter, r *http.Request
 	}
 	if r.PathValue("run_id") == "" || payload.CustomerID == "" || payload.UserID == "" {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("run_id, customer_id, and user_id are required"))
+		return
+	}
+	if !requireACPIdentityMatch(w, r, payload.CustomerID, payload.UserID) {
 		return
 	}
 	if err := h.store.CancelUserBackgroundRun(r.Context(), r.PathValue("run_id"), payload.CustomerID, payload.UserID); err != nil {
@@ -2202,6 +2232,20 @@ func requireCustomerHeader(w http.ResponseWriter, r *http.Request) (string, bool
 		return "", false
 	}
 	return customerID, true
+}
+
+func requireACPIdentityMatch(w http.ResponseWriter, r *http.Request, customerID, userID string) bool {
+	headerCustomerID := strings.TrimSpace(r.Header.Get("X-Customer-ID"))
+	headerUserID := strings.TrimSpace(r.Header.Get("X-User-ID"))
+	if headerCustomerID == "" || headerUserID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("missing required headers X-Customer-ID and X-User-ID"))
+		return false
+	}
+	if headerCustomerID != customerID || headerUserID != userID {
+		writeError(w, http.StatusNotFound, fmt.Errorf("resource not found"))
+		return false
+	}
+	return true
 }
 
 func (h *Handler) requireRunAccess(w http.ResponseWriter, r *http.Request, c db.ACPContext) (*db.Run, bool) {

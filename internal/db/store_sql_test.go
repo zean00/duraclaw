@@ -34,6 +34,26 @@ func TestStoreHasQueueStatsForReadiness(t *testing.T) {
 	}
 }
 
+func TestStorePersistsSchedulerJobScopeColumns(t *testing.T) {
+	raw, err := os.ReadFile("store.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw)
+	for _, want := range []string{
+		"INSERT INTO scheduler_jobs(customer_id,job_type,schedule,next_run_at,payload,metadata,user_id,agent_instance_id,session_id)",
+		"WHERE customer_id=$1 AND user_id=$2",
+		"WHERE id=$1 AND customer_id=$2 AND user_id=$3",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("scheduler job scope SQL missing %q", want)
+		}
+	}
+	if strings.Contains(sql, "payload->>'user_id'=$") {
+		t.Fatal("user-scoped scheduler management must not rely on payload user_id")
+	}
+}
+
 func TestEnsureSessionDoesNotImplicitlyReassignAgentInstance(t *testing.T) {
 	raw, err := os.ReadFile("store.go")
 	if err != nil {

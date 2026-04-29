@@ -254,3 +254,22 @@ func TestTwelfthMigrationContainsAgentProfileAndSessionMonitor(t *testing.T) {
 		}
 	}
 }
+
+func TestThirteenthMigrationContainsSchedulerJobScope(t *testing.T) {
+	raw, err := migrationFS.ReadFile("migrations/0013_scheduler_job_scope.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw)
+	for _, want := range []string{
+		"ALTER TABLE scheduler_jobs ADD COLUMN IF NOT EXISTS user_id",
+		"ALTER TABLE scheduler_jobs ADD COLUMN IF NOT EXISTS agent_instance_id",
+		"ALTER TABLE scheduler_jobs ADD COLUMN IF NOT EXISTS session_id",
+		"payload->>'user_id'",
+		"scheduler_jobs_customer_user_idx",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("migration missing %q", want)
+		}
+	}
+}

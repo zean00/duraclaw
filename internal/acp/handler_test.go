@@ -211,6 +211,8 @@ func TestListUserSchedulerJobsRequiresUserScope(t *testing.T) {
 
 func TestUpdateUserSchedulerJobValidatesInput(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPatch, "/acp/scheduler/jobs/job-1", strings.NewReader(`{"customer_id":"c","user_id":"u","input":{"parts":"bad"}}`))
+	req.Header.Set("X-Customer-ID", "c")
+	req.Header.Set("X-User-ID", "u")
 	rec := httptest.NewRecorder()
 	NewHandler(nil).Routes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
@@ -218,6 +220,31 @@ func TestUpdateUserSchedulerJobValidatesInput(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "parts") {
 		t.Fatalf("body=%s", rec.Body.String())
+	}
+}
+
+func TestUpdateUserSchedulerJobValidatesScheduleWithExplicitNextRun(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPatch, "/acp/scheduler/jobs/job-1", strings.NewReader(`{"customer_id":"c","user_id":"u","schedule":"not cron","next_run_at":"2030-01-01T00:00:00Z"}`))
+	req.Header.Set("X-Customer-ID", "c")
+	req.Header.Set("X-User-ID", "u")
+	rec := httptest.NewRecorder()
+	NewHandler(nil).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "expected exactly 5 fields") {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+}
+
+func TestUserSchedulerJobRejectsHeaderMismatch(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/acp/scheduler/jobs?customer_id=c&user_id=other", nil)
+	req.Header.Set("X-Customer-ID", "c")
+	req.Header.Set("X-User-ID", "u")
+	rec := httptest.NewRecorder()
+	NewHandler(nil).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -351,6 +378,8 @@ func TestListUserReminderSubscriptionsRequiresUserScope(t *testing.T) {
 
 func TestUpdateUserReminderSubscriptionValidatesSchedule(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPatch, "/acp/reminders/sub-1", strings.NewReader(`{"customer_id":"c","user_id":"u","schedule":" "}`))
+	req.Header.Set("X-Customer-ID", "c")
+	req.Header.Set("X-User-ID", "u")
 	rec := httptest.NewRecorder()
 	NewHandler(nil).Routes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
@@ -358,6 +387,31 @@ func TestUpdateUserReminderSubscriptionValidatesSchedule(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "schedule") {
 		t.Fatalf("body=%s", rec.Body.String())
+	}
+}
+
+func TestUpdateUserReminderSubscriptionValidatesScheduleWithExplicitNextRun(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPatch, "/acp/reminders/sub-1", strings.NewReader(`{"customer_id":"c","user_id":"u","schedule":"not cron","next_run_at":"2030-01-01T00:00:00Z"}`))
+	req.Header.Set("X-Customer-ID", "c")
+	req.Header.Set("X-User-ID", "u")
+	rec := httptest.NewRecorder()
+	NewHandler(nil).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "expected exactly 5 fields") {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+}
+
+func TestUserReminderRejectsHeaderMismatch(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/acp/reminders?customer_id=c&user_id=other", nil)
+	req.Header.Set("X-Customer-ID", "c")
+	req.Header.Set("X-User-ID", "u")
+	rec := httptest.NewRecorder()
+	NewHandler(nil).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

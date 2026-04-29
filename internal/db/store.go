@@ -852,10 +852,10 @@ func (s *Store) CreateSchedulerJob(ctx context.Context, spec SchedulerJobSpec) (
 	}
 	var job SchedulerJob
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO scheduler_jobs(customer_id,job_type,schedule,next_run_at,payload,metadata)
-		VALUES($1,$2,$3,$4,$5,$6)
+		INSERT INTO scheduler_jobs(customer_id,job_type,schedule,next_run_at,payload,metadata,user_id,agent_instance_id,session_id)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
 		RETURNING id::text, customer_id, job_type, schedule, next_run_at, payload, enabled, lease_owner, lease_expires_at, last_fired_at, metadata`,
-		spec.CustomerID, jobType, spec.Schedule, spec.NextRunAt, payload, metadata).
+		spec.CustomerID, jobType, spec.Schedule, spec.NextRunAt, payload, metadata, spec.UserID, spec.AgentInstanceID, spec.SessionID).
 		Scan(&job.ID, &job.CustomerID, &job.JobType, &job.Schedule, &job.NextRunAt, &job.Payload, &job.Enabled, &job.LeaseOwner, &job.LeaseExpiresAt, &job.LastFiredAt, &job.Metadata)
 	return &job, err
 }
@@ -895,7 +895,7 @@ func (s *Store) ListUserSchedulerJobs(ctx context.Context, customerID, userID st
 	rows, err := s.pool.Query(ctx, `
 		SELECT id::text, customer_id, job_type, schedule, next_run_at, payload, enabled, lease_owner, lease_expires_at, last_fired_at, metadata
 		FROM scheduler_jobs
-		WHERE customer_id=$1 AND payload->>'user_id'=$2
+		WHERE customer_id=$1 AND user_id=$2
 		ORDER BY next_run_at ASC
 		LIMIT $3`, customerID, userID, limit)
 	if err != nil {
@@ -958,7 +958,7 @@ func (s *Store) UpdateUserSchedulerJob(ctx context.Context, jobID, customerID, u
 			enabled=COALESCE($8::boolean, enabled),
 			lease_owner=NULL,
 			lease_expires_at=NULL
-		WHERE id=$1 AND customer_id=$2 AND payload->>'user_id'=$3
+		WHERE id=$1 AND customer_id=$2 AND user_id=$3
 		RETURNING id::text, customer_id, job_type, schedule, next_run_at, payload, enabled, lease_owner, lease_expires_at, last_fired_at, metadata`,
 		jobID, customerID, userID, nullableString(update.Schedule), nullableTime(update.NextRunAt), nullableBytes(input), nullableBytes(metadata), nullableBool(update.Enabled)).
 		Scan(&job.ID, &job.CustomerID, &job.JobType, &job.Schedule, &job.NextRunAt, &job.Payload, &job.Enabled, &job.LeaseOwner, &job.LeaseExpiresAt, &job.LastFiredAt, &job.Metadata)
@@ -974,7 +974,7 @@ func (s *Store) DeleteUserSchedulerJob(ctx context.Context, jobID, customerID, u
 	}
 	tag, err := s.pool.Exec(ctx, `
 		DELETE FROM scheduler_jobs
-		WHERE id=$1 AND customer_id=$2 AND payload->>'user_id'=$3`, jobID, customerID, userID)
+		WHERE id=$1 AND customer_id=$2 AND user_id=$3`, jobID, customerID, userID)
 	if err != nil {
 		return err
 	}
