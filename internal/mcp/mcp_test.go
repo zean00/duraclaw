@@ -34,6 +34,24 @@ func TestManagerRegistersHTTPClient(t *testing.T) {
 	}
 }
 
+func TestManagerStatusesAndUnregister(t *testing.T) {
+	manager := NewManager()
+	manager.Register("b", listingClient{})
+	manager.Register("a", listingClient{})
+	statuses := manager.Statuses()
+	if len(statuses) != 2 || statuses[0].Name != "a" || statuses[1].Name != "b" {
+		t.Fatalf("statuses=%#v", statuses)
+	}
+	manager.Unregister("a")
+	if _, ok := manager.Client("a"); ok {
+		t.Fatal("expected client to be unregistered")
+	}
+	if (*Manager)(nil).Statuses() != nil {
+		t.Fatal("nil manager should have no statuses")
+	}
+	(*Manager)(nil).Unregister("missing")
+}
+
 func TestRegisterHTTPDoesNotRetryByDefault(t *testing.T) {
 	manager := NewManager()
 	client := &retryClient{}

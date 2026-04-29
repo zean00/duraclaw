@@ -11,6 +11,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/pashagolub/pgxmock/v4"
 )
 
 type adminMCPClient struct{}
@@ -695,6 +698,95 @@ func TestRetentionValidatesJSONBeforeStore(t *testing.T) {
 	NewHandler(nil).Routes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRetentionRunsAgainstStore(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	mock.ExpectExec("UPDATE artifacts").WithArgs(pgxmock.AnyArg()).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectExec("DELETE FROM run_events").WithArgs(pgxmock.AnyArg()).WillReturnResult(pgxmock.NewResult("DELETE", 2))
+	mock.ExpectExec("DELETE FROM async_outbox").WithArgs(pgxmock.AnyArg()).WillReturnResult(pgxmock.NewResult("DELETE", 3))
+	mock.ExpectExec("DELETE FROM async_write_jobs").WithArgs(pgxmock.AnyArg()).WillReturnResult(pgxmock.NewResult("DELETE", 4))
+	mock.ExpectExec("DELETE FROM observability_events").WithArgs(pgxmock.AnyArg()).WillReturnResult(pgxmock.NewResult("DELETE", 5))
+	mock.ExpectExec("DELETE FROM broadcasts").WithArgs(pgxmock.AnyArg()).WillReturnResult(pgxmock.NewResult("DELETE", 6))
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/retention/run", strings.NewReader(`{"artifact_days":1,"event_days":1,"outbox_days":1,"async_write_days":1,"observability_days":1,"broadcast_days":1}`))
+	rec := httptest.NewRecorder()
+	NewHandler(db.NewStore(mock)).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"broadcasts_deleted":6`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRuntimeLimitRoutesUseStore(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	now := time.Now().UTC()
+	active, queued, buffer := 2, 3, 25
+	mock.ExpectExec("INSERT INTO customers").WithArgs("c1").WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectQuery("INSERT INTO customer_runtime_limits").
+		WithArgs("c1", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), []byte(`{}`)).
+		WillReturnRows(pgxmock.NewRows([]string{
+			"customer_id", "max_active_runs", "max_queued_runs", "max_workflow_runs", "max_background_runs",
+			"async_buffer_size", "max_async_payload_bytes", "async_degrade_threshold_bytes", "metadata", "updated_at",
+		}).AddRow("c1", &active, &queued, nil, nil, &buffer, nil, nil, []byte(`{}`), now))
+	req := httptest.NewRequest(http.MethodPut, "/admin/runtime-limits/customer/c1", strings.NewReader(`{"max_active_runs":2,"max_queued_runs":3,"async_buffer_size":25}`))
+	rec := httptest.NewRecorder()
+	NewHandler(db.NewStore(mock)).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"customer_id":"c1"`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	mock.ExpectQuery("SELECT customer_id").WithArgs("c1").
+		WillReturnRows(pgxmock.NewRows([]string{
+			"customer_id", "max_active_runs", "max_queued_runs", "max_workflow_runs", "max_background_runs",
+			"async_buffer_size", "max_async_payload_bytes", "async_degrade_threshold_bytes", "metadata", "updated_at",
+		}).AddRow("c1", &active, &queued, nil, nil, &buffer, nil, nil, []byte(`{}`), now))
+	mock.ExpectQuery("SELECT customer_id").WithArgs("c1").
+		WillReturnRows(pgxmock.NewRows([]string{
+			"customer_id", "max_active_runs", "max_queued_runs", "max_workflow_runs", "max_background_runs",
+			"async_buffer_size", "max_async_payload_bytes", "async_degrade_threshold_bytes", "metadata", "updated_at",
+		}).AddRow("c1", &active, &queued, nil, nil, &buffer, nil, nil, []byte(`{}`), now))
+	req = httptest.NewRequest(http.MethodGet, "/admin/runtime-limits/customer/c1", nil)
+	rec = httptest.NewRecorder()
+	NewHandler(db.NewStore(mock)).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"effective"`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestListOutboundIntentsUsesStore(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	now := time.Now().UTC()
+	outboxID := int64(7)
+	mock.ExpectQuery("SELECT id").WithArgs("c1", 100, "sent_to_nexus").
+		WillReturnRows(pgxmock.NewRows([]string{"id", "customer_id", "user_id", "session_id", "run_id", "intent_type", "payload", "status", "outbox_id", "created_at", "updated_at"}).
+			AddRow("intent-1", "c1", "u1", "s1", nil, "email", []byte(`{"ok":true}`), "sent_to_nexus", &outboxID, now, now))
+	req := httptest.NewRequest(http.MethodGet, "/admin/outbound-intents?customer_id=c1&status=sent", nil)
+	rec := httptest.NewRecorder()
+	NewHandler(db.NewStore(mock)).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"intent-1"`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }
 
