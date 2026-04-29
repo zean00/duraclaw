@@ -23,7 +23,30 @@ func integrationStore(t *testing.T) (*Store, func()) {
 		pool.Close()
 		t.Fatal(err)
 	}
+	cleanupIntegrationData(t, ctx, pool)
 	return NewStore(pool), pool.Close
+}
+
+func cleanupIntegrationData(t *testing.T, ctx context.Context, pool *Pool) {
+	t.Helper()
+	const sql = `
+DO $$
+DECLARE
+	tables text;
+BEGIN
+	SELECT string_agg(format('%I.%I', schemaname, tablename), ', ')
+	INTO tables
+	FROM pg_tables
+	WHERE schemaname = current_schema()
+		AND tablename <> 'schema_migrations';
+
+	IF tables IS NOT NULL THEN
+		EXECUTE 'TRUNCATE TABLE ' || tables || ' RESTART IDENTITY CASCADE';
+	END IF;
+END $$`
+	if _, err := pool.Exec(ctx, sql); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestStoreDurableRunHappyPathPostgres(t *testing.T) {
