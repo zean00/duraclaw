@@ -83,11 +83,11 @@ Agent instance `model_config.primary`, `model_config.fallbacks`, and `profile_co
 
 The first path segment is parsed as the Duraclaw provider. Use `openrouter/openai/gpt-4.1-mini`, not `openai/gpt-4.1-mini`, when the runtime only registers the OpenRouter provider.
 
-For the Wulan-style personal assistant profile, local E2E and live OpenRouter evals used these candidates:
+For personal-assistant style profiles, use small, low-latency models for short chat, reminders, policy checks, and scope judging. Keep reasoning disabled unless a workflow step explicitly needs more deliberation.
 
 | Use case | Recommended model config |
 | --- | --- |
-| Default Wulan baseline | `openrouter/openai/gpt-4.1-mini` |
+| Default baseline | `openrouter/openai/gpt-4.1-mini` |
 | Qwen low-latency candidate | `openrouter/qwen/qwen3.6-35b-a3b` with reasoning disabled |
 | Qwen broader-context candidate | `openrouter/qwen/qwen3.6-27b` with reasoning disabled |
 | Complex workflow planning only | Consider limited reasoning on `qwen/qwen3.6-35b-a3b` |
@@ -120,7 +120,7 @@ If a workflow needs more deliberation, use a small reasoning budget rather than 
 }
 ```
 
-Reasoning tokens count as output tokens on OpenRouter. In Wulan evals, unrestricted reasoning improved `qwen/qwen3.6-35b-a3b` quality but increased latency; `qwen/qwen3.6-27b` was unstable with reasoning enabled under short-output budgets.
+Reasoning tokens count as output tokens on OpenRouter. Prefer a small reasoning budget over unrestricted reasoning for latency-sensitive assistant paths.
 
 ## Embeddings
 
