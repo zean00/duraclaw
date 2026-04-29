@@ -2,6 +2,8 @@
 
 Duraclaw uses PostgreSQL as the durability engine. In-memory state is disposable; runs, steps, events, checkpoints, tool calls, MCP calls, model calls, artifacts, workflows, and outbound intents are persisted.
 
+The core agent loop is copied and adapted from PicoClaw. Duraclaw keeps that loop shape but wraps it in ACP-native persistence, leasing, checkpoints, policy enforcement, workflow orchestration, scheduling, outbound delivery, and multi-tenant controls.
+
 ## Main Runtime Flow
 
 ```text

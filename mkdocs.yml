@@ -13,6 +13,7 @@ nav:
       - Architecture: architecture-overview.md
       - Agent Profiles: concepts/agent-profiles.md
       - Durable Runs: concepts/durable-runs.md
+      - Reminders and Jobs: concepts/reminders-jobs.md
       - Memory, Preferences, and Knowledge: concepts/memory-preferences-knowledge.md
       - Workflows: concepts/workflows.md
       - Artifacts and Media: concepts/artifacts-media.md

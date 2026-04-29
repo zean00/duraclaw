@@ -29,23 +29,46 @@ traceparent
 
 ## Core ACP Routes
 
+Session and runs:
+
 - `GET /acp/agents`
 - `PUT /acp/sessions/{session_id}`
 - `POST /acp/sessions/{session_id}/reassign`
 - `POST /acp/runs`
-- `POST /acp/runs/{run_id}/artifacts`
-- `POST /acp/runs/{run_id}/artifacts/generate`
-- `GET /acp/runs/{run_id}/artifacts`
-- `GET /acp/artifacts/{artifact_id}/representations`
 - `GET /acp/runs/{run_id}`
 - `GET /acp/runs/{run_id}/trace`
 - `GET /acp/runs/{run_id}/background-status`
 - `GET /acp/runs/{run_id}/events`
 - `POST /acp/runs/{run_id}/resume`
 - `POST /acp/runs/{run_id}/cancel`
-- `POST /acp/outbound-intents/{intent_id}/status`
 - `GET /acp/sessions/{session_id}/runs/latest`
 - `GET /acp/sessions/{session_id}/runs/by-idempotency-key/{key}`
+
+Artifacts:
+
+- `POST /acp/runs/{run_id}/artifacts`
+- `POST /acp/runs/{run_id}/artifacts/generate`
+- `GET /acp/runs/{run_id}/artifacts`
+- `GET /acp/artifacts/{artifact_id}/representations`
+
+User-scoped scheduled work:
+
+- `POST /acp/reminders`
+- `GET /acp/reminders?customer_id={customer_id}&user_id={user_id}`
+- `PATCH /acp/reminders/{subscription_id}`
+- `DELETE /acp/reminders/{subscription_id}?customer_id={customer_id}&user_id={user_id}`
+- `POST /acp/scheduler/jobs`
+- `GET /acp/scheduler/jobs?customer_id={customer_id}&user_id={user_id}`
+- `PATCH /acp/scheduler/jobs/{job_id}`
+- `DELETE /acp/scheduler/jobs/{job_id}?customer_id={customer_id}&user_id={user_id}`
+- `GET /acp/background-runs?customer_id={customer_id}&user_id={user_id}`
+- `POST /acp/background-runs/{run_id}/cancel`
+
+Outbound:
+
+- `POST /acp/outbound-intents/{intent_id}/status`
+
+See [Reminders, Scheduler Jobs, And Background Runs](../concepts/reminders-jobs.md) for payloads and user-scoping rules.
 
 ## Run Input
 
@@ -84,6 +107,15 @@ Supported part types include `text`, `artifact_ref`, `location`, `structured_dat
 - MCP server discovery and notifications.
 - Retention cleanup.
 - Admin media generation.
+
+Admin recommendation routes:
+
+- `POST /admin/recommendations/items`
+- `GET /admin/recommendations/items?customer_id={customer_id}`
+- `PATCH /admin/recommendations/items/{item_id}`
+- `DELETE /admin/recommendations/items/{item_id}?customer_id={customer_id}`
+- `GET /admin/recommendations/decisions?customer_id={customer_id}`
+- `GET /admin/recommendations/jobs?customer_id={customer_id}`
 
 ## Outbound Status
 

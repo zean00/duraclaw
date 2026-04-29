@@ -1,6 +1,6 @@
 # Duraclaw
 
-Duraclaw is an ACP-native durable agent runtime. Nexus owns channel adapters and calls Duraclaw over HTTP.
+Duraclaw is an ACP-native durable agent runtime. Nexus owns channel adapters and calls Duraclaw over HTTP. The core agent loop is copied and adapted from PicoClaw, with Duraclaw adding ACP-native durability, PostgreSQL persistence, workflows, policy, scheduling, outbound delivery, and multi-tenant runtime controls.
 
 ## Documentation
 
@@ -12,6 +12,19 @@ mkdocs serve
 ```
 
 The MkDocs entrypoint is `mkdocs.yml`.
+
+Fast paths:
+
+- [Documentation home](docs/index.md)
+- [Installation](docs/installation.md)
+- [Configuration](docs/configuration.md)
+- [Architecture overview](docs/architecture-overview.md)
+- [ACP and Admin API](docs/interfaces/api.md)
+- [Durable runs](docs/concepts/durable-runs.md)
+- [Agent profiles, scope, and recommendations](docs/concepts/agent-profiles.md)
+- [Reminders, scheduler jobs, and background runs](docs/concepts/reminders-jobs.md)
+- [Workflows](docs/concepts/workflows.md)
+- [Memory, preferences, and knowledge](docs/concepts/memory-preferences-knowledge.md)
 
 ## Run
 
