@@ -126,7 +126,7 @@ func Decode(r io.Reader, format string) (Document, error) {
 	default:
 		return Document{}, fmt.Errorf("unsupported format %q", format)
 	}
-	return doc, nil
+	return normalizeDocument(doc)
 }
 
 func Encode(doc Document, format string) ([]byte, error) {
@@ -157,9 +157,12 @@ func decodeMap(raw json.RawMessage) (map[string]any, error) {
 func normalizeFormat(format string, raw []byte) string {
 	format = strings.ToLower(strings.TrimSpace(format))
 	switch format {
+	case "":
 	case "yml":
 		return "yaml"
 	case "yaml", "json":
+		return format
+	default:
 		return format
 	}
 	trimmed := bytes.TrimSpace(raw)
@@ -167,4 +170,16 @@ func normalizeFormat(format string, raw []byte) string {
 		return "json"
 	}
 	return "yaml"
+}
+
+func normalizeDocument(doc Document) (Document, error) {
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		return Document{}, fmt.Errorf("agent config must be JSON-compatible: %w", err)
+	}
+	var normalized Document
+	if err := json.Unmarshal(raw, &normalized); err != nil {
+		return Document{}, err
+	}
+	return normalized, nil
 }

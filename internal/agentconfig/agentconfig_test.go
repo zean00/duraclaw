@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,6 +34,9 @@ model_config:
   primary: mock/duraclaw
 profile_config:
   personality: direct
+  domain_scope:
+    allowed_domains:
+      - support
 activate_immediately: true
 `), "yaml")
 	if err != nil {
@@ -48,6 +52,14 @@ activate_immediately: true
 	}
 	if !store.imported.ActivateImmediately {
 		t.Fatalf("expected activate_immediately")
+	}
+	scope, ok := store.imported.ProfileConfig.(map[string]any)["domain_scope"].(map[string]any)
+	if !ok {
+		t.Fatalf("nested yaml objects should normalize to map[string]any: %#v", store.imported.ProfileConfig)
+	}
+	domains, ok := scope["allowed_domains"].([]any)
+	if !ok || len(domains) != 1 || domains[0] != "support" {
+		t.Fatalf("unexpected scope=%#v", scope)
 	}
 }
 
@@ -74,5 +86,12 @@ func TestExportJSONAndYAML(t *testing.T) {
 	raw, err = Encode(doc, "yaml")
 	if err != nil || !bytes.Contains(raw, []byte("agent_instance_id: a1")) {
 		t.Fatalf("yaml=%s err=%v", raw, err)
+	}
+}
+
+func TestDecodeRejectsUnsupportedFormat(t *testing.T) {
+	_, err := Decode(bytes.NewBufferString(`customer_id: c1`), "toml")
+	if err == nil || !strings.Contains(err.Error(), `unsupported format "toml"`) {
+		t.Fatalf("err=%v", err)
 	}
 }

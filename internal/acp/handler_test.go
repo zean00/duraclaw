@@ -189,6 +189,17 @@ func TestAgentInstanceVersionImportExportRoutesExist(t *testing.T) {
 	}
 }
 
+func TestAgentInstanceVersionImportRejectsOversizedBody(t *testing.T) {
+	body := strings.Repeat("x", maxJSONBodyBytes+1)
+	req := httptest.NewRequest(http.MethodPost, "/admin/agent-instances/a1/versions/import", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/yaml")
+	rec := httptest.NewRecorder()
+	NewHandler(nil).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestCreateSchedulerJobValidatesSchedule(t *testing.T) {
 	body := `{"customer_id":"c1","user_id":"u1","agent_instance_id":"a1","session_id":"s1","schedule":"not cron"}`
 	req := httptest.NewRequest(http.MethodPost, "/admin/scheduler/jobs", strings.NewReader(body))

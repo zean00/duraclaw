@@ -188,7 +188,8 @@ func (h *Handler) importAgentInstanceVersion(w http.ResponseWriter, r *http.Requ
 	if format == "" {
 		format = contentFormat(r.Header.Get("Content-Type"))
 	}
-	doc, err := agentconfig.Decode(r.Body, format)
+	limited := http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
+	doc, err := agentconfig.Decode(limited, format)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
