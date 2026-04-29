@@ -160,6 +160,85 @@ func TestWulanCriticalPathE2E(t *testing.T) {
 		}
 	})
 
+	t.Run("direct scope does not run context pass and recommendation uses direct message", func(t *testing.T) {
+		fake.Reset()
+		items, err := store.ListRecommendationItems(ctx, wulan.CustomerID, "active", 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(items) == 0 {
+			t.Fatal("expected recommendation catalog items")
+		}
+		fake.RecommendationItemID = items[0].ID
+		run := nexusSend(t, store, "direct-scope-recommendation", "Wulan, bantu susun prioritas hari ini.")
+		if ok, err := worker.RunOnce(ctx); err != nil || !ok {
+			t.Fatalf("direct scope worker ok=%v err=%v", ok, err)
+		}
+		assertRunState(t, store, run.ID, "completed")
+		scopeEvents := scopeJudgedEvents(t, pool, run.ID)
+		if !hasScopePass(scopeEvents, "initial") || hasScopePass(scopeEvents, "context") {
+			t.Fatalf("direct intent should only have initial scope pass: %#v", scopeEvents)
+		}
+		decisions, err := store.ListRecommendationDecisions(ctx, wulan.CustomerID, run.ID, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(decisions) == 0 || decisions[0].ContextMode != "direct_message" || decisions[0].DeliveryStatus != "inline_merged" {
+			t.Fatalf("direct recommendation decision=%#v", decisions)
+		}
+	})
+
+	t.Run("recommendation timeout queues durable job and outbox push", func(t *testing.T) {
+		fake.Reset()
+		items, err := store.ListRecommendationItems(ctx, wulan.CustomerID, "active", 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(items) == 0 {
+			t.Fatal("expected recommendation catalog items")
+		}
+		if err := activateWulanRecommendationTimeout(t, ctx, store, time.Millisecond); err != nil {
+			t.Fatal(err)
+		}
+		fake.RecommendationItemID = items[0].ID
+		fake.DelayRecommendation = 50 * time.Millisecond
+		run := nexusSend(t, store, "recommendation-timeout", "Wulan, bantu susun prioritas hari ini.")
+		if ok, err := worker.RunOnce(ctx); err != nil || !ok {
+			t.Fatalf("timeout worker ok=%v err=%v", ok, err)
+		}
+		assertRunState(t, store, run.ID, "completed")
+		decisions, err := store.ListRecommendationDecisions(ctx, wulan.CustomerID, run.ID, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(decisions) == 0 || decisions[0].DeliveryStatus != "timeout" {
+			t.Fatalf("expected timeout decision, got %#v", decisions)
+		}
+		jobs, err := store.ListRecommendationJobs(ctx, wulan.CustomerID, "queued", 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(jobs) == 0 {
+			t.Fatal("expected queued recommendation job")
+		}
+		fake.DelayRecommendation = 0
+		before := nexus.Count()
+		if processed, err := worker.RunRecommendationJobs(ctx, 5); err != nil || processed == 0 {
+			t.Fatalf("recommendation jobs processed=%d err=%v", processed, err)
+		}
+		drainOutbox(t, ctx, store, nexus)
+		if nexus.Count() <= before || !nexus.Contains("recommendation") {
+			t.Fatalf("recommendation outbox missing: %#v", nexus.Payloads())
+		}
+		outboundDecisions, err := store.ListRecommendationDecisions(ctx, wulan.CustomerID, run.ID, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !hasRecommendationStatus(outboundDecisions, "outbound_queued") {
+			t.Fatalf("expected outbound_queued decision, got %#v", outboundDecisions)
+		}
+	})
+
 	t.Run("workflow execution", func(t *testing.T) {
 		fake.Reset()
 		run := nexusSendInput(t, store, "workflow", map[string]any{
@@ -387,23 +466,45 @@ func TestWulanOpenRouterLiveScopeRecommendationE2E(t *testing.T) {
 }
 
 type scriptedProvider struct {
-	mu           sync.Mutex
-	FailMainOnce bool
-	failed       bool
+	mu                   sync.Mutex
+	FailMainOnce         bool
+	RecommendationItemID string
+	DelayRecommendation  time.Duration
+	failed               bool
 }
 
 func (p *scriptedProvider) Reset() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.failed = false
+	p.RecommendationItemID = ""
+	p.DelayRecommendation = 0
 }
 
 func (p *scriptedProvider) GetDefaultModel() string { return "e2e/wulan" }
 
-func (p *scriptedProvider) Chat(_ context.Context, messages []providers.Message, _ []providers.ToolDefinition, _ string, options map[string]any) (*providers.LLMResponse, error) {
+func (p *scriptedProvider) Chat(ctx context.Context, messages []providers.Message, _ []providers.ToolDefinition, _ string, options map[string]any) (*providers.LLMResponse, error) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	delayRecommendation := p.DelayRecommendation
+	recommendationItemID := p.RecommendationItemID
+	p.mu.Unlock()
 	text := joinedMessages(messages)
+	if options != nil && options["purpose"] == "recommendation" {
+		if delayRecommendation > 0 {
+			select {
+			case <-time.After(delayRecommendation):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		if recommendationItemID == "" {
+			return &providers.LLMResponse{Content: `{"should_recommend":false,"reason":"no scripted recommendation"}`, FinishReason: "stop"}, nil
+		}
+		return &providers.LLMResponse{Content: fmt.Sprintf(`{"should_recommend":true,"item_id":%q,"recommendation_text":"Kalau membantu, coba Paket Rutinitas 3 Prioritas untuk menjaga fokus harian.","reason":"matches planning request","confidence":0.9}`, recommendationItemID), FinishReason: "stop"}, nil
+	}
+	if options != nil && options["purpose"] == "recommendation_merge" {
+		return &providers.LLMResponse{Content: "Prioritas hari ini: pilih 3 hal utama, mulai dari yang paling ringan, lalu sisipkan jeda singkat untuk ibadah. Kalau membantu, coba Paket Rutinitas 3 Prioritas sebagai panduan ringan.", FinishReason: "stop"}, nil
+	}
 	if options != nil && options["purpose"] == "session_compaction" {
 		return &providers.LLMResponse{Content: "Pengguna tinggal di Bandung dan menyukai pengingat pagi jam 07:00.", FinishReason: "stop"}, nil
 	}
@@ -412,14 +513,20 @@ func (p *scriptedProvider) Chat(_ context.Context, messages []providers.Message,
 	}
 	if options != nil && options["purpose"] == "scope_judge" {
 		if strings.Contains(strings.ToLower(text), "trading kripto") {
-			return &providers.LLMResponse{Content: `{"in_scope":false,"confidence":0.95,"reason":"financial advice","recommended_response":"Maaf, ini di luar cakupan Wulan. Wulan bisa bantu pengingat, catatan, rutinitas, dan produktivitas harian."}`, FinishReason: "stop"}, nil
+			return &providers.LLMResponse{Content: `{"intent":"direct","in_scope":false,"confidence":0.95,"reason":"financial advice","recommended_response":"Maaf, ini di luar cakupan Wulan. Wulan bisa bantu pengingat, catatan, rutinitas, dan produktivitas harian."}`, FinishReason: "stop"}, nil
 		}
-		return &providers.LLMResponse{Content: `{"in_scope":true,"confidence":0.95,"reason":"personal assistant request","recommended_response":""}`, FinishReason: "stop"}, nil
+		if strings.Contains(strings.ToLower(text), "bantu susun itu") {
+			return &providers.LLMResponse{Content: `{"intent":"implicit","in_scope":true,"confidence":0.95,"reason":"follow-up personal assistant request","recommended_response":""}`, FinishReason: "stop"}, nil
+		}
+		return &providers.LLMResponse{Content: `{"intent":"direct","in_scope":true,"confidence":0.95,"reason":"personal assistant request","recommended_response":""}`, FinishReason: "stop"}, nil
 	}
+	p.mu.Lock()
 	if p.FailMainOnce && !p.failed {
 		p.failed = true
+		p.mu.Unlock()
 		return nil, errors.New("injected provider failure")
 	}
+	p.mu.Unlock()
 	switch {
 	case strings.Contains(strings.ToLower(text), "telepon mama"):
 		return &providers.LLMResponse{Content: "Pengingat dari Wulan: Telepon Mama sekarang.", FinishReason: "stop"}, nil
@@ -631,6 +738,34 @@ func hasScopePass(events []map[string]any, pass string) bool {
 		}
 	}
 	return false
+}
+
+func hasRecommendationStatus(decisions []db.RecommendationDecision, status string) bool {
+	for _, decision := range decisions {
+		if decision.DeliveryStatus == status {
+			return true
+		}
+	}
+	return false
+}
+
+func activateWulanRecommendationTimeout(t *testing.T, ctx context.Context, store *db.Store, timeout time.Duration) error {
+	t.Helper()
+	profile := wulan.ProfileConfig()
+	recommendation, _ := profile["recommendation"].(map[string]any)
+	recommendation["timeout_ms"] = int(timeout / time.Millisecond)
+	_, err := store.CreateAgentInstanceVersion(ctx, db.AgentInstanceVersionSpec{
+		CustomerID:          wulan.CustomerID,
+		AgentInstanceID:     wulan.AgentInstanceID,
+		Name:                "Wulan Assistant recommendation timeout test",
+		ModelConfig:         map[string]any{"primary": "openrouter/openai/gpt-4.1-mini", "fallbacks": []string{}},
+		SystemInstructions:  wulan.SystemInstructions,
+		ToolConfig:          map[string]any{"allowed_tools": []string{"remember", "list_memories", "save_preference", "list_preferences"}, "max_iterations": 8, "max_tool_calls_per_run": 8},
+		WorkflowConfig:      map[string]any{"allowed_workflows": []string{}},
+		ProfileConfig:       profile,
+		ActivateImmediately: true,
+	})
+	return err
 }
 
 func countWorkflowRuns(t *testing.T, pool db.Pool, runID string) int {
