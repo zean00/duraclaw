@@ -41,6 +41,43 @@ func TestLoadConfigRequiresTokensWhenAuthRequired(t *testing.T) {
 	}
 }
 
+func TestLoadConfigFailsClosedInProduction(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://example")
+	t.Setenv("DURACLAW_ENV", "production")
+	if _, err := loadConfig(); err == nil || !strings.Contains(err.Error(), "DURACLAW_REQUIRE_AUTH") {
+		t.Fatalf("expected production auth error, got %v", err)
+	}
+
+	t.Setenv("DURACLAW_REQUIRE_AUTH", "true")
+	t.Setenv("DURACLAW_ADMIN_TOKEN", "admin")
+	t.Setenv("DURACLAW_ACP_TOKEN", "acp")
+	if _, err := loadConfig(); err == nil || !strings.Contains(err.Error(), "provider") {
+		t.Fatalf("expected production mock provider error, got %v", err)
+	}
+
+	t.Setenv("DURACLAW_PROVIDER", "opneai")
+	if _, err := loadConfig(); err == nil || !strings.Contains(err.Error(), "opneai") {
+		t.Fatalf("expected production unsupported provider error, got %v", err)
+	}
+
+	t.Setenv("DURACLAW_PROVIDER", "openai")
+	if _, err := loadConfig(); err != nil {
+		t.Fatalf("unexpected production config error: %v", err)
+	}
+}
+
+func TestLoadConfigAllowsExplicitProductionMock(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://example")
+	t.Setenv("DURACLAW_ENV", "prod")
+	t.Setenv("DURACLAW_REQUIRE_AUTH", "true")
+	t.Setenv("DURACLAW_ADMIN_TOKEN", "admin")
+	t.Setenv("DURACLAW_ACP_TOKEN", "acp")
+	t.Setenv("DURACLAW_ALLOW_MOCK_IN_PRODUCTION", "true")
+	if _, err := loadConfig(); err != nil {
+		t.Fatalf("unexpected explicit mock production config error: %v", err)
+	}
+}
+
 func TestLoadConfigRejectsInvalidMCPConfig(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://example")
 	t.Setenv("DURACLAW_MCP_CONFIG", "{bad")

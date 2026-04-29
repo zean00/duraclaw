@@ -250,96 +250,12 @@ func (w *Worker) process(ctx context.Context, run *db.Run) error {
 	if err := w.store.Checkpoint(ctx, run.ID, "started", map[string]any{"state": "running"}); err != nil {
 		return err
 	}
-	workflowContext := ""
-	workflowID := workflowIDFromInput(run.Input)
-	if workflowID != "" {
-		if err := w.workflowAllowedForRun(ctx, run, workflowID); err != nil {
-			return err
-		}
-		modelConfig, err := w.modelConfigForRun(ctx, run)
-		if err != nil {
-			return err
-		}
-		toolRegistry, err := w.toolRegistryForRun(ctx, run)
-		if err != nil {
-			return err
-		}
-		mcpManager, err := w.mcpManagerForRun(ctx, run)
-		if err != nil {
-			return err
-		}
-		traceCtx := w.runTraceContext(ctx, run.ID)
-		stepID, err := w.store.StartRunStep(ctx, run.ID, "workflow_graph", map[string]any{"workflow_id": workflowID})
-		if err != nil {
-			return err
-		}
-		if _, err := w.policyEngine().Enforce(ctx, "pre_workflow", w.policyContext(run, stepID, workflowID, "")); err != nil {
-			msg := err.Error()
-			_ = w.store.CompleteRunStep(context.Background(), run.ID, stepID, "failed", nil, &msg)
-			return err
-		}
-		result, err := workflow.NewExecutor(w.store).
-			WithProviders(w.providers, modelConfig).
-			WithTools(toolRegistry).
-			WithMCP(mcpManager).
-			WithCounters(w.counters).
-			WithEmbedder(w.embedder).
-			WithPolicy(w.policyEngine()).
-			WithProcessors(w.processors).
-			ExecuteGraph(ctx, workflow.GraphRequest{
-				RunID:                run.ID,
-				CustomerID:           run.CustomerID,
-				UserID:               run.UserID,
-				AgentInstanceID:      run.AgentInstanceID,
-				SessionID:            run.SessionID,
-				RequestID:            run.RequestID,
-				TraceID:              traceCtx.TraceID,
-				TraceParent:          traceCtx.TraceParent,
-				WorkflowDefinitionID: workflowID,
-				Input:                inputMap(run.Input),
-			})
-		if err != nil {
-			msg := err.Error()
-			_ = w.store.CompleteRunStep(context.Background(), run.ID, stepID, "failed", nil, &msg)
-			return err
-		}
-		if result.State == "awaiting_user" {
-			if err := w.store.CompleteRunStep(ctx, run.ID, stepID, "succeeded", result, nil); err != nil {
-				return err
-			}
-			return runStoppedError{runID: run.ID, state: "awaiting_user"}
-		}
-		if _, err := w.policyEngine().Enforce(ctx, "post_workflow", w.policyContext(run, stepID, workflowID, workflowOutputText(result.Output))); err != nil {
-			msg := err.Error()
-			_ = w.store.CompleteRunStep(context.Background(), run.ID, stepID, "failed", nil, &msg)
-			return err
-		}
-		if err := w.store.CompleteRunStep(ctx, run.ID, stepID, "succeeded", result, nil); err != nil {
-			return err
-		}
-		if err := w.store.Checkpoint(ctx, run.ID, "workflow_graph_complete", result); err != nil {
-			return err
-		}
-		workflowContext = workflowOutputText(result.Output)
-	}
-	contextStepID, err := w.store.StartRunStep(ctx, run.ID, "build_context", map[string]any{"input_bytes": len(run.Input)})
+	workflowContext, err := w.runWorkflowPhase(ctx, run)
 	if err != nil {
 		return err
 	}
-	reprs, err := w.processArtifacts(ctx, run)
+	text, err := w.buildContextPhase(ctx, run, workflowContext)
 	if err != nil {
-		msg := err.Error()
-		_ = w.store.CompleteRunStep(context.Background(), run.ID, contextStepID, "failed", nil, &msg)
-		return err
-	}
-	text := extractText(run.Input)
-	if workflowContext != "" {
-		text = text + "\n\nWorkflow context:\n" + workflowContext
-	}
-	if len(reprs) > 0 {
-		text = text + "\n\nArtifact context:\n" + strings.Join(reprs, "\n")
-	}
-	if err := w.store.CompleteRunStep(ctx, run.ID, contextStepID, "succeeded", map[string]any{"artifact_representations": len(reprs), "context_chars": len(text)}, nil); err != nil {
 		return err
 	}
 	if err := w.ensureRunnable(ctx, run.ID); err != nil {
@@ -356,19 +272,7 @@ func (w *Worker) process(ctx context.Context, run *db.Run) error {
 		return err
 	}
 	if !scope.InScope {
-		response := strings.TrimSpace(scope.RecommendedResponse)
-		if response == "" {
-			response = "I cannot help with that request because it is outside my configured scope."
-		}
-		_ = w.store.AddEvent(ctx, run.ID, "scope.denied", map[string]any{"reason": scope.Reason, "confidence": scope.Confidence})
-		_ = w.store.AddObservabilityEvent(ctx, run.CustomerID, run.ID, "scope_denied", map[string]any{"reason": scope.Reason, "confidence": scope.Confidence})
-		msgID, err := w.store.InsertMessage(ctx, run.CustomerID, run.SessionID, run.ID, "assistant", map[string]any{
-			"parts": []map[string]any{{"type": "text", "text": response}},
-		})
-		if err != nil {
-			return err
-		}
-		return w.store.CompleteRunWithMessage(ctx, run.ID, msgID)
+		return w.completeOutOfScopeRun(ctx, run, scope)
 	}
 	messages, err := w.providerMessages(ctx, run, text)
 	if err != nil {
@@ -378,63 +282,9 @@ func (w *Worker) process(ctx context.Context, run *db.Run) error {
 	if err != nil {
 		return err
 	}
-	var resp *providers.LLMResponse
-	maxIterations, err := w.maxIterationsForRun(ctx, run)
+	resp, err := w.agentLoopPhase(ctx, run, text, messages, toolDefs)
 	if err != nil {
 		return err
-	}
-	for iteration := 1; iteration <= maxIterations; iteration++ {
-		modelStepID, err := w.store.StartRunStep(ctx, run.ID, "model_call", map[string]any{"messages": len(messages), "tools": len(toolDefs), "iteration": iteration})
-		if err != nil {
-			return err
-		}
-		if _, err := w.policyEngine().Enforce(ctx, "pre_model", w.policyContext(run, modelStepID, "", text)); err != nil {
-			msg := err.Error()
-			_ = w.store.CompleteRunStep(context.Background(), run.ID, modelStepID, "failed", nil, &msg)
-			return err
-		}
-		resp, err = w.chat(ctx, run, messages, toolDefs, map[string]any{"messages": len(messages), "tools": len(toolDefs), "iteration": iteration})
-		if err != nil {
-			msg := err.Error()
-			_ = w.store.CompleteRunStep(context.Background(), run.ID, modelStepID, "failed", nil, &msg)
-			return err
-		}
-		if _, err := w.policyEngine().Enforce(ctx, "post_model", w.policyContext(run, modelStepID, "", resp.Content)); err != nil {
-			msg := err.Error()
-			_ = w.store.CompleteRunStep(context.Background(), run.ID, modelStepID, "failed", nil, &msg)
-			return err
-		}
-		if err := w.store.CompleteRunStep(ctx, run.ID, modelStepID, "succeeded", map[string]any{"finish_reason": resp.FinishReason, "tool_calls": len(resp.ToolCalls), "iteration": iteration}, nil); err != nil {
-			return err
-		}
-		if err := w.ensureRunnable(ctx, run.ID); err != nil {
-			return err
-		}
-		if len(resp.ToolCalls) == 0 {
-			break
-		}
-		toolStepID, err := w.store.StartRunStep(ctx, run.ID, "tool_execution", map[string]any{"tool_calls": len(resp.ToolCalls), "iteration": iteration})
-		if err != nil {
-			return err
-		}
-		messages = append(messages, providers.Message{Role: "assistant", Content: "Tool calls requested."})
-		toolResults, err := w.executeToolCalls(ctx, run, toolStepID, resp.ToolCalls)
-		if err != nil {
-			msg := err.Error()
-			_ = w.store.CompleteRunStep(context.Background(), run.ID, toolStepID, "failed", nil, &msg)
-			return err
-		}
-		if err := w.store.CompleteRunStep(ctx, run.ID, toolStepID, "succeeded", map[string]any{"tool_results": len(toolResults), "iteration": iteration}, nil); err != nil {
-			return err
-		}
-		messages = append(messages, providers.Message{Role: "tool", Content: strings.Join(toolResults, "\n")})
-		if err := w.store.Checkpoint(ctx, run.ID, "tools_complete", map[string]any{"tool_calls": len(toolResults)}); err != nil {
-			return err
-		}
-		w.enqueueAsyncObservability(ctx, run, "checkpoint.tools_complete", map[string]any{"tool_results": toolResults, "iteration": iteration})
-		if iteration == maxIterations {
-			return fmt.Errorf("agent loop exceeded %d iterations", maxIterations)
-		}
 	}
 	if err := w.store.Checkpoint(ctx, run.ID, "provider_complete", map[string]any{"finish_reason": resp.FinishReason}); err != nil {
 		return err
@@ -451,6 +301,184 @@ func (w *Worker) process(ctx context.Context, run *db.Run) error {
 	}
 	_ = w.updateSessionSummary(ctx, run, resp.Content)
 	return w.store.CompleteRunWithMessage(ctx, run.ID, msgID)
+}
+
+func (w *Worker) runWorkflowPhase(ctx context.Context, run *db.Run) (string, error) {
+	workflowID := workflowIDFromInput(run.Input)
+	if workflowID == "" {
+		return "", nil
+	}
+	if err := w.workflowAllowedForRun(ctx, run, workflowID); err != nil {
+		return "", err
+	}
+	modelConfig, err := w.modelConfigForRun(ctx, run)
+	if err != nil {
+		return "", err
+	}
+	toolRegistry, err := w.toolRegistryForRun(ctx, run)
+	if err != nil {
+		return "", err
+	}
+	mcpManager, err := w.mcpManagerForRun(ctx, run)
+	if err != nil {
+		return "", err
+	}
+	traceCtx := w.runTraceContext(ctx, run.ID)
+	stepID, err := w.store.StartRunStep(ctx, run.ID, "workflow_graph", map[string]any{"workflow_id": workflowID})
+	if err != nil {
+		return "", err
+	}
+	if _, err := w.policyEngine().Enforce(ctx, "pre_workflow", w.policyContext(run, stepID, workflowID, "")); err != nil {
+		msg := err.Error()
+		_ = w.store.CompleteRunStep(context.Background(), run.ID, stepID, "failed", nil, &msg)
+		return "", err
+	}
+	result, err := workflow.NewExecutor(w.store).
+		WithProviders(w.providers, modelConfig).
+		WithTools(toolRegistry).
+		WithMCP(mcpManager).
+		WithCounters(w.counters).
+		WithEmbedder(w.embedder).
+		WithPolicy(w.policyEngine()).
+		WithProcessors(w.processors).
+		ExecuteGraph(ctx, workflow.GraphRequest{
+			RunID:                run.ID,
+			CustomerID:           run.CustomerID,
+			UserID:               run.UserID,
+			AgentInstanceID:      run.AgentInstanceID,
+			SessionID:            run.SessionID,
+			RequestID:            run.RequestID,
+			TraceID:              traceCtx.TraceID,
+			TraceParent:          traceCtx.TraceParent,
+			WorkflowDefinitionID: workflowID,
+			Input:                inputMap(run.Input),
+		})
+	if err != nil {
+		msg := err.Error()
+		_ = w.store.CompleteRunStep(context.Background(), run.ID, stepID, "failed", nil, &msg)
+		return "", err
+	}
+	if result.State == "awaiting_user" {
+		if err := w.store.CompleteRunStep(ctx, run.ID, stepID, "succeeded", result, nil); err != nil {
+			return "", err
+		}
+		return "", runStoppedError{runID: run.ID, state: "awaiting_user"}
+	}
+	outputText := workflowOutputText(result.Output)
+	if _, err := w.policyEngine().Enforce(ctx, "post_workflow", w.policyContext(run, stepID, workflowID, outputText)); err != nil {
+		msg := err.Error()
+		_ = w.store.CompleteRunStep(context.Background(), run.ID, stepID, "failed", nil, &msg)
+		return "", err
+	}
+	if err := w.store.CompleteRunStep(ctx, run.ID, stepID, "succeeded", result, nil); err != nil {
+		return "", err
+	}
+	if err := w.store.Checkpoint(ctx, run.ID, "workflow_graph_complete", result); err != nil {
+		return "", err
+	}
+	return outputText, nil
+}
+
+func (w *Worker) buildContextPhase(ctx context.Context, run *db.Run, workflowContext string) (string, error) {
+	contextStepID, err := w.store.StartRunStep(ctx, run.ID, "build_context", map[string]any{"input_bytes": len(run.Input)})
+	if err != nil {
+		return "", err
+	}
+	reprs, err := w.processArtifacts(ctx, run)
+	if err != nil {
+		msg := err.Error()
+		_ = w.store.CompleteRunStep(context.Background(), run.ID, contextStepID, "failed", nil, &msg)
+		return "", err
+	}
+	text := extractText(run.Input)
+	if workflowContext != "" {
+		text = text + "\n\nWorkflow context:\n" + workflowContext
+	}
+	if len(reprs) > 0 {
+		text = text + "\n\nArtifact context:\n" + strings.Join(reprs, "\n")
+	}
+	if err := w.store.CompleteRunStep(ctx, run.ID, contextStepID, "succeeded", map[string]any{"artifact_representations": len(reprs), "context_chars": len(text)}, nil); err != nil {
+		return "", err
+	}
+	return text, nil
+}
+
+func (w *Worker) completeOutOfScopeRun(ctx context.Context, run *db.Run, scope scopeJudgement) error {
+	response := strings.TrimSpace(scope.RecommendedResponse)
+	if response == "" {
+		response = "I cannot help with that request because it is outside my configured scope."
+	}
+	_ = w.store.AddEvent(ctx, run.ID, "scope.denied", map[string]any{"reason": scope.Reason, "confidence": scope.Confidence})
+	_ = w.store.AddObservabilityEvent(ctx, run.CustomerID, run.ID, "scope_denied", map[string]any{"reason": scope.Reason, "confidence": scope.Confidence})
+	msgID, err := w.store.InsertMessage(ctx, run.CustomerID, run.SessionID, run.ID, "assistant", map[string]any{
+		"parts": []map[string]any{{"type": "text", "text": response}},
+	})
+	if err != nil {
+		return err
+	}
+	return w.store.CompleteRunWithMessage(ctx, run.ID, msgID)
+}
+
+func (w *Worker) agentLoopPhase(ctx context.Context, run *db.Run, text string, messages []providers.Message, toolDefs []providers.ToolDefinition) (*providers.LLMResponse, error) {
+	var resp *providers.LLMResponse
+	maxIterations, err := w.maxIterationsForRun(ctx, run)
+	if err != nil {
+		return nil, err
+	}
+	for iteration := 1; iteration <= maxIterations; iteration++ {
+		modelStepID, err := w.store.StartRunStep(ctx, run.ID, "model_call", map[string]any{"messages": len(messages), "tools": len(toolDefs), "iteration": iteration})
+		if err != nil {
+			return nil, err
+		}
+		if _, err := w.policyEngine().Enforce(ctx, "pre_model", w.policyContext(run, modelStepID, "", text)); err != nil {
+			msg := err.Error()
+			_ = w.store.CompleteRunStep(context.Background(), run.ID, modelStepID, "failed", nil, &msg)
+			return nil, err
+		}
+		resp, err = w.chat(ctx, run, messages, toolDefs, map[string]any{"messages": len(messages), "tools": len(toolDefs), "iteration": iteration})
+		if err != nil {
+			msg := err.Error()
+			_ = w.store.CompleteRunStep(context.Background(), run.ID, modelStepID, "failed", nil, &msg)
+			return nil, err
+		}
+		if _, err := w.policyEngine().Enforce(ctx, "post_model", w.policyContext(run, modelStepID, "", resp.Content)); err != nil {
+			msg := err.Error()
+			_ = w.store.CompleteRunStep(context.Background(), run.ID, modelStepID, "failed", nil, &msg)
+			return nil, err
+		}
+		if err := w.store.CompleteRunStep(ctx, run.ID, modelStepID, "succeeded", map[string]any{"finish_reason": resp.FinishReason, "tool_calls": len(resp.ToolCalls), "iteration": iteration}, nil); err != nil {
+			return nil, err
+		}
+		if err := w.ensureRunnable(ctx, run.ID); err != nil {
+			return nil, err
+		}
+		if len(resp.ToolCalls) == 0 {
+			break
+		}
+		toolStepID, err := w.store.StartRunStep(ctx, run.ID, "tool_execution", map[string]any{"tool_calls": len(resp.ToolCalls), "iteration": iteration})
+		if err != nil {
+			return nil, err
+		}
+		messages = append(messages, providers.Message{Role: "assistant", Content: "Tool calls requested."})
+		toolResults, err := w.executeToolCalls(ctx, run, toolStepID, resp.ToolCalls)
+		if err != nil {
+			msg := err.Error()
+			_ = w.store.CompleteRunStep(context.Background(), run.ID, toolStepID, "failed", nil, &msg)
+			return nil, err
+		}
+		if err := w.store.CompleteRunStep(ctx, run.ID, toolStepID, "succeeded", map[string]any{"tool_results": len(toolResults), "iteration": iteration}, nil); err != nil {
+			return nil, err
+		}
+		messages = append(messages, providers.Message{Role: "tool", Content: strings.Join(toolResults, "\n")})
+		if err := w.store.Checkpoint(ctx, run.ID, "tools_complete", map[string]any{"tool_calls": len(toolResults)}); err != nil {
+			return nil, err
+		}
+		w.enqueueAsyncObservability(ctx, run, "checkpoint.tools_complete", map[string]any{"tool_results": toolResults, "iteration": iteration})
+		if iteration == maxIterations {
+			return nil, fmt.Errorf("agent loop exceeded %d iterations", maxIterations)
+		}
+	}
+	return resp, nil
 }
 
 func (w *Worker) enqueueAsyncObservability(ctx context.Context, run *db.Run, eventType string, payload any) {

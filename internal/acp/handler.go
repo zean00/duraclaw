@@ -2,7 +2,6 @@ package acp
 
 import (
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -121,217 +120,6 @@ func (h *Handler) WithMediaBlobStore(store tools.MediaBlobStore) *Handler {
 func (h *Handler) WithProfileRetriever(retriever profiles.Retriever) *Handler {
 	h.profileRetriever = retriever
 	return h
-}
-
-func (h *Handler) Routes() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", h.healthz)
-	mux.HandleFunc("GET /readyz", h.readyz)
-	mux.HandleFunc("GET /metrics", h.metrics)
-	mux.HandleFunc("POST /admin/agent-instances/{agent_instance_id}/versions", h.requireAdmin(h.createAgentInstanceVersion))
-	mux.HandleFunc("GET /admin/agent-instances/{agent_instance_id}/versions", h.requireAdmin(h.listAgentInstanceVersions))
-	mux.HandleFunc("POST /admin/agent-instances/{agent_instance_id}/versions/{version_id}/activate", h.requireAdmin(h.activateAgentInstanceVersion))
-	mux.HandleFunc("POST /admin/workflows", h.requireAdmin(h.createWorkflow))
-	mux.HandleFunc("GET /admin/workflows", h.requireAdmin(h.listWorkflows))
-	mux.HandleFunc("GET /admin/workflows/{workflow_id}/nodes", h.requireAdmin(h.listWorkflowNodes))
-	mux.HandleFunc("PUT /admin/workflows/{workflow_id}/nodes/{node_key}", h.requireAdmin(h.upsertWorkflowNode))
-	mux.HandleFunc("GET /admin/workflows/{workflow_id}/edges", h.requireAdmin(h.listWorkflowEdges))
-	mux.HandleFunc("PUT /admin/workflows/{workflow_id}/edges", h.requireAdmin(h.upsertWorkflowEdge))
-	mux.HandleFunc("POST /admin/workflows/{workflow_id}/assignments", h.requireAdmin(h.assignWorkflow))
-	mux.HandleFunc("PUT /admin/agent-policies", h.requireAdmin(h.upsertAgentPolicy))
-	mux.HandleFunc("GET /admin/agent-policies", h.requireAdmin(h.getAgentPolicy))
-	mux.HandleFunc("POST /admin/policy-packs", h.requireAdmin(h.createPolicyPack))
-	mux.HandleFunc("GET /admin/policy-packs", h.requireAdmin(h.listPolicyPacks))
-	mux.HandleFunc("POST /admin/policy-packs/{pack_id}/versions", h.requireAdmin(h.createPolicyPackVersion))
-	mux.HandleFunc("POST /admin/policy-packs/{pack_id}/status", h.requireAdmin(h.setPolicyPackStatus))
-	mux.HandleFunc("GET /admin/policy-packs/{pack_id}/versions", h.requireAdmin(h.listPolicyPackVersions))
-	mux.HandleFunc("GET /admin/policy-packs/{pack_id}/diff", h.requireAdmin(h.policyPackDiff))
-	mux.HandleFunc("PUT /admin/policy-packs/{pack_id}/rules/{rule_id}", h.requireAdmin(h.upsertPolicyRule))
-	mux.HandleFunc("GET /admin/policy-packs/{pack_id}/rules", h.requireAdmin(h.listPolicyRules))
-	mux.HandleFunc("POST /admin/policy-packs/{pack_id}/assignments", h.requireAdmin(h.assignPolicyPack))
-	mux.HandleFunc("GET /admin/policy-evaluations", h.requireAdmin(h.listPolicyEvaluations))
-	mux.HandleFunc("POST /admin/media/generate", h.requireAdmin(h.adminGenerateMedia))
-	mux.HandleFunc("PUT /admin/runtime-limits/customer/{customer_id}", h.requireAdmin(h.upsertCustomerRuntimeLimits))
-	mux.HandleFunc("GET /admin/runtime-limits/customer/{customer_id}", h.requireAdmin(h.getCustomerRuntimeLimits))
-	mux.HandleFunc("PUT /admin/runtime-limits/customer/{customer_id}/agent-instances/{agent_instance_id}", h.requireAdmin(h.upsertAgentInstanceRuntimeLimits))
-	mux.HandleFunc("GET /admin/runtime-limits/customer/{customer_id}/agent-instances/{agent_instance_id}", h.requireAdmin(h.getAgentInstanceRuntimeLimits))
-	mux.HandleFunc("POST /admin/knowledge/text", h.requireAdmin(h.ingestKnowledgeText))
-	mux.HandleFunc("GET /admin/knowledge/documents", h.requireAdmin(h.listKnowledgeDocuments))
-	mux.HandleFunc("GET /admin/knowledge/documents/{document_id}/chunks", h.requireAdmin(h.listKnowledgeChunks))
-	mux.HandleFunc("DELETE /admin/knowledge/documents/{document_id}", h.requireAdmin(h.deleteKnowledgeDocument))
-	mux.HandleFunc("POST /admin/memories", h.requireAdmin(h.createMemory))
-	mux.HandleFunc("GET /admin/memories", h.requireAdmin(h.listMemories))
-	mux.HandleFunc("PUT /admin/memories/{memory_id}", h.requireAdmin(h.updateMemory))
-	mux.HandleFunc("DELETE /admin/memories/{memory_id}", h.requireAdmin(h.deleteMemory))
-	mux.HandleFunc("POST /admin/preferences", h.requireAdmin(h.createPreference))
-	mux.HandleFunc("GET /admin/preferences", h.requireAdmin(h.listPreferences))
-	mux.HandleFunc("PUT /admin/preferences/{preference_id}", h.requireAdmin(h.updatePreference))
-	mux.HandleFunc("DELETE /admin/preferences/{preference_id}", h.requireAdmin(h.deletePreference))
-	mux.HandleFunc("POST /admin/reminders/subscriptions", h.requireAdmin(h.createReminderSubscription))
-	mux.HandleFunc("GET /admin/reminders/subscriptions", h.requireAdmin(h.listReminderSubscriptions))
-	mux.HandleFunc("PATCH /admin/reminders/subscriptions/{subscription_id}", h.requireAdmin(h.updateReminderSubscription))
-	mux.HandleFunc("POST /admin/scheduler/jobs", h.requireAdmin(h.createSchedulerJob))
-	mux.HandleFunc("GET /admin/scheduler/jobs", h.requireAdmin(h.listSchedulerJobs))
-	mux.HandleFunc("PATCH /admin/scheduler/jobs/{job_id}", h.requireAdmin(h.updateSchedulerJob))
-	mux.HandleFunc("GET /admin/observability/events", h.requireAdmin(h.listObservabilityEvents))
-	mux.HandleFunc("GET /admin/outbound-intents", h.requireAdmin(h.listOutboundIntents))
-	mux.HandleFunc("GET /admin/background-runs", h.requireAdmin(h.listBackgroundRuns))
-	mux.HandleFunc("GET /admin/mcp/servers", h.requireAdmin(h.listMCPServers))
-	mux.HandleFunc("GET /admin/mcp/servers/{server_name}/tools", h.requireAdmin(h.listMCPTools))
-	mux.HandleFunc("GET /admin/mcp/servers/{server_name}/resources", h.requireAdmin(h.listMCPResources))
-	mux.HandleFunc("GET /admin/mcp/servers/{server_name}/resources/read", h.requireAdmin(h.readMCPResource))
-	mux.HandleFunc("GET /admin/mcp/servers/{server_name}/prompts", h.requireAdmin(h.listMCPPrompts))
-	mux.HandleFunc("POST /admin/mcp/servers/{server_name}/prompts/{prompt_name}/get", h.requireAdmin(h.getMCPPrompt))
-	mux.HandleFunc("POST /admin/mcp/notifications", h.requireAdmin(h.ingestMCPNotification))
-	mux.HandleFunc("POST /admin/broadcasts", h.requireAdmin(h.createBroadcast))
-	mux.HandleFunc("GET /admin/broadcasts", h.requireAdmin(h.listBroadcasts))
-	mux.HandleFunc("GET /admin/broadcasts/{broadcast_id}/targets", h.requireAdmin(h.listBroadcastTargets))
-	mux.HandleFunc("POST /admin/broadcasts/{broadcast_id}/cancel", h.requireAdmin(h.cancelBroadcast))
-	mux.HandleFunc("POST /admin/retention/run", h.requireAdmin(h.runRetention))
-	mux.HandleFunc("GET /acp/agents", h.requireACP(h.agents))
-	mux.HandleFunc("PUT /acp/sessions/{session_id}", h.requireACP(h.ensureSession))
-	mux.HandleFunc("POST /acp/sessions/{session_id}/reassign", h.requireACP(h.reassignSession))
-	mux.HandleFunc("POST /acp/runs", h.requireACP(h.startRun))
-	mux.HandleFunc("POST /acp/runs/{run_id}/artifacts", h.requireACP(h.attachArtifacts))
-	mux.HandleFunc("POST /acp/runs/{run_id}/artifacts/generate", h.requireACP(h.generateArtifact))
-	mux.HandleFunc("GET /acp/runs/{run_id}/artifacts", h.requireACP(h.listRunArtifacts))
-	mux.HandleFunc("GET /acp/artifacts/{artifact_id}/representations", h.requireACP(h.listArtifactRepresentations))
-	mux.HandleFunc("GET /acp/runs/{run_id}", h.requireACP(h.runStatus))
-	mux.HandleFunc("GET /acp/runs/{run_id}/trace", h.requireACP(h.runTrace))
-	mux.HandleFunc("GET /acp/runs/{run_id}/background-status", h.requireACP(h.backgroundStatus))
-	mux.HandleFunc("GET /acp/runs/{run_id}/events", h.requireACP(h.events))
-	mux.HandleFunc("POST /acp/runs/{run_id}/resume", h.requireACP(h.resume))
-	mux.HandleFunc("POST /acp/runs/{run_id}/cancel", h.requireACP(h.cancel))
-	mux.HandleFunc("POST /acp/outbound-intents/{intent_id}/status", h.requireACP(h.updateOutboundIntentStatus))
-	mux.HandleFunc("GET /acp/sessions/{session_id}/runs/latest", h.requireACP(h.latest))
-	mux.HandleFunc("GET /acp/sessions/{session_id}/runs/by-idempotency-key/{key}", h.requireACP(h.byKey))
-	return h.accessLog(h.withRequestHeaders(mux))
-}
-
-type statusRecorder struct {
-	http.ResponseWriter
-	status int
-	bytes  int
-}
-
-func (r *statusRecorder) WriteHeader(status int) {
-	r.status = status
-	r.ResponseWriter.WriteHeader(status)
-}
-
-func (r *statusRecorder) Write(b []byte) (int, error) {
-	if r.status == 0 {
-		r.status = http.StatusOK
-	}
-	n, err := r.ResponseWriter.Write(b)
-	r.bytes += n
-	return n, err
-}
-
-func (h *Handler) accessLog(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		rec := &statusRecorder{ResponseWriter: w}
-		next.ServeHTTP(rec, r)
-		if rec.status == 0 {
-			rec.status = http.StatusOK
-		}
-		if h.counters != nil {
-			h.counters.Inc(fmt.Sprintf("http_status_%d", rec.status))
-		}
-		if h.logger != nil {
-			h.logger.InfoContext(r.Context(), "http request",
-				"method", r.Method,
-				"path", r.URL.Path,
-				"status", rec.status,
-				"bytes", rec.bytes,
-				"duration_ms", time.Since(start).Milliseconds(),
-				"request_id", r.Header.Get("X-Request-ID"),
-			)
-		}
-	})
-}
-
-func (h *Handler) metrics(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
-	if h.counters == nil {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	_, _ = w.Write([]byte(h.counters.PrometheusText()))
-}
-
-func (h *Handler) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if h.requireAuth && h.adminToken == "" {
-			writeError(w, http.StatusUnauthorized, fmt.Errorf("admin authorization is not configured"))
-			return
-		}
-		if h.adminToken != "" && !bearerTokenEqual(r.Header.Get("Authorization"), h.adminToken) {
-			writeError(w, http.StatusUnauthorized, fmt.Errorf("admin authorization required"))
-			return
-		}
-		next(w, r)
-	}
-}
-
-func (h *Handler) requireACP(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if h.requireAuth && h.acpToken == "" {
-			writeError(w, http.StatusUnauthorized, fmt.Errorf("acp authorization is not configured"))
-			return
-		}
-		if h.acpToken != "" && !bearerTokenEqual(r.Header.Get("Authorization"), h.acpToken) {
-			writeError(w, http.StatusUnauthorized, fmt.Errorf("acp authorization required"))
-			return
-		}
-		next(w, r)
-	}
-}
-
-func (h *Handler) withRequestHeaders(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Cache-Control", "no-store")
-		if reqID := r.Header.Get("X-Request-ID"); reqID != "" {
-			w.Header().Set("X-Request-ID", reqID)
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-func bearerTokenEqual(header, token string) bool {
-	const prefix = "Bearer "
-	if !strings.HasPrefix(header, prefix) {
-		return false
-	}
-	got := strings.TrimPrefix(header, prefix)
-	if len(got) != len(token) {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(got), []byte(token)) == 1
-}
-
-func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
-}
-
-func (h *Handler) readyz(w http.ResponseWriter, r *http.Request) {
-	if h.store == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "database": "not_configured"})
-		return
-	}
-	if err := h.store.Ping(r.Context()); err != nil {
-		writeError(w, http.StatusServiceUnavailable, err)
-		return
-	}
-	stats, err := h.store.QueueStats(r.Context())
-	if err != nil {
-		writeError(w, http.StatusServiceUnavailable, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "database": "ok", "queues": stats})
 }
 
 func (h *Handler) createAgentInstanceVersion(w http.ResponseWriter, r *http.Request) {
@@ -1852,9 +1640,12 @@ func (h *Handler) listRunArtifacts(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) listArtifactRepresentations(w http.ResponseWriter, r *http.Request) {
-	customerID := r.Header.Get("X-Customer-ID")
-	if r.PathValue("artifact_id") == "" || customerID == "" {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("artifact_id and X-Customer-ID are required"))
+	customerID, ok := requireCustomerHeader(w, r)
+	if !ok {
+		return
+	}
+	if r.PathValue("artifact_id") == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("artifact_id is required"))
 		return
 	}
 	reps, err := h.store.ArtifactRepresentations(r.Context(), customerID, r.PathValue("artifact_id"))
@@ -1887,9 +1678,8 @@ func (h *Handler) artifactRule(r *http.Request, c db.ACPContext) policy.Artifact
 }
 
 func (h *Handler) runStatus(w http.ResponseWriter, r *http.Request) {
-	customerID := r.Header.Get("X-Customer-ID")
-	if customerID == "" {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("missing required header X-Customer-ID"))
+	customerID, ok := requireCustomerHeader(w, r)
+	if !ok {
 		return
 	}
 	run, err := h.store.GetRun(r.Context(), r.PathValue("run_id"))
@@ -1944,9 +1734,8 @@ func (h *Handler) backgroundStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) events(w http.ResponseWriter, r *http.Request) {
-	customerID := r.Header.Get("X-Customer-ID")
-	if customerID == "" {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("missing required header X-Customer-ID"))
+	customerID, ok := requireCustomerHeader(w, r)
+	if !ok {
 		return
 	}
 	run, err := h.store.GetRun(r.Context(), r.PathValue("run_id"))
@@ -2072,9 +1861,8 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) updateOutboundIntentStatus(w http.ResponseWriter, r *http.Request) {
-	customerID := r.Header.Get("X-Customer-ID")
-	if customerID == "" {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("missing required header X-Customer-ID"))
+	customerID, ok := requireCustomerHeader(w, r)
+	if !ok {
 		return
 	}
 	var payload struct {
@@ -2101,7 +1889,11 @@ func (h *Handler) updateOutboundIntentStatus(w http.ResponseWriter, r *http.Requ
 }
 
 func (h *Handler) latest(w http.ResponseWriter, r *http.Request) {
-	run, err := h.store.LatestRun(r.Context(), r.Header.Get("X-Customer-ID"), r.PathValue("session_id"))
+	customerID, ok := requireCustomerHeader(w, r)
+	if !ok {
+		return
+	}
+	run, err := h.store.LatestRun(r.Context(), customerID, r.PathValue("session_id"))
 	if err != nil {
 		writeError(w, http.StatusNotFound, err)
 		return
@@ -2110,7 +1902,11 @@ func (h *Handler) latest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) byKey(w http.ResponseWriter, r *http.Request) {
-	run, err := h.store.RunByIdempotencyKey(r.Context(), r.Header.Get("X-Customer-ID"), r.PathValue("session_id"), r.PathValue("key"))
+	customerID, ok := requireCustomerHeader(w, r)
+	if !ok {
+		return
+	}
+	run, err := h.store.RunByIdempotencyKey(r.Context(), customerID, r.PathValue("session_id"), r.PathValue("key"))
 	if err != nil {
 		writeError(w, http.StatusNotFound, err)
 		return
@@ -2199,6 +1995,15 @@ func existingRunContext(w http.ResponseWriter, r *http.Request) (db.ACPContext, 
 		return c, false
 	}
 	return c, true
+}
+
+func requireCustomerHeader(w http.ResponseWriter, r *http.Request) (string, bool) {
+	customerID := r.Header.Get("X-Customer-ID")
+	if strings.TrimSpace(customerID) == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("missing required header X-Customer-ID"))
+		return "", false
+	}
+	return customerID, true
 }
 
 func (h *Handler) requireRunAccess(w http.ResponseWriter, r *http.Request, c db.ACPContext) (*db.Run, bool) {

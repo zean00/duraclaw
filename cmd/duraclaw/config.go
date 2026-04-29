@@ -6,13 +6,17 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"duraclaw/internal/providers"
 )
 
 type config struct {
+	Environment                 string
 	DatabaseURL                 string
 	Addr                        string
 	Hostname                    string
 	Provider                    string
+	AllowMockInProduction       bool
 	ProviderBaseURL             string
 	ProviderAPIKey              string
 	ProviderModel               string
@@ -73,10 +77,12 @@ type config struct {
 
 func loadConfig() (config, error) {
 	cfg := config{
+		Environment:                 envDefault("DURACLAW_ENV", "development"),
 		DatabaseURL:                 os.Getenv("DATABASE_URL"),
 		Addr:                        envDefault("ADDR", ":8080"),
 		Hostname:                    os.Getenv("HOSTNAME"),
 		Provider:                    envDefault("DURACLAW_PROVIDER", "mock"),
+		AllowMockInProduction:       envBool("DURACLAW_ALLOW_MOCK_IN_PRODUCTION", false),
 		ProviderBaseURL:             os.Getenv("DURACLAW_PROVIDER_BASE_URL"),
 		ProviderAPIKey:              os.Getenv("DURACLAW_PROVIDER_API_KEY"),
 		ProviderModel:               os.Getenv("DURACLAW_PROVIDER_MODEL"),
@@ -137,8 +143,15 @@ func loadConfig() (config, error) {
 	if cfg.DatabaseURL == "" {
 		return cfg, fmt.Errorf("DATABASE_URL is required")
 	}
+	if cfg.isProduction() && !cfg.RequireAuth {
+		return cfg, fmt.Errorf("DURACLAW_REQUIRE_AUTH must be true when DURACLAW_ENV is production")
+	}
 	if cfg.RequireAuth && (strings.TrimSpace(cfg.AdminToken) == "" || strings.TrimSpace(cfg.ACPToken) == "") {
 		return cfg, fmt.Errorf("DURACLAW_ADMIN_TOKEN and DURACLAW_ACP_TOKEN are required when DURACLAW_REQUIRE_AUTH is true")
+	}
+	providerName := providers.NormalizeProvider(cfg.Provider)
+	if cfg.isProduction() && !isProductionProvider(providerName) && !cfg.AllowMockInProduction {
+		return cfg, fmt.Errorf("provider %q is not allowed when DURACLAW_ENV is production unless DURACLAW_ALLOW_MOCK_IN_PRODUCTION is true", cfg.Provider)
 	}
 	if len(cfg.MCPConfig) > 0 && !json.Valid(cfg.MCPConfig) {
 		return cfg, fmt.Errorf("DURACLAW_MCP_CONFIG must be valid JSON")
@@ -147,6 +160,20 @@ func loadConfig() (config, error) {
 		return cfg, fmt.Errorf("artifact processor timeout, max bytes, and max representations must be positive")
 	}
 	return cfg, nil
+}
+
+func (cfg config) isProduction() bool {
+	env := strings.ToLower(strings.TrimSpace(cfg.Environment))
+	return env == "production" || env == "prod"
+}
+
+func isProductionProvider(provider string) bool {
+	switch providers.NormalizeProvider(provider) {
+	case "openai", "openrouter", "openai-compatible":
+		return true
+	default:
+		return false
+	}
 }
 
 func envBool(key string, fallback bool) bool {

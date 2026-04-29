@@ -123,7 +123,7 @@ func TestDirectWorkflowRunsEnforceWorkflowPolicy(t *testing.T) {
 	if awaiting < 0 {
 		t.Fatalf("direct workflow awaiting branch not found")
 	}
-	awaitingBlockEnd := strings.Index(afterExec[awaiting:], `return runStoppedError{runID: run.ID, state: "awaiting_user"}`)
+	awaitingBlockEnd := strings.Index(afterExec[awaiting:], `runStoppedError{runID: run.ID, state: "awaiting_user"}`)
 	if awaitingBlockEnd < 0 {
 		t.Fatalf("direct workflow awaiting return not found")
 	}

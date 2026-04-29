@@ -15,6 +15,20 @@ import (
 
 type adminMCPClient struct{}
 
+func readHandlerSources(t *testing.T, names ...string) string {
+	t.Helper()
+	var out strings.Builder
+	for _, name := range names {
+		raw, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out.Write(raw)
+		out.WriteByte('\n')
+	}
+	return out.String()
+}
+
 func (adminMCPClient) CallTool(context.Context, mcp.ExecutionContext, string, string, map[string]any) (map[string]any, error) {
 	return map[string]any{}, nil
 }
@@ -79,11 +93,7 @@ func TestMetrics(t *testing.T) {
 }
 
 func TestGeneratedArtifactRouteIsRegistered(t *testing.T) {
-	raw, err := os.ReadFile("handler.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	src := string(raw)
+	src := readHandlerSources(t, "routes.go", "handler.go")
 	for _, want := range []string{
 		`POST /acp/runs/{run_id}/artifacts/generate`,
 		`POST /admin/media/generate`,
@@ -438,11 +448,7 @@ func TestSetPolicyPackStatusValidatesPayloadBeforeStore(t *testing.T) {
 }
 
 func TestPolicyPackHistoryRoutesAreRegistered(t *testing.T) {
-	raw, err := os.ReadFile("handler.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	src := string(raw)
+	src := readHandlerSources(t, "routes.go", "handler.go")
 	for _, want := range []string{
 		`GET /admin/policy-packs/{pack_id}/versions`,
 		`GET /admin/policy-packs/{pack_id}/diff`,
