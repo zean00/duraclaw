@@ -63,6 +63,65 @@ DURACLAW_PROVIDER_FALLBACKS=mock/duraclaw
 
 OpenAI and OpenRouter chat requests support multimodal message content arrays. ACP run parts can include `text`, `image_url`, `file`, `input_audio`, and `video_url`.
 
+### OpenRouter model guidance
+
+Agent instance `model_config.primary`, `model_config.fallbacks`, and `profile_config.domain_scope.scope_judge_model` may use provider-qualified model refs:
+
+```json
+{
+  "model_config": {
+    "primary": "openrouter/openai/gpt-4.1-mini",
+    "fallbacks": []
+  },
+  "profile_config": {
+    "domain_scope": {
+      "scope_judge_model": "openrouter/openai/gpt-4.1-mini"
+    }
+  }
+}
+```
+
+The first path segment is parsed as the Duraclaw provider. Use `openrouter/openai/gpt-4.1-mini`, not `openai/gpt-4.1-mini`, when the runtime only registers the OpenRouter provider.
+
+For the Wulan-style personal assistant profile, local E2E and live OpenRouter evals used these candidates:
+
+| Use case | Recommended model config |
+| --- | --- |
+| Default Wulan baseline | `openrouter/openai/gpt-4.1-mini` |
+| Qwen low-latency candidate | `openrouter/qwen/qwen3.6-35b-a3b` with reasoning disabled |
+| Qwen broader-context candidate | `openrouter/qwen/qwen3.6-27b` with reasoning disabled |
+| Complex workflow planning only | Consider limited reasoning on `qwen/qwen3.6-35b-a3b` |
+
+Recommended Qwen config for short chat, reminders, policy checks, and scope judging:
+
+```json
+{
+  "primary": "openrouter/qwen/qwen3.6-35b-a3b",
+  "fallbacks": ["openrouter/openai/gpt-4.1-mini"],
+  "options": {
+    "max_tokens": 320,
+    "reasoning": {
+      "effort": "none",
+      "exclude": true
+    }
+  }
+}
+```
+
+If a workflow needs more deliberation, use a small reasoning budget rather than unbounded reasoning:
+
+```json
+{
+  "max_tokens": 512,
+  "reasoning": {
+    "max_tokens": 128,
+    "exclude": true
+  }
+}
+```
+
+Reasoning tokens count as output tokens on OpenRouter. In Wulan evals, unrestricted reasoning improved `qwen/qwen3.6-35b-a3b` quality but increased latency; `qwen/qwen3.6-27b` was unstable with reasoning enabled under short-output budgets.
+
 ## Embeddings
 
 Default embeddings use a deterministic local hash provider for tests and local development.

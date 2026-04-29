@@ -28,11 +28,13 @@ Example:
     "allowed_domains": ["customer support", "product usage", "billing explanation"],
     "forbidden_domains": ["legal advice", "medical diagnosis"],
     "out_of_scope_guidance": "Briefly explain that the request is outside scope and offer an allowed alternative.",
-    "scope_judge_model": "openai/gpt-4.1-mini",
+    "scope_judge_model": "openrouter/openai/gpt-4.1-mini",
     "confidence_threshold": 0.6
   }
 }
 ```
+
+Model refs are parsed as `provider/model`. If an agent is served through OpenRouter only, qualify profile model refs with `openrouter/`, for example `openrouter/openai/gpt-4.1-mini` or `openrouter/qwen/qwen3.6-35b-a3b`. Using `openai/gpt-4.1-mini` selects the Duraclaw `openai` provider, not the OpenRouter model namespace.
 
 ## Scope Judge
 
