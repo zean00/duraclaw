@@ -22,6 +22,11 @@ type config struct {
 	WorkerInterval              time.Duration
 	SchedulerInterval           time.Duration
 	OutboxInterval              time.Duration
+	SessionMonitorInterval      time.Duration
+	SessionMonitorIdleFor       time.Duration
+	SessionMonitorLimit         int
+	SessionMonitorMessageLimit  int
+	SessionCompactionThreshold  int
 	OutboxSink                  string
 	NexusOutboundURL            string
 	NexusToken                  string
@@ -75,6 +80,11 @@ func loadConfig() (config, error) {
 		WorkerInterval:              time.Second,
 		SchedulerInterval:           5 * time.Second,
 		OutboxInterval:              2 * time.Second,
+		SessionMonitorInterval:      time.Duration(envInt("DURACLAW_SESSION_MONITOR_INTERVAL_SECONDS", 60)) * time.Second,
+		SessionMonitorIdleFor:       time.Duration(envInt("DURACLAW_SESSION_MONITOR_IDLE_SECONDS", 1800)) * time.Second,
+		SessionMonitorLimit:         envInt("DURACLAW_SESSION_MONITOR_LIMIT", 25),
+		SessionMonitorMessageLimit:  envInt("DURACLAW_SESSION_MONITOR_MESSAGE_LIMIT", 40),
+		SessionCompactionThreshold:  envInt("DURACLAW_SESSION_COMPACTION_THRESHOLD_CHARS", 12000),
 		OutboxSink:                  envDefault("DURACLAW_OUTBOX_SINK", "log"),
 		NexusOutboundURL:            os.Getenv("NEXUS_OUTBOUND_URL"),
 		NexusToken:                  os.Getenv("NEXUS_TOKEN"),

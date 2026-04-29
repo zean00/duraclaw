@@ -343,6 +343,25 @@ func (w *Worker) process(ctx context.Context, run *db.Run) error {
 	if _, err := w.policyEngine().Enforce(ctx, "pre_run", w.policyContext(run, "", "", text)); err != nil {
 		return err
 	}
+	scope, err := w.judgeScope(ctx, run, text)
+	if err != nil {
+		return err
+	}
+	if !scope.InScope {
+		response := strings.TrimSpace(scope.RecommendedResponse)
+		if response == "" {
+			response = "I cannot help with that request because it is outside my configured scope."
+		}
+		_ = w.store.AddEvent(ctx, run.ID, "scope.denied", map[string]any{"reason": scope.Reason, "confidence": scope.Confidence})
+		_ = w.store.AddObservabilityEvent(ctx, run.CustomerID, run.ID, "scope_denied", map[string]any{"reason": scope.Reason, "confidence": scope.Confidence})
+		msgID, err := w.store.InsertMessage(ctx, run.CustomerID, run.SessionID, run.ID, "assistant", map[string]any{
+			"parts": []map[string]any{{"type": "text", "text": response}},
+		})
+		if err != nil {
+			return err
+		}
+		return w.store.CompleteRunWithMessage(ctx, run.ID, msgID)
+	}
 	messages, err := w.providerMessages(ctx, run, text)
 	if err != nil {
 		return err
@@ -722,6 +741,13 @@ func (w *Worker) providerMessages(ctx context.Context, run *db.Run, currentText 
 	if versionInstructions != "" {
 		promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: versionInstructions})
 	}
+	profileInstructions, err := w.agentProfileInstructions(ctx, run)
+	if err != nil {
+		return nil, err
+	}
+	if profileInstructions != "" {
+		promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: profileInstructions})
+	}
 	workflowManifest, err := workflow.PromptManifest(ctx, w.store, run.CustomerID, run.AgentInstanceID)
 	if err != nil {
 		return nil, err
@@ -908,6 +934,139 @@ func (w *Worker) agentInstanceVersionInstructions(ctx context.Context, run *db.R
 		return "", err
 	}
 	return strings.TrimSpace(version.SystemInstructions), nil
+}
+
+type agentProfileConfig struct {
+	Personality          string   `json:"personality"`
+	CommunicationStyle   string   `json:"communication_style"`
+	LanguageCapabilities []string `json:"language_capabilities"`
+	DomainScope          struct {
+		AllowedDomains      []string `json:"allowed_domains"`
+		ForbiddenDomains    []string `json:"forbidden_domains"`
+		OutOfScopeGuidance  string   `json:"out_of_scope_guidance"`
+		ScopeJudgeModel     string   `json:"scope_judge_model"`
+		ConfidenceThreshold float64  `json:"confidence_threshold"`
+	} `json:"domain_scope"`
+}
+
+func (w *Worker) agentProfile(ctx context.Context, run *db.Run) (agentProfileConfig, error) {
+	var cfg agentProfileConfig
+	version, err := w.store.AgentInstanceVersion(ctx, run.AgentInstanceVersionID)
+	if err != nil || version == nil || len(version.ProfileConfig) == 0 {
+		return cfg, err
+	}
+	if err := json.Unmarshal(version.ProfileConfig, &cfg); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
+}
+
+func (w *Worker) agentProfileInstructions(ctx context.Context, run *db.Run) (string, error) {
+	cfg, err := w.agentProfile(ctx, run)
+	if err != nil {
+		return "", err
+	}
+	var lines []string
+	if strings.TrimSpace(cfg.Personality) != "" {
+		lines = append(lines, "Personality: "+strings.TrimSpace(cfg.Personality))
+	}
+	if strings.TrimSpace(cfg.CommunicationStyle) != "" {
+		lines = append(lines, "Communication style: "+strings.TrimSpace(cfg.CommunicationStyle))
+	}
+	if len(cfg.LanguageCapabilities) > 0 {
+		lines = append(lines, "Language capabilities: "+strings.Join(cfg.LanguageCapabilities, ", "))
+	}
+	if len(cfg.DomainScope.AllowedDomains) > 0 {
+		lines = append(lines, "Allowed domains: "+strings.Join(cfg.DomainScope.AllowedDomains, ", "))
+	}
+	if len(cfg.DomainScope.ForbiddenDomains) > 0 {
+		lines = append(lines, "Forbidden domains: "+strings.Join(cfg.DomainScope.ForbiddenDomains, ", "))
+	}
+	if strings.TrimSpace(cfg.DomainScope.OutOfScopeGuidance) != "" {
+		lines = append(lines, "Out-of-scope response guidance: "+strings.TrimSpace(cfg.DomainScope.OutOfScopeGuidance))
+	}
+	if len(lines) == 0 {
+		return "", nil
+	}
+	return "Agent profile:\n- " + strings.Join(lines, "\n- "), nil
+}
+
+type scopeJudgement struct {
+	InScope             bool    `json:"in_scope"`
+	Confidence          float64 `json:"confidence"`
+	Reason              string  `json:"reason"`
+	RecommendedResponse string  `json:"recommended_response"`
+}
+
+func (w *Worker) judgeScope(ctx context.Context, run *db.Run, content string) (scopeJudgement, error) {
+	cfg, err := w.agentProfile(ctx, run)
+	if err != nil {
+		return scopeJudgement{}, err
+	}
+	if len(cfg.DomainScope.AllowedDomains) == 0 && len(cfg.DomainScope.ForbiddenDomains) == 0 {
+		return scopeJudgement{InScope: true, Confidence: 1, Reason: "no domain scope configured"}, nil
+	}
+	modelConfig, err := w.modelConfigForRun(ctx, run)
+	if err != nil {
+		return scopeJudgement{}, err
+	}
+	if strings.TrimSpace(cfg.DomainScope.ScopeJudgeModel) != "" {
+		modelConfig.Primary = cfg.DomainScope.ScopeJudgeModel
+		modelConfig.Fallbacks = nil
+	}
+	threshold := cfg.DomainScope.ConfidenceThreshold
+	if threshold <= 0 || threshold > 1 {
+		threshold = 0.5
+	}
+	promptText := fmt.Sprintf(`Decide whether the user request is within the configured agent domain.
+Return only JSON with keys: in_scope boolean, confidence number from 0 to 1, reason string, recommended_response string.
+Allowed domains: %s
+Forbidden domains: %s
+Out-of-scope guidance: %s
+Available tool names: %s
+User request:
+%s`, strings.Join(cfg.DomainScope.AllowedDomains, ", "), strings.Join(cfg.DomainScope.ForbiddenDomains, ", "), cfg.DomainScope.OutOfScopeGuidance, strings.Join(w.toolNames(ctx, run), ", "), content)
+	result, err := w.providers.ChatWithFallback(ctx, modelConfig, []providers.Message{
+		{Role: "system", Content: "You are a strict scope classifier for an assistant runtime. Return valid JSON only."},
+		{Role: "user", Content: promptText},
+	}, nil, map[string]any{"response_format": "json_object", "purpose": "scope_judge"})
+	if err != nil {
+		return scopeJudgement{}, err
+	}
+	_ = w.store.AddEvent(ctx, run.ID, "scope.judged", map[string]any{"provider": result.Provider, "model": result.Model})
+	var judgement scopeJudgement
+	if err := json.Unmarshal([]byte(extractJSONObject(result.Response.Content)), &judgement); err != nil {
+		return scopeJudgement{InScope: false, Confidence: 0, Reason: "scope judge returned invalid JSON", RecommendedResponse: "I cannot determine whether that request is within my configured scope, so I cannot help with it."}, nil
+	}
+	if !judgement.InScope || judgement.Confidence < threshold {
+		judgement.InScope = false
+	}
+	return judgement, nil
+}
+
+func (w *Worker) toolNames(ctx context.Context, run *db.Run) []string {
+	defs, err := w.toolDefinitions(ctx, run)
+	if err != nil {
+		return nil
+	}
+	names := make([]string, 0, len(defs))
+	for _, def := range defs {
+		names = append(names, def.Function.Name)
+	}
+	return names
+}
+
+func extractJSONObject(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if strings.HasPrefix(raw, "{") {
+		return raw
+	}
+	start := strings.Index(raw, "{")
+	end := strings.LastIndex(raw, "}")
+	if start >= 0 && end > start {
+		return raw[start : end+1]
+	}
+	return raw
 }
 
 func (w *Worker) sessionSummaryContext(ctx context.Context, run *db.Run) (string, error) {

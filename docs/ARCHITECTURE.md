@@ -237,6 +237,7 @@ An agent instance owns:
 - Model configuration.
 - Provider fallback policy.
 - System instructions, behavior guidelines, and policy packs.
+- Agent profile configuration: personality, communication style, language capability, domain scope, and out-of-scope response guidance.
 - Enabled workflows.
 - Enabled local tools.
 - Enabled MCP servers.
@@ -244,7 +245,17 @@ An agent instance owns:
 - Memory policy.
 - Cron and background-job permissions.
 
-Agent instance versions are immutable configuration snapshots. Activating a version updates the agent instance's current pointer; existing runs keep their original `agent_instance_version_id`. Version snapshots can provide system instructions and model fallback configuration for agent-loop and workflow model calls.
+Agent instance versions are immutable configuration snapshots. Activating a version updates the agent instance's current pointer; existing runs keep their original `agent_instance_version_id`. Version snapshots can provide system instructions, profile configuration, policy-pack pins, and model fallback configuration for agent-loop and workflow model calls.
+
+Agent profile configuration is distinct from policy packs. Profiles describe how the agent should present itself and what domain it is meant to cover. Policy packs remain the reusable enforcement and audit mechanism. A profile can include:
+
+- Personality and communication style.
+- Supported languages or language behavior.
+- Allowed and forbidden domains.
+- Guidance for out-of-scope responses.
+- Optional scope-judge model and confidence threshold.
+
+Before the normal assistant model, tools, workflows, or MCP calls run, Duraclaw may call a scope judge model using the snapshotted profile configuration. If the judge determines the request is out of scope, the run completes with the configured out-of-scope response and no side-effecting tool/workflow/MCP execution occurs.
 
 A session belongs to one user and is shared across channels. The same user on WhatsApp, webchat, or another channel should map to the same Duraclaw session when Nexus resolves them as the same user.
 
@@ -264,6 +275,8 @@ Session reassignment rules:
 - Future runs use the new agent instance.
 - Existing in-flight runs continue on the agent instance they started with unless explicitly cancelled and restarted.
 - Prompt/context building should include a short transfer note when the agent instance changes materially.
+
+Long-lived sessions are monitored by a background session monitor. The monitor claims idle sessions using PostgreSQL leases, derives compact prompt context from full message history, extracts stable memories and conditional preferences, and updates active-time patterns. It does not send user-facing ads, promotions, or suggestions in v1; it only records active-pattern data for later broadcast or suggestion targeting.
 
 ## Durable Run Execution
 
@@ -670,7 +683,9 @@ Knowledge scopes:
 
 Admins may manually create, edit, disable, and delete shared knowledge, customer knowledge, preferences, and memory records.
 
-Memory writes should be policy-controlled. Not every conversation fact should become memory.
+Memory writes should be policy-controlled. Not every conversation fact should become memory. Stable facts that rarely change belong in memories. Conditional preferences, such as seasonal or time-dependent preferences, belong in preferences with structured conditions.
+
+Full session history remains in `messages`. Prompt-fed session context is stored separately as durable session summaries and compacted context metadata. The session monitor updates this context after a session has been idle long enough or when the conversation exceeds the configured compaction threshold.
 
 Retrieval should combine:
 
@@ -682,7 +697,7 @@ Retrieval should combine:
 - Shared knowledge.
 - Active run state.
 
-Implementation status: prompt context now includes recent messages, durable session summaries, stable memories, conditional preferences, text/hybrid-vector customer and shared knowledge, workflow manifests, MCP tool manifests, transfer notes, policy prompt instructions, and durable artifact representations. Knowledge chunks have full-text and pgvector index migrations, knowledge documents/chunks carry explicit `customer` or `shared` scope, and workflow retrieval nodes prefer hybrid vector/text retrieval when an embedder is configured.
+Implementation status: prompt context now includes agent profile instructions, recent messages, durable session summaries, stable memories, conditional preferences, text/hybrid-vector customer and shared knowledge, workflow manifests, MCP tool manifests, transfer notes, policy prompt instructions, and durable artifact representations. Knowledge chunks have full-text and pgvector index migrations, knowledge documents/chunks carry explicit `customer` or `shared` scope, workflow retrieval nodes prefer hybrid vector/text retrieval when an embedder is configured, and the idle session monitor can compact context, extract memories/preferences, and update active-time patterns.
 
 ## Database Architecture
 
@@ -1345,6 +1360,8 @@ Phase 2: Agent Runtime
 Phase 3: Memory and Knowledge
 
 - Messages, summaries, preferences, memories.
+- Agent profile prompt context and scope judging.
+- Idle session monitor for compaction, extraction, and active patterns.
 - `vector(768)` knowledge chunks.
 - Artifact representation retrieval.
 - Retrieval pipeline.

@@ -23,6 +23,7 @@ type AgentInstanceVersion struct {
 	MCPConfig          json.RawMessage `json:"mcp_config"`
 	WorkflowConfig     json.RawMessage `json:"workflow_config"`
 	PolicyConfig       json.RawMessage `json:"policy_config"`
+	ProfileConfig      json.RawMessage `json:"profile_config"`
 	Metadata           json.RawMessage `json:"metadata"`
 	CreatedAt          time.Time       `json:"created_at"`
 	ActivatedAt        *time.Time      `json:"activated_at,omitempty"`
@@ -39,6 +40,7 @@ type AgentInstanceVersionSpec struct {
 	MCPConfig           any
 	WorkflowConfig      any
 	PolicyConfig        any
+	ProfileConfig       any
 	Metadata            any
 	ActivateImmediately bool
 }
@@ -69,13 +71,14 @@ func (s *Store) CreateAgentInstanceVersion(ctx context.Context, spec AgentInstan
 		mcpConfig := jsonObject(spec.MCPConfig)
 		workflowConfig := jsonObject(spec.WorkflowConfig)
 		policyConfig := jsonObject(spec.PolicyConfig)
+		profileConfig := jsonObject(spec.ProfileConfig)
 		metadata := jsonObject(spec.Metadata)
 		err := tx.QueryRow(ctx, `
-			INSERT INTO agent_instance_versions(customer_id,agent_instance_id,version,name,model_config,system_instructions,tool_config,mcp_config,workflow_config,policy_config,metadata,activated_at)
-			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, CASE WHEN $12 THEN now() ELSE NULL END)
-			RETURNING id::text, customer_id, agent_instance_id, version, name, model_config, system_instructions, tool_config, mcp_config, workflow_config, policy_config, metadata, created_at, activated_at`,
-			spec.CustomerID, spec.AgentInstanceID, version, spec.Name, modelConfig, spec.SystemInstructions, toolConfig, mcpConfig, workflowConfig, policyConfig, metadata, spec.ActivateImmediately).
-			Scan(&out.ID, &out.CustomerID, &out.AgentInstanceID, &out.Version, &out.Name, &out.ModelConfig, &out.SystemInstructions, &out.ToolConfig, &out.MCPConfig, &out.WorkflowConfig, &out.PolicyConfig, &out.Metadata, &out.CreatedAt, &out.ActivatedAt)
+			INSERT INTO agent_instance_versions(customer_id,agent_instance_id,version,name,model_config,system_instructions,tool_config,mcp_config,workflow_config,policy_config,profile_config,metadata,activated_at)
+			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, CASE WHEN $13 THEN now() ELSE NULL END)
+			RETURNING id::text, customer_id, agent_instance_id, version, name, model_config, system_instructions, tool_config, mcp_config, workflow_config, policy_config, profile_config, metadata, created_at, activated_at`,
+			spec.CustomerID, spec.AgentInstanceID, version, spec.Name, modelConfig, spec.SystemInstructions, toolConfig, mcpConfig, workflowConfig, policyConfig, profileConfig, metadata, spec.ActivateImmediately).
+			Scan(&out.ID, &out.CustomerID, &out.AgentInstanceID, &out.Version, &out.Name, &out.ModelConfig, &out.SystemInstructions, &out.ToolConfig, &out.MCPConfig, &out.WorkflowConfig, &out.PolicyConfig, &out.ProfileConfig, &out.Metadata, &out.CreatedAt, &out.ActivatedAt)
 		if err != nil {
 			return err
 		}
@@ -98,7 +101,7 @@ func (s *Store) ListAgentInstanceVersions(ctx context.Context, customerID, agent
 		limit = 100
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT id::text, customer_id, agent_instance_id, version, name, model_config, system_instructions, tool_config, mcp_config, workflow_config, policy_config, metadata, created_at, activated_at
+		SELECT id::text, customer_id, agent_instance_id, version, name, model_config, system_instructions, tool_config, mcp_config, workflow_config, policy_config, profile_config, metadata, created_at, activated_at
 		FROM agent_instance_versions
 		WHERE customer_id=$1 AND agent_instance_id=$2
 		ORDER BY version DESC
@@ -110,7 +113,7 @@ func (s *Store) ListAgentInstanceVersions(ctx context.Context, customerID, agent
 	var out []AgentInstanceVersion
 	for rows.Next() {
 		var v AgentInstanceVersion
-		if err := rows.Scan(&v.ID, &v.CustomerID, &v.AgentInstanceID, &v.Version, &v.Name, &v.ModelConfig, &v.SystemInstructions, &v.ToolConfig, &v.MCPConfig, &v.WorkflowConfig, &v.PolicyConfig, &v.Metadata, &v.CreatedAt, &v.ActivatedAt); err != nil {
+		if err := rows.Scan(&v.ID, &v.CustomerID, &v.AgentInstanceID, &v.Version, &v.Name, &v.ModelConfig, &v.SystemInstructions, &v.ToolConfig, &v.MCPConfig, &v.WorkflowConfig, &v.PolicyConfig, &v.ProfileConfig, &v.Metadata, &v.CreatedAt, &v.ActivatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, v)
@@ -128,9 +131,9 @@ func (s *Store) ActivateAgentInstanceVersion(ctx context.Context, customerID, ag
 			UPDATE agent_instance_versions
 			SET activated_at=now()
 			WHERE id=$1 AND customer_id=$2 AND agent_instance_id=$3
-			RETURNING id::text, customer_id, agent_instance_id, version, name, model_config, system_instructions, tool_config, mcp_config, workflow_config, policy_config, metadata, created_at, activated_at`,
+			RETURNING id::text, customer_id, agent_instance_id, version, name, model_config, system_instructions, tool_config, mcp_config, workflow_config, policy_config, profile_config, metadata, created_at, activated_at`,
 			versionID, customerID, agentInstanceID).
-			Scan(&out.ID, &out.CustomerID, &out.AgentInstanceID, &out.Version, &out.Name, &out.ModelConfig, &out.SystemInstructions, &out.ToolConfig, &out.MCPConfig, &out.WorkflowConfig, &out.PolicyConfig, &out.Metadata, &out.CreatedAt, &out.ActivatedAt)
+			Scan(&out.ID, &out.CustomerID, &out.AgentInstanceID, &out.Version, &out.Name, &out.ModelConfig, &out.SystemInstructions, &out.ToolConfig, &out.MCPConfig, &out.WorkflowConfig, &out.PolicyConfig, &out.ProfileConfig, &out.Metadata, &out.CreatedAt, &out.ActivatedAt)
 		if err != nil {
 			return err
 		}
@@ -149,10 +152,10 @@ func (s *Store) AgentInstanceVersion(ctx context.Context, versionID string) (*Ag
 	}
 	var v AgentInstanceVersion
 	err := s.pool.QueryRow(ctx, `
-		SELECT id::text, customer_id, agent_instance_id, version, name, model_config, system_instructions, tool_config, mcp_config, workflow_config, policy_config, metadata, created_at, activated_at
+		SELECT id::text, customer_id, agent_instance_id, version, name, model_config, system_instructions, tool_config, mcp_config, workflow_config, policy_config, profile_config, metadata, created_at, activated_at
 		FROM agent_instance_versions
 		WHERE id=$1`, versionID).
-		Scan(&v.ID, &v.CustomerID, &v.AgentInstanceID, &v.Version, &v.Name, &v.ModelConfig, &v.SystemInstructions, &v.ToolConfig, &v.MCPConfig, &v.WorkflowConfig, &v.PolicyConfig, &v.Metadata, &v.CreatedAt, &v.ActivatedAt)
+		Scan(&v.ID, &v.CustomerID, &v.AgentInstanceID, &v.Version, &v.Name, &v.ModelConfig, &v.SystemInstructions, &v.ToolConfig, &v.MCPConfig, &v.WorkflowConfig, &v.PolicyConfig, &v.ProfileConfig, &v.Metadata, &v.CreatedAt, &v.ActivatedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, nil
@@ -219,10 +222,42 @@ func validateAgentInstanceVersionSpec(spec AgentInstanceVersionSpec) error {
 	if err := validatePolicyConfigValues(spec.PolicyConfig); err != nil {
 		return err
 	}
+	if err := validateObjectConfig("profile_config", spec.ProfileConfig, []string{"personality", "communication_style", "language_capabilities", "domain_scope"}); err != nil {
+		return err
+	}
+	if err := validateProfileConfigValues(spec.ProfileConfig); err != nil {
+		return err
+	}
 	if err := validateObjectConfig("mcp_config", spec.MCPConfig, []string{"servers"}); err != nil {
 		return err
 	}
 	return validateMCPConfigValues(spec.MCPConfig)
+}
+
+func validateProfileConfigValues(value any) error {
+	obj, err := decodeConfigObject("profile_config", value)
+	if err != nil || obj == nil {
+		return err
+	}
+	if raw, ok := obj["language_capabilities"]; ok {
+		if err := validateStringArray("profile_config.language_capabilities", raw); err != nil {
+			return err
+		}
+	}
+	if raw, ok := obj["domain_scope"]; ok {
+		scope, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("profile_config.domain_scope must be an object")
+		}
+		for _, key := range []string{"allowed_domains", "forbidden_domains"} {
+			if raw, ok := scope[key]; ok {
+				if err := validateStringArray("profile_config.domain_scope."+key, raw); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func ValidateAgentInstanceVersionSpecForTest(spec AgentInstanceVersionSpec) error {

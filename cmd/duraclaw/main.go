@@ -22,6 +22,7 @@ import (
 	"duraclaw/internal/providers"
 	"duraclaw/internal/runtime"
 	"duraclaw/internal/scheduler"
+	"duraclaw/internal/sessionmonitor"
 	"duraclaw/internal/tools"
 )
 
@@ -80,12 +81,31 @@ func main() {
 		}
 	}()
 	schedulerService := scheduler.NewService(store, cfg.Hostname)
+	sessionMonitor := sessionmonitor.NewService(store, providerRegistry, modelConfig, cfg.Hostname).
+		WithIdleFor(cfg.SessionMonitorIdleFor).
+		WithLimit(cfg.SessionMonitorLimit).
+		WithMessageLimit(cfg.SessionMonitorMessageLimit).
+		WithCompactionThreshold(cfg.SessionCompactionThreshold)
 	go func() {
 		ticker := time.NewTicker(cfg.SchedulerInterval)
 		defer ticker.Stop()
 		for {
 			if _, err := schedulerService.RunOnce(ctx, time.Now().UTC()); err != nil && ctx.Err() == nil {
 				logger.ErrorContext(ctx, "scheduler tick failed", "error", err)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	go func() {
+		ticker := time.NewTicker(cfg.SessionMonitorInterval)
+		defer ticker.Stop()
+		for {
+			if _, err := sessionMonitor.RunOnce(ctx, time.Now().UTC()); err != nil && ctx.Err() == nil {
+				logger.ErrorContext(ctx, "session monitor tick failed", "error", err)
 			}
 			select {
 			case <-ctx.Done():

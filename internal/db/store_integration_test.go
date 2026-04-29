@@ -511,3 +511,61 @@ func TestStoreKnowledgeScopeRetrievalPostgres(t *testing.T) {
 		t.Fatalf("docs=%#v", docs)
 	}
 }
+
+func TestStoreClaimIdleSessionsPostgres(t *testing.T) {
+	store, cleanup := integrationStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	suffix := time.Now().UTC().Format("20060102150405.000000000")
+	customerID := "c-monitor-" + suffix
+	run, err := store.CreateRun(ctx, ACPContext{CustomerID: customerID, UserID: "u", AgentInstanceID: "a", SessionID: "s", RequestID: "r", IdempotencyKey: "i"}, map[string]any{"text": "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(ctx, `UPDATE messages SET created_at=now()-interval '1 hour' WHERE customer_id=$1 AND session_id='s'`, customerID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(ctx, `UPDATE sessions SET updated_at=now()-interval '1 hour' WHERE customer_id=$1 AND id='s'`, customerID); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := store.ClaimIdleSessions(ctx, "monitor", time.Minute, time.Minute, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claimed) != 1 || claimed[0].CustomerID != customerID || claimed[0].SessionID != "s" {
+		t.Fatalf("claimed=%#v", claimed)
+	}
+	blocked, err := store.ClaimIdleSessions(ctx, "monitor-2", time.Minute, time.Minute, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocked) != 0 {
+		t.Fatalf("lease should block duplicate monitor claim: %#v", blocked)
+	}
+	if claimed[0].LastMessageAt == nil {
+		t.Fatal("expected last message cursor")
+	}
+	if err := store.CompleteSessionMonitor(ctx, customerID, "s", *claimed[0].LastMessageAt, map[string]any{"hours": map[string]int{"09": 1}}); err != nil {
+		t.Fatal(err)
+	}
+	again, err := store.ClaimIdleSessions(ctx, "monitor-3", time.Minute, time.Minute, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again) != 0 {
+		t.Fatalf("completed monitor should not reclaim unchanged session: %#v", again)
+	}
+	if _, err := store.InsertMessage(ctx, customerID, "s", run.ID, "user", map[string]any{"text": "new while monitor was running"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(ctx, `UPDATE messages SET created_at=now()-interval '30 minutes' WHERE customer_id=$1 AND session_id='s' AND content->>'text'='new while monitor was running'`, customerID); err != nil {
+		t.Fatal(err)
+	}
+	reclaimed, err := store.ClaimIdleSessions(ctx, "monitor-4", time.Minute, time.Minute, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reclaimed) != 1 {
+		t.Fatalf("new message after monitored cursor should be reclaimed: %#v", reclaimed)
+	}
+}

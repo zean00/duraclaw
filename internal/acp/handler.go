@@ -334,6 +334,7 @@ func (h *Handler) createAgentInstanceVersion(w http.ResponseWriter, r *http.Requ
 		MCPConfig           map[string]any `json:"mcp_config"`
 		WorkflowConfig      map[string]any `json:"workflow_config"`
 		PolicyConfig        map[string]any `json:"policy_config"`
+		ProfileConfig       map[string]any `json:"profile_config"`
 		Metadata            map[string]any `json:"metadata"`
 		ActivateImmediately bool           `json:"activate_immediately"`
 	}
@@ -356,6 +357,7 @@ func (h *Handler) createAgentInstanceVersion(w http.ResponseWriter, r *http.Requ
 		MCPConfig:           payload.MCPConfig,
 		WorkflowConfig:      payload.WorkflowConfig,
 		PolicyConfig:        payload.PolicyConfig,
+		ProfileConfig:       payload.ProfileConfig,
 		Metadata:            payload.Metadata,
 		ActivateImmediately: payload.ActivateImmediately,
 	})

@@ -234,3 +234,23 @@ func TestEleventhMigrationContainsOutboundDeliveryStatuses(t *testing.T) {
 		}
 	}
 }
+
+func TestTwelfthMigrationContainsAgentProfileAndSessionMonitor(t *testing.T) {
+	raw, err := migrationFS.ReadFile("migrations/0012_agent_profiles_session_monitor.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw)
+	for _, want := range []string{
+		"agent_instance_versions ADD COLUMN IF NOT EXISTS profile_config",
+		"sessions ADD COLUMN IF NOT EXISTS monitor_lease_owner",
+		"sessions ADD COLUMN IF NOT EXISTS monitor_lease_expires_at",
+		"sessions ADD COLUMN IF NOT EXISTS last_monitored_at",
+		"sessions ADD COLUMN IF NOT EXISTS active_pattern",
+		"CREATE INDEX IF NOT EXISTS sessions_monitor_claim_idx",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("migration missing %q", want)
+		}
+	}
+}
