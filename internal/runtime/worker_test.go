@@ -122,3 +122,15 @@ func TestEmitFinalOutbound(t *testing.T) {
 		t.Fatalf("payload=%#v", payload)
 	}
 }
+
+func TestFinishStreamToolCalls(t *testing.T) {
+	partials := map[int]*streamToolCall{
+		0: {Index: 0, ID: "call-1", Type: "function", Name: "echo"},
+	}
+	partials[0].Arguments.WriteString(`{"message":`)
+	partials[0].Arguments.WriteString(`"hello"}`)
+	got := finishStreamToolCalls(partials)
+	if len(got) != 1 || got[0].ID != "call-1" || got[0].Function.Name != "echo" || got[0].Function.Arguments["message"] != "hello" {
+		t.Fatalf("got=%#v", got)
+	}
+}

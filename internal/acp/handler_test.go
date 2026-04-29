@@ -5,6 +5,7 @@ import (
 	"duraclaw/internal/db"
 	"duraclaw/internal/mcp"
 	"duraclaw/internal/observability"
+	"os"
 
 	"net/http"
 	"net/http/httptest"
@@ -74,6 +75,24 @@ func TestMetrics(t *testing.T) {
 	NewHandler(nil).Routes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestGeneratedArtifactRouteIsRegistered(t *testing.T) {
+	raw, err := os.ReadFile("handler.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(raw)
+	for _, want := range []string{
+		`POST /acp/runs/{run_id}/artifacts/generate`,
+		`POST /admin/media/generate`,
+		"GenerateMediaArtifact",
+		`AddEvent(r.Context(), run.ID, "artifact.generated"`,
+	} {
+		if !strings.Contains(src, want) {
+			t.Fatalf("handler missing generated artifact hook %q", want)
+		}
 	}
 }
 
@@ -350,6 +369,58 @@ func TestCreatePolicyPackValidatesPayloadBeforeStore(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "name") {
 		t.Fatalf("body=%s", rec.Body.String())
+	}
+}
+
+func TestCreatePolicyPackVersionValidatesPayloadBeforeStore(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/admin/policy-packs/pack-1/versions", strings.NewReader(`{"version":0}`))
+	rec := httptest.NewRecorder()
+	NewHandler(nil).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "version") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/admin/policy-packs/pack-1/versions", strings.NewReader(`{"version":2,"status":"archived"}`))
+	rec = httptest.NewRecorder()
+	NewHandler(nil).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "status") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSetPolicyPackStatusValidatesPayloadBeforeStore(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/admin/policy-packs/pack-1/status", strings.NewReader(`{"status":"archived"}`))
+	rec := httptest.NewRecorder()
+	NewHandler(nil).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "status") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPolicyPackHistoryRoutesAreRegistered(t *testing.T) {
+	raw, err := os.ReadFile("handler.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(raw)
+	for _, want := range []string{
+		`GET /admin/policy-packs/{pack_id}/versions`,
+		`GET /admin/policy-packs/{pack_id}/diff`,
+		"PolicyPackVersions",
+		"PolicyPackDiff",
+	} {
+		if !strings.Contains(src, want) {
+			t.Fatalf("handler missing policy history hook %q", want)
+		}
+	}
+}
+
+func TestPolicyPackDiffRequiresTarget(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/admin/policy-packs/pack-1/diff", nil)
+	rec := httptest.NewRecorder()
+	NewHandler(nil).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "to_policy_pack_id") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

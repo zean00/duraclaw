@@ -160,8 +160,16 @@ func parseStreamDelta(raw []byte) (StreamDelta, bool) {
 	var payload struct {
 		Choices []struct {
 			Delta struct {
-				Content   string          `json:"content"`
-				ToolCalls json.RawMessage `json:"tool_calls"`
+				Content   string `json:"content"`
+				ToolCalls []struct {
+					Index    int    `json:"index"`
+					ID       string `json:"id"`
+					Type     string `json:"type"`
+					Function struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls"`
 			} `json:"delta"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
@@ -175,11 +183,17 @@ func parseStreamDelta(raw []byte) (StreamDelta, bool) {
 		choice := payload.Choices[0]
 		delta.Content = choice.Delta.Content
 		delta.FinishReason = choice.FinishReason
-		if len(choice.Delta.ToolCalls) > 0 {
-			_ = json.Unmarshal(choice.Delta.ToolCalls, &delta.ToolCalls)
+		for _, call := range choice.Delta.ToolCalls {
+			delta.ToolCallDeltas = append(delta.ToolCallDeltas, ToolCallDelta{
+				Index:             call.Index,
+				ID:                call.ID,
+				Type:              call.Type,
+				FunctionName:      call.Function.Name,
+				FunctionArguments: call.Function.Arguments,
+			})
 		}
 	}
-	return delta, delta.Content != "" || len(delta.ToolCalls) > 0 || delta.FinishReason != "" || delta.Usage.TotalTokens > 0
+	return delta, delta.Content != "" || len(delta.ToolCalls) > 0 || len(delta.ToolCallDeltas) > 0 || delta.FinishReason != "" || delta.Usage.TotalTokens > 0
 }
 
 func (p OpenAICompatibleProvider) TranscribeAudio(ctx context.Context, req AudioTranscriptionRequest) (*AudioTranscriptionResult, error) {

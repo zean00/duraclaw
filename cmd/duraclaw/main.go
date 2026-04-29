@@ -22,6 +22,7 @@ import (
 	"duraclaw/internal/providers"
 	"duraclaw/internal/runtime"
 	"duraclaw/internal/scheduler"
+	"duraclaw/internal/tools"
 )
 
 func main() {
@@ -60,14 +61,18 @@ func main() {
 	embedder := buildEmbeddingProvider(cfg)
 	outboundService := outbound.NewService(store)
 	mcpManager := buildMCPManager(cfg)
+	providerRegistry := buildProviderRegistry(cfg)
+	modelConfig := buildModelConfig(cfg)
+	mediaBlobStore := buildMediaBlobStore(cfg)
 	asyncWriter := asyncwrite.NewWriter(store, cfg.Hostname, db.DefaultRuntimeLimits().AsyncBufferSize).WithCounters(counters).WithOTLPExporter(otlp)
-	worker := runtime.NewWorkerWithProviders(store, buildProviderRegistry(cfg), buildModelConfig(cfg), cfg.Hostname).
+	worker := runtime.NewWorkerWithProviders(store, providerRegistry, modelConfig, cfg.Hostname).
 		WithCounters(counters).
 		WithOTLPExporter(otlp).
 		WithOutbound(outboundService).
 		WithAsyncWriter(asyncWriter).
 		WithProcessors(buildArtifactRegistry(cfg)).
-		WithEmbedder(embedder)
+		WithEmbedder(embedder).
+		WithMediaBlobStore(mediaBlobStore)
 	worker.SetMCPManager(mcpManager)
 	go func() {
 		if err := worker.Loop(ctx, cfg.WorkerInterval); err != nil && err != context.Canceled {
@@ -102,7 +107,7 @@ func main() {
 	}()
 	server := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           observability.InstrumentHTTP(acp.NewHandler(store).WithAdminToken(cfg.AdminToken).WithACPToken(cfg.ACPToken).WithRequireAuth(cfg.RequireAuth).WithCounters(counters).WithEmbedder(embedder).WithMCPManager(mcpManager).WithLogger(logger).Routes()),
+		Handler:           observability.InstrumentHTTP(acp.NewHandler(store).WithAdminToken(cfg.AdminToken).WithACPToken(cfg.ACPToken).WithRequireAuth(cfg.RequireAuth).WithCounters(counters).WithEmbedder(embedder).WithMCPManager(mcpManager).WithProviders(providerRegistry, modelConfig).WithMediaBlobStore(mediaBlobStore).WithLogger(logger).Routes()),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {
@@ -304,6 +309,13 @@ func buildProviderRegistry(cfg config) *providers.Registry {
 		registry.Register("local", buildProvider(cfg))
 	}
 	return registry
+}
+
+func buildMediaBlobStore(cfg config) tools.MediaBlobStore {
+	if strings.TrimSpace(cfg.GeneratedMediaDir) == "" {
+		return nil
+	}
+	return tools.FileMediaBlobStore{Directory: cfg.GeneratedMediaDir, RefPrefix: cfg.GeneratedMediaRefPrefix}
 }
 
 func buildModelConfig(cfg config) providers.ModelConfig {

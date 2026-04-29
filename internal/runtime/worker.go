@@ -26,23 +26,26 @@ import (
 )
 
 const defaultMaxIterations = 6
+const streamDeltaFlushBytes = 2048
+const streamDeltaMaxEvents = 256
 
 type Worker struct {
-	store         *db.Store
-	providers     *providers.Registry
-	modelConfig   providers.ModelConfig
-	processors    *artifacts.Registry
-	tools         *tools.Registry
-	mcpManager    *mcp.Manager
-	counters      *observability.Counters
-	otlp          observability.OTLPExporter
-	embedder      embeddings.Provider
-	asyncWriter   *asyncwrite.Writer
-	outbound      *outbound.Service
-	policy        *policy.Engine
-	owner         string
-	leaseFor      time.Duration
-	maxIterations int
+	store          *db.Store
+	providers      *providers.Registry
+	modelConfig    providers.ModelConfig
+	processors     *artifacts.Registry
+	tools          *tools.Registry
+	mcpManager     *mcp.Manager
+	counters       *observability.Counters
+	otlp           observability.OTLPExporter
+	embedder       embeddings.Provider
+	asyncWriter    *asyncwrite.Writer
+	outbound       *outbound.Service
+	policy         *policy.Engine
+	mediaBlobStore tools.MediaBlobStore
+	owner          string
+	leaseFor       time.Duration
+	maxIterations  int
 }
 
 type runTraceContext struct {
@@ -95,8 +98,23 @@ func NewWorkerWithProviders(store *db.Store, registry *providers.Registry, model
 		toolRegistry.Register(tools.ListMemoriesTool{Store: store})
 		toolRegistry.Register(tools.SavePreferenceTool{Store: store})
 		toolRegistry.Register(tools.ListPreferencesTool{Store: store})
+		registerMediaGenerationTools(toolRegistry, registry, store, modelConfig, nil)
 	}
 	return &Worker{store: store, providers: registry, modelConfig: modelConfig, processors: artifacts.NewRegistry(artifacts.MockProcessor{}), tools: toolRegistry, policy: policy.NewEngine(store), owner: owner, leaseFor: 2 * time.Minute, maxIterations: defaultMaxIterations, embedder: embeddings.NewHashProvider(768)}
+}
+
+func (w *Worker) WithMediaBlobStore(store tools.MediaBlobStore) *Worker {
+	w.mediaBlobStore = store
+	if w.tools != nil && w.store != nil {
+		registerMediaGenerationTools(w.tools, w.providers, w.store, w.modelConfig, store)
+	}
+	return w
+}
+
+func registerMediaGenerationTools(registry *tools.Registry, providers *providers.Registry, store *db.Store, modelConfig providers.ModelConfig, blobStore tools.MediaBlobStore) {
+	registry.Register(tools.MediaGenerationTool{Kind: "image", Registry: providers, Store: store, ModelConfig: modelConfig, BlobStore: blobStore})
+	registry.Register(tools.MediaGenerationTool{Kind: "audio", Registry: providers, Store: store, ModelConfig: modelConfig, BlobStore: blobStore})
+	registry.Register(tools.MediaGenerationTool{Kind: "video", Registry: providers, Store: store, ModelConfig: modelConfig, BlobStore: blobStore})
 }
 
 func (w *Worker) WithCounters(counters *observability.Counters) *Worker {
@@ -496,7 +514,9 @@ func (w *Worker) chat(ctx context.Context, run *db.Run, messages []providers.Mes
 		} else {
 			var resp *providers.LLMResponse
 			started := time.Now()
-			if durable, ok := provider.(providers.DurableProvider); ok {
+			if streamer, ok := provider.(providers.StreamingProvider); ok {
+				resp, err = w.chatStream(ctx, run, streamer, messages, toolDefs, candidate.Model)
+			} else if durable, ok := provider.(providers.DurableProvider); ok {
 				resp, err = durable.ChatDurable(ctx, providers.CallMetadata{
 					CustomerID:      run.CustomerID,
 					UserID:          run.UserID,
@@ -532,6 +552,119 @@ func (w *Worker) chat(ctx context.Context, run *db.Run, messages []providers.Mes
 		lastErr = fmt.Errorf("no provider candidates configured")
 	}
 	return nil, lastErr
+}
+
+func (w *Worker) chatStream(ctx context.Context, run *db.Run, provider providers.StreamingProvider, messages []providers.Message, toolDefs []providers.ToolDefinition, model string) (*providers.LLMResponse, error) {
+	ch, err := provider.ChatStream(ctx, messages, toolDefs, model, nil)
+	if err != nil {
+		return nil, err
+	}
+	var content strings.Builder
+	var deltaChunk strings.Builder
+	deltaEvents := 0
+	droppedDeltaBytes := 0
+	var calls []providers.ToolCall
+	partials := map[int]*streamToolCall{}
+	var finish string
+	var usage providers.UsageInfo
+	for delta := range ch {
+		if delta.Content != "" {
+			content.WriteString(delta.Content)
+			deltaChunk.WriteString(delta.Content)
+			if deltaChunk.Len() >= streamDeltaFlushBytes {
+				if deltaEvents < streamDeltaMaxEvents {
+					_ = w.store.AddEvent(ctx, run.ID, "model.delta", map[string]any{"content": deltaChunk.String(), "model": model, "aggregated": true})
+					deltaEvents++
+				} else {
+					droppedDeltaBytes += deltaChunk.Len()
+				}
+				deltaChunk.Reset()
+			}
+		}
+		if len(delta.ToolCalls) > 0 {
+			calls = append(calls, delta.ToolCalls...)
+			_ = w.store.AddEvent(ctx, run.ID, "model.tool_delta", map[string]any{"tool_calls": len(delta.ToolCalls), "model": model})
+		}
+		if len(delta.ToolCallDeltas) > 0 {
+			for _, call := range delta.ToolCallDeltas {
+				partial := partials[call.Index]
+				if partial == nil {
+					partial = &streamToolCall{Index: call.Index}
+					partials[call.Index] = partial
+				}
+				if call.ID != "" {
+					partial.ID = call.ID
+				}
+				if call.Type != "" {
+					partial.Type = call.Type
+				}
+				if call.FunctionName != "" {
+					partial.Name = call.FunctionName
+				}
+				partial.Arguments.WriteString(call.FunctionArguments)
+			}
+			_ = w.store.AddEvent(ctx, run.ID, "model.tool_delta", map[string]any{"tool_calls": len(delta.ToolCallDeltas), "model": model})
+		}
+		if delta.FinishReason != "" {
+			finish = delta.FinishReason
+		}
+		if delta.Usage.TotalTokens > 0 || delta.Usage.InputTokens > 0 || delta.Usage.OutputTokens > 0 {
+			usage = delta.Usage
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if deltaChunk.Len() > 0 {
+		if deltaEvents < streamDeltaMaxEvents {
+			_ = w.store.AddEvent(ctx, run.ID, "model.delta", map[string]any{"content": deltaChunk.String(), "model": model, "aggregated": true})
+		} else {
+			droppedDeltaBytes += deltaChunk.Len()
+		}
+	}
+	if droppedDeltaBytes > 0 {
+		_ = w.store.AddEvent(ctx, run.ID, "model.delta_dropped", map[string]any{"bytes": droppedDeltaBytes, "model": model, "reason": "stream_delta_event_limit"})
+	}
+	if len(partials) > 0 {
+		calls = append(calls, finishStreamToolCalls(partials)...)
+	}
+	return &providers.LLMResponse{Content: content.String(), ToolCalls: calls, FinishReason: finish, Usage: usage}, nil
+}
+
+type streamToolCall struct {
+	Index     int
+	ID        string
+	Type      string
+	Name      string
+	Arguments strings.Builder
+}
+
+func finishStreamToolCalls(partials map[int]*streamToolCall) []providers.ToolCall {
+	out := make([]providers.ToolCall, 0, len(partials))
+	for i := 0; i < len(partials); i++ {
+		partial := partials[i]
+		if partial == nil {
+			continue
+		}
+		args := map[string]any{}
+		raw := strings.TrimSpace(partial.Arguments.String())
+		if raw != "" {
+			_ = json.Unmarshal([]byte(raw), &args)
+		}
+		typ := partial.Type
+		if typ == "" {
+			typ = "function"
+		}
+		out = append(out, providers.ToolCall{
+			ID:   partial.ID,
+			Type: typ,
+			Function: providers.FunctionCall{
+				Name:      partial.Name,
+				Arguments: args,
+			},
+		})
+	}
+	return out
 }
 
 func (w *Worker) recordModelUsage(usage providers.UsageInfo) {

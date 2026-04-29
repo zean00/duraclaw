@@ -3,8 +3,11 @@ package db
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 type AgentPolicy struct {
@@ -60,6 +63,19 @@ type PolicyEvaluation struct {
 	CreatedAt       time.Time       `json:"created_at"`
 }
 
+type PolicyRuleDiff struct {
+	Change string     `json:"change"`
+	Rule   PolicyRule `json:"rule"`
+}
+
+type PolicyPackDiff struct {
+	FromPolicyPackID string           `json:"from_policy_pack_id"`
+	ToPolicyPackID   string           `json:"to_policy_pack_id"`
+	Added            []PolicyRuleDiff `json:"added"`
+	Removed          []PolicyRuleDiff `json:"removed"`
+	Modified         []PolicyRuleDiff `json:"modified"`
+}
+
 func (s *Store) UpsertAgentPolicy(ctx context.Context, p AgentPolicy) error {
 	mediaTypes, _ := json.Marshal(p.ArtifactMediaTypes)
 	_, err := s.pool.Exec(ctx, `
@@ -97,9 +113,59 @@ func (s *Store) CreatePolicyPack(ctx context.Context, name string, version int, 
 	err := s.pool.QueryRow(ctx, `
 		INSERT INTO policy_packs(name,version,owner_scope)
 		VALUES($1,$2,$3)
-		ON CONFLICT (name, version) DO UPDATE SET owner_scope=EXCLUDED.owner_scope
+		ON CONFLICT (name, version) DO NOTHING
 		RETURNING id::text`, name, version, ownerScope).Scan(&id)
+	if err == nil {
+		return id, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return "", err
+	}
+	err = s.pool.QueryRow(ctx, `SELECT id::text FROM policy_packs WHERE name=$1 AND version=$2`, name, version).Scan(&id)
 	return id, err
+}
+
+func (s *Store) CreatePolicyPackVersion(ctx context.Context, sourcePackID string, version int, status string) (string, error) {
+	if sourcePackID == "" || version <= 0 {
+		return "", fmt.Errorf("source policy_pack_id and positive version are required")
+	}
+	if status == "" {
+		status = "draft"
+	}
+	if status != "active" && status != "disabled" && status != "draft" {
+		return "", fmt.Errorf("invalid policy pack status %q", status)
+	}
+	var id string
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		var name, ownerScope string
+		if err := tx.QueryRow(ctx, `SELECT name, owner_scope FROM policy_packs WHERE id=$1`, sourcePackID).Scan(&name, &ownerScope); err != nil {
+			return err
+		}
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO policy_packs(name,version,status,owner_scope)
+			VALUES($1,$2,$3,$4)
+			RETURNING id::text`, name, version, status, ownerScope).Scan(&id); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `
+			INSERT INTO policy_rules(policy_pack_id,rule_type,enforcement_mode,priority,condition,action,instruction_text,status)
+			SELECT $1, rule_type, enforcement_mode, priority, condition, action, instruction_text, status
+			FROM policy_rules
+			WHERE policy_pack_id=$2`, id, sourcePackID)
+		return err
+	})
+	return id, err
+}
+
+func (s *Store) SetPolicyPackStatus(ctx context.Context, policyPackID, status string) error {
+	if policyPackID == "" || status == "" {
+		return fmt.Errorf("policy_pack_id and status are required")
+	}
+	if status != "active" && status != "disabled" && status != "draft" {
+		return fmt.Errorf("invalid policy pack status %q", status)
+	}
+	_, err := s.pool.Exec(ctx, `UPDATE policy_packs SET status=$2 WHERE id=$1`, policyPackID, status)
+	return err
 }
 
 func (s *Store) ListPolicyPacks(ctx context.Context, limit int) ([]PolicyPack, error) {
@@ -124,6 +190,72 @@ func (s *Store) ListPolicyPacks(ctx context.Context, limit int) ([]PolicyPack, e
 		out = append(out, pack)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) PolicyPack(ctx context.Context, policyPackID string) (*PolicyPack, error) {
+	var pack PolicyPack
+	err := s.pool.QueryRow(ctx, `
+		SELECT id::text, name, version, status, owner_scope, created_at
+		FROM policy_packs
+		WHERE id=$1`, policyPackID).
+		Scan(&pack.ID, &pack.Name, &pack.Version, &pack.Status, &pack.OwnerScope, &pack.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &pack, nil
+}
+
+func (s *Store) PolicyPackVersions(ctx context.Context, policyPackID string) ([]PolicyPack, error) {
+	pack, err := s.PolicyPack(ctx, policyPackID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT id::text, name, version, status, owner_scope, created_at
+		FROM policy_packs
+		WHERE name=$1
+		ORDER BY version DESC`, pack.Name)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PolicyPack
+	for rows.Next() {
+		var p PolicyPack
+		if err := rows.Scan(&p.ID, &p.Name, &p.Version, &p.Status, &p.OwnerScope, &p.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) PolicyPackDiff(ctx context.Context, fromPolicyPackID, toPolicyPackID string) (*PolicyPackDiff, error) {
+	fromRules, err := s.ListPolicyRules(ctx, fromPolicyPackID)
+	if err != nil {
+		return nil, err
+	}
+	toRules, err := s.ListPolicyRules(ctx, toPolicyPackID)
+	if err != nil {
+		return nil, err
+	}
+	from := policyRuleNaturalKeyMap(fromRules)
+	to := policyRuleNaturalKeyMap(toRules)
+	diff := &PolicyPackDiff{FromPolicyPackID: fromPolicyPackID, ToPolicyPackID: toPolicyPackID}
+	for key, rule := range to {
+		before, ok := from[key]
+		if !ok {
+			diff.Added = append(diff.Added, PolicyRuleDiff{Change: "added", Rule: rule})
+		} else if policyRuleFingerprint(before) != policyRuleFingerprint(rule) {
+			diff.Modified = append(diff.Modified, PolicyRuleDiff{Change: "modified", Rule: rule})
+		}
+	}
+	for key, rule := range from {
+		if _, ok := to[key]; !ok {
+			diff.Removed = append(diff.Removed, PolicyRuleDiff{Change: "removed", Rule: rule})
+		}
+	}
+	return diff, nil
 }
 
 func (s *Store) UpsertPolicyRule(ctx context.Context, rule PolicyRule) (string, error) {
@@ -235,6 +367,19 @@ func (s *Store) RecordPolicyEvaluation(ctx context.Context, ev PolicyEvaluation)
 		nullableStringPtr(ev.RunID), nullableStringPtr(ev.StepID), nullableStringPtr(ev.WorkflowRunID), ev.WorkflowNodeKey,
 		nullableStringPtr(ev.PolicyPackID), nullableStringPtr(ev.PolicyRuleID), ev.EnforcementMode, ev.Decision, ev.Reason, b)
 	return err
+}
+
+func policyRuleNaturalKeyMap(rules []PolicyRule) map[string]PolicyRule {
+	out := map[string]PolicyRule{}
+	for _, rule := range rules {
+		key := rule.RuleType + "\x00" + rule.EnforcementMode + "\x00" + fmt.Sprint(rule.Priority)
+		out[key] = rule
+	}
+	return out
+}
+
+func policyRuleFingerprint(rule PolicyRule) string {
+	return string(rule.Condition) + "\x00" + rule.Action + "\x00" + rule.InstructionText + "\x00" + rule.Status
 }
 
 func (s *Store) ListPolicyEvaluations(ctx context.Context, runID string, limit int) ([]PolicyEvaluation, error) {

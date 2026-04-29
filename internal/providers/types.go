@@ -107,10 +107,19 @@ type LLMResponse struct {
 }
 
 type StreamDelta struct {
-	Content      string     `json:"content,omitempty"`
-	ToolCalls    []ToolCall `json:"tool_calls,omitempty"`
-	FinishReason string     `json:"finish_reason,omitempty"`
-	Usage        UsageInfo  `json:"usage,omitempty"`
+	Content        string          `json:"content,omitempty"`
+	ToolCalls      []ToolCall      `json:"tool_calls,omitempty"`
+	ToolCallDeltas []ToolCallDelta `json:"tool_call_deltas,omitempty"`
+	FinishReason   string          `json:"finish_reason,omitempty"`
+	Usage          UsageInfo       `json:"usage,omitempty"`
+}
+
+type ToolCallDelta struct {
+	Index             int    `json:"index"`
+	ID                string `json:"id,omitempty"`
+	Type              string `json:"type,omitempty"`
+	FunctionName      string `json:"function_name,omitempty"`
+	FunctionArguments string `json:"function_arguments,omitempty"`
 }
 
 type CallMetadata struct {

@@ -46,6 +46,24 @@ func TestWorkerPassesTraceContextToWorkflowExecutors(t *testing.T) {
 	}
 }
 
+func TestWorkerStreamsProviderDeltasToRunEvents(t *testing.T) {
+	raw, err := os.ReadFile("worker.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(raw)
+	for _, want := range []string{
+		"providers.StreamingProvider",
+		"ChatStream(ctx, messages, toolDefs, model, nil)",
+		`AddEvent(ctx, run.ID, "model.delta"`,
+		`AddEvent(ctx, run.ID, "model.tool_delta"`,
+	} {
+		if !strings.Contains(src, want) {
+			t.Fatalf("worker missing streaming hook %q", want)
+		}
+	}
+}
+
 func TestWorkerAppliesVersionRuntimeConfig(t *testing.T) {
 	raw, err := os.ReadFile("worker.go")
 	if err != nil {

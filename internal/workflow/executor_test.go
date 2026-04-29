@@ -45,6 +45,16 @@ func (routeProvider) Chat(context.Context, []providers.Message, []providers.Tool
 	return &providers.LLMResponse{Content: `{"route":"approved","reason":"ok"}`, FinishReason: "stop"}, nil
 }
 
+type workflowImageProvider struct{}
+
+func (workflowImageProvider) GetDefaultModel() string { return "fake/image" }
+func (workflowImageProvider) Chat(context.Context, []providers.Message, []providers.ToolDefinition, string, map[string]any) (*providers.LLMResponse, error) {
+	return &providers.LLMResponse{Content: "ok"}, nil
+}
+func (workflowImageProvider) GenerateImage(context.Context, providers.ImageGenerationRequest) (*providers.ImageGenerationResult, error) {
+	return &providers.ImageGenerationResult{Images: []providers.GeneratedImage{{URL: "https://example.test/generated.png", RevisedPrompt: "drawn"}}}, nil
+}
+
 type testMCPClient struct{}
 
 func (testMCPClient) CallTool(context.Context, mcp.ExecutionContext, string, string, map[string]any) (map[string]any, error) {
@@ -451,6 +461,27 @@ func TestExecuteGraphToolNode(t *testing.T) {
 	}
 	if got.Output["result"] != "tool ok" {
 		t.Fatalf("got=%#v", got)
+	}
+}
+
+func TestExecuteGraphGenerateImageNodeAttachesArtifact(t *testing.T) {
+	registry := providers.NewRegistry("fake")
+	registry.Register("fake", workflowImageProvider{})
+	store := &fakeWorkflowStore{
+		nodes: []db.WorkflowNode{{NodeKey: "image", NodeType: "generate_image", Config: json.RawMessage(`{"prompt":"draw","artifact_id":"img-1"}`)}},
+	}
+	got, err := NewExecutor(store).WithProviders(registry, providers.ModelConfig{Primary: "fake/image"}).ExecuteGraph(context.Background(), GraphRequest{RunID: "run-1", WorkflowDefinitionID: "wf-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != "succeeded" || got.Output["artifact_id"] != "img-1" {
+		t.Fatalf("got=%#v", got)
+	}
+	if len(store.artifacts) != 1 || store.artifacts[0].ID != "img-1" || store.artifacts[0].StorageRef != "https://example.test/generated.png" {
+		t.Fatalf("artifacts=%#v", store.artifacts)
+	}
+	if len(store.events) == 0 || store.events[len(store.events)-1] != "artifact.generated" {
+		t.Fatalf("events=%#v", store.events)
 	}
 }
 

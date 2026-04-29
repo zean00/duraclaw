@@ -275,6 +275,7 @@ func supportedNodeType(typ string) bool {
 	switch typ {
 	case "start", "checkpoint", "message", "end", "ask_user", "split", "merge", "switch", "condition", "llm_condition", "tool", "mcp",
 		"tool_call", "mcp_call", "model_call", "retrieve_knowledge", "read_memory", "write_memory", "read_preference", "write_preference", "read_artifact", "process_artifact", "write_artifact",
+		"generate_image", "generate_audio", "generate_video",
 		"branch", "loop", "transform", "wait_timer", "emit_outbound_message", "create_background_job", "mcp_list_resources", "mcp_read_resource", "mcp_subscribe_resource", "mcp_unsubscribe_resource", "mcp_list_prompts", "mcp_get_prompt":
 		return true
 	default:
@@ -534,6 +535,8 @@ func (e *Executor) executeNode(ctx context.Context, req GraphRequest, node db.Wo
 		return e.executeProcessArtifact(ctx, req, config)
 	case "write_artifact":
 		return e.executeWriteArtifact(ctx, req, config)
+	case "generate_image", "generate_audio", "generate_video":
+		return e.executeGenerateMedia(ctx, req, node.NodeType, config)
 	case "transform":
 		return executeTransform(config, previous), "succeeded", nil
 	case "loop":
@@ -547,6 +550,44 @@ func (e *Executor) executeNode(ctx context.Context, req GraphRequest, node db.Wo
 	default:
 		return nil, "", fmt.Errorf("unsupported workflow node_type %q", node.NodeType)
 	}
+}
+
+func (e *Executor) executeGenerateMedia(ctx context.Context, req GraphRequest, nodeType string, config map[string]any) (map[string]any, string, error) {
+	kind := strings.TrimPrefix(nodeType, "generate_")
+	promptText, _ := config["prompt"].(string)
+	artifact, err := tools.GenerateMediaArtifact(ctx, tools.MediaGenerationRequest{
+		Kind:        kind,
+		Registry:    e.providers,
+		Store:       e.store,
+		ModelConfig: e.modelConfig,
+		ArtifactPolicy: policy.ArtifactRule{MediaTypes: map[string]bool{
+			"image/png":  true,
+			"audio/mpeg": true,
+			"audio/wav":  true,
+			"audio/aac":  true,
+			"audio/flac": true,
+			"audio/opus": true,
+			"video/mp4":  true,
+		}},
+		RunID:          req.RunID,
+		Prompt:         promptText,
+		Provider:       stringValue(config["provider"], ""),
+		Model:          stringValue(config["model"], ""),
+		ArtifactID:     stringValue(config["artifact_id"], ""),
+		Size:           stringValue(config["size"], ""),
+		Quality:        stringValue(config["quality"], ""),
+		ResponseFormat: stringValue(config["response_format"], ""),
+		Voice:          stringValue(config["voice"], ""),
+		Format:         stringValue(config["format"], ""),
+		Instructions:   stringValue(config["instructions"], ""),
+		Seconds:        stringValue(config["seconds"], ""),
+		Count:          intValue(config["count"]),
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	_ = e.store.AddEvent(ctx, req.RunID, "artifact.generated", map[string]any{"artifact_id": artifact.ID, "modality": artifact.Modality, "node_type": nodeType})
+	return map[string]any{"artifact_id": artifact.ID, "modality": artifact.Modality, "media_type": artifact.MediaType, "storage_ref": artifact.StorageRef}, "succeeded", nil
 }
 
 func (e *Executor) executeLLMCondition(ctx context.Context, req GraphRequest, node db.WorkflowNode, config map[string]any, previous map[string]any) (map[string]any, string, error) {

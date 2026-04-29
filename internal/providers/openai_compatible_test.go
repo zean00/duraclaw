@@ -100,7 +100,8 @@ func TestOpenAICompatibleProviderChatStream(t *testing.T) {
 		sawStream, _ = body["stream"].(bool)
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hel\"}}]}\n\n"))
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"lo\"},\"finish_reason\":\"stop\"}],\"usage\":{\"total_tokens\":3}}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"echo\",\"arguments\":\"{\\\"message\\\":\"}}]}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"lo\",\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"hi\\\"}\"}}]},\"finish_reason\":\"stop\"}],\"usage\":{\"total_tokens\":3}}\n\n"))
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
 	defer server.Close()
@@ -110,14 +111,16 @@ func TestOpenAICompatibleProviderChatStream(t *testing.T) {
 	}
 	var got strings.Builder
 	var finish string
+	var toolDeltas int
 	for delta := range ch {
 		got.WriteString(delta.Content)
+		toolDeltas += len(delta.ToolCallDeltas)
 		if delta.FinishReason != "" {
 			finish = delta.FinishReason
 		}
 	}
-	if !sawStream || got.String() != "hello" || finish != "stop" {
-		t.Fatalf("sawStream=%v got=%q finish=%q", sawStream, got.String(), finish)
+	if !sawStream || got.String() != "hello" || finish != "stop" || toolDeltas != 2 {
+		t.Fatalf("sawStream=%v got=%q finish=%q toolDeltas=%d", sawStream, got.String(), finish, toolDeltas)
 	}
 }
 

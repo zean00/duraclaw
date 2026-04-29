@@ -17,7 +17,9 @@ import (
 	"duraclaw/internal/mcp"
 	"duraclaw/internal/observability"
 	"duraclaw/internal/policy"
+	"duraclaw/internal/providers"
 	"duraclaw/internal/scheduler"
+	"duraclaw/internal/tools"
 	"duraclaw/internal/workflow"
 )
 
@@ -33,6 +35,9 @@ type Handler struct {
 	counters       *observability.Counters
 	embedder       embeddings.Provider
 	mcpManager     *mcp.Manager
+	providers      *providers.Registry
+	modelConfig    providers.ModelConfig
+	mediaBlobStore tools.MediaBlobStore
 	logger         *slog.Logger
 }
 
@@ -93,6 +98,20 @@ func (h *Handler) WithMCPManager(manager *mcp.Manager) *Handler {
 	return h
 }
 
+func (h *Handler) WithProviders(registry *providers.Registry, cfg providers.ModelConfig) *Handler {
+	h.providers = registry
+	h.modelConfig = cfg
+	if h.workflow != nil {
+		h.workflow.WithProviders(registry, cfg)
+	}
+	return h
+}
+
+func (h *Handler) WithMediaBlobStore(store tools.MediaBlobStore) *Handler {
+	h.mediaBlobStore = store
+	return h
+}
+
 func (h *Handler) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", h.healthz)
@@ -112,10 +131,15 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /admin/agent-policies", h.requireAdmin(h.getAgentPolicy))
 	mux.HandleFunc("POST /admin/policy-packs", h.requireAdmin(h.createPolicyPack))
 	mux.HandleFunc("GET /admin/policy-packs", h.requireAdmin(h.listPolicyPacks))
+	mux.HandleFunc("POST /admin/policy-packs/{pack_id}/versions", h.requireAdmin(h.createPolicyPackVersion))
+	mux.HandleFunc("POST /admin/policy-packs/{pack_id}/status", h.requireAdmin(h.setPolicyPackStatus))
+	mux.HandleFunc("GET /admin/policy-packs/{pack_id}/versions", h.requireAdmin(h.listPolicyPackVersions))
+	mux.HandleFunc("GET /admin/policy-packs/{pack_id}/diff", h.requireAdmin(h.policyPackDiff))
 	mux.HandleFunc("PUT /admin/policy-packs/{pack_id}/rules/{rule_id}", h.requireAdmin(h.upsertPolicyRule))
 	mux.HandleFunc("GET /admin/policy-packs/{pack_id}/rules", h.requireAdmin(h.listPolicyRules))
 	mux.HandleFunc("POST /admin/policy-packs/{pack_id}/assignments", h.requireAdmin(h.assignPolicyPack))
 	mux.HandleFunc("GET /admin/policy-evaluations", h.requireAdmin(h.listPolicyEvaluations))
+	mux.HandleFunc("POST /admin/media/generate", h.requireAdmin(h.adminGenerateMedia))
 	mux.HandleFunc("PUT /admin/runtime-limits/customer/{customer_id}", h.requireAdmin(h.upsertCustomerRuntimeLimits))
 	mux.HandleFunc("GET /admin/runtime-limits/customer/{customer_id}", h.requireAdmin(h.getCustomerRuntimeLimits))
 	mux.HandleFunc("PUT /admin/runtime-limits/customer/{customer_id}/agent-instances/{agent_instance_id}", h.requireAdmin(h.upsertAgentInstanceRuntimeLimits))
@@ -158,6 +182,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("POST /acp/sessions/{session_id}/reassign", h.requireACP(h.reassignSession))
 	mux.HandleFunc("POST /acp/runs", h.requireACP(h.startRun))
 	mux.HandleFunc("POST /acp/runs/{run_id}/artifacts", h.requireACP(h.attachArtifacts))
+	mux.HandleFunc("POST /acp/runs/{run_id}/artifacts/generate", h.requireACP(h.generateArtifact))
 	mux.HandleFunc("GET /acp/runs/{run_id}/artifacts", h.requireACP(h.listRunArtifacts))
 	mux.HandleFunc("GET /acp/artifacts/{artifact_id}/representations", h.requireACP(h.listArtifactRepresentations))
 	mux.HandleFunc("GET /acp/runs/{run_id}", h.requireACP(h.runStatus))
@@ -585,6 +610,77 @@ func (h *Handler) listPolicyPacks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"policy_packs": packs})
+}
+
+func (h *Handler) createPolicyPackVersion(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		Version int    `json:"version"`
+		Status  string `json:"status"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if payload.Version <= 0 {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("positive version is required"))
+		return
+	}
+	if payload.Status != "" && !validPolicyPackStatus(payload.Status) {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid policy pack status %q", payload.Status))
+		return
+	}
+	id, err := h.store.CreatePolicyPackVersion(r.Context(), r.PathValue("pack_id"), payload.Version, payload.Status)
+	if err != nil {
+		writeError(w, statusForError(err), err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]string{"policy_pack_id": id})
+}
+
+func (h *Handler) setPolicyPackStatus(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		Status string `json:"status"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !validPolicyPackStatus(payload.Status) {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid policy pack status %q", payload.Status))
+		return
+	}
+	if err := h.store.SetPolicyPackStatus(r.Context(), r.PathValue("pack_id"), payload.Status); err != nil {
+		writeError(w, statusForError(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"policy_pack_id": r.PathValue("pack_id"), "status": payload.Status})
+}
+
+func (h *Handler) listPolicyPackVersions(w http.ResponseWriter, r *http.Request) {
+	packs, err := h.store.PolicyPackVersions(r.Context(), r.PathValue("pack_id"))
+	if err != nil {
+		writeError(w, statusForError(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"policy_packs": packs})
+}
+
+func (h *Handler) policyPackDiff(w http.ResponseWriter, r *http.Request) {
+	to := r.URL.Query().Get("to_policy_pack_id")
+	if to == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("to_policy_pack_id is required"))
+		return
+	}
+	diff, err := h.store.PolicyPackDiff(r.Context(), r.PathValue("pack_id"), to)
+	if err != nil {
+		writeError(w, statusForError(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, diff)
+}
+
+func validPolicyPackStatus(status string) bool {
+	return status == "active" || status == "disabled" || status == "draft"
 }
 
 func (h *Handler) upsertPolicyRule(w http.ResponseWriter, r *http.Request) {
@@ -1564,6 +1660,122 @@ func (h *Handler) attachArtifacts(w http.ResponseWriter, r *http.Request) {
 	_ = h.store.AddEvent(r.Context(), r.PathValue("run_id"), "artifacts.attached", map[string]any{"count": len(payload.Artifacts)})
 	_ = h.store.AddObservabilityEvent(r.Context(), c.CustomerID, r.PathValue("run_id"), "artifacts_attached", map[string]any{"count": len(payload.Artifacts)})
 	writeJSON(w, http.StatusOK, map[string]any{"attached": len(payload.Artifacts)})
+}
+
+func (h *Handler) generateArtifact(w http.ResponseWriter, r *http.Request) {
+	c, ok := existingRunContext(w, r)
+	if !ok {
+		return
+	}
+	run, ok := h.requireRunAccess(w, r, c)
+	if !ok {
+		return
+	}
+	if h.providers == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("provider registry is not configured"))
+		return
+	}
+	var payload struct {
+		Kind           string `json:"kind"`
+		Prompt         string `json:"prompt"`
+		Provider       string `json:"provider"`
+		Model          string `json:"model"`
+		ArtifactID     string `json:"artifact_id"`
+		Size           string `json:"size"`
+		Quality        string `json:"quality"`
+		ResponseFormat string `json:"response_format"`
+		Voice          string `json:"voice"`
+		Format         string `json:"format"`
+		Instructions   string `json:"instructions"`
+		Seconds        string `json:"seconds"`
+		Count          int    `json:"count"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if payload.Kind == "" {
+		payload.Kind = "image"
+	}
+	artifact, err := tools.GenerateMediaArtifact(r.Context(), tools.MediaGenerationRequest{
+		Kind:           payload.Kind,
+		Registry:       h.providers,
+		Store:          h.store,
+		ModelConfig:    h.modelConfig,
+		ArtifactPolicy: h.artifactRule(r, c),
+		BlobStore:      h.mediaBlobStore,
+		RunID:          run.ID,
+		Prompt:         payload.Prompt,
+		Provider:       payload.Provider,
+		Model:          payload.Model,
+		ArtifactID:     payload.ArtifactID,
+		Size:           payload.Size,
+		Quality:        payload.Quality,
+		ResponseFormat: payload.ResponseFormat,
+		Voice:          payload.Voice,
+		Format:         payload.Format,
+		Instructions:   payload.Instructions,
+		Seconds:        payload.Seconds,
+		Count:          payload.Count,
+	})
+	if err != nil {
+		writeError(w, statusForError(err), err)
+		return
+	}
+	_ = h.store.AddEvent(r.Context(), run.ID, "artifact.generated", map[string]any{"artifact_id": artifact.ID, "modality": artifact.Modality, "source": "acp"})
+	_ = h.store.AddObservabilityEvent(r.Context(), c.CustomerID, run.ID, "artifact_generated", map[string]any{"artifact_id": artifact.ID, "modality": artifact.Modality})
+	writeJSON(w, http.StatusCreated, artifact)
+}
+
+func (h *Handler) adminGenerateMedia(w http.ResponseWriter, r *http.Request) {
+	if h.providers == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("provider registry is not configured"))
+		return
+	}
+	var payload struct {
+		CustomerID     string `json:"customer_id"`
+		RunID          string `json:"run_id"`
+		Kind           string `json:"kind"`
+		Prompt         string `json:"prompt"`
+		Provider       string `json:"provider"`
+		Model          string `json:"model"`
+		ArtifactID     string `json:"artifact_id"`
+		Size           string `json:"size"`
+		Quality        string `json:"quality"`
+		ResponseFormat string `json:"response_format"`
+		Voice          string `json:"voice"`
+		Format         string `json:"format"`
+		Instructions   string `json:"instructions"`
+		Seconds        string `json:"seconds"`
+		Count          int    `json:"count"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if payload.RunID == "" || payload.CustomerID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id and run_id are required"))
+		return
+	}
+	run, err := h.store.GetRun(r.Context(), payload.RunID)
+	if err != nil || run.CustomerID != payload.CustomerID {
+		writeError(w, http.StatusNotFound, fmt.Errorf("run not found"))
+		return
+	}
+	c := db.ACPContext{CustomerID: run.CustomerID, UserID: run.UserID, AgentInstanceID: run.AgentInstanceID, SessionID: run.SessionID, RunID: run.ID, RequestID: run.RequestID}
+	artifact, err := tools.GenerateMediaArtifact(r.Context(), tools.MediaGenerationRequest{
+		Kind: payload.Kind, Registry: h.providers, Store: h.store, ModelConfig: h.modelConfig, ArtifactPolicy: h.artifactRule(r, c), BlobStore: h.mediaBlobStore,
+		RunID: run.ID, Prompt: payload.Prompt, Provider: payload.Provider, Model: payload.Model, ArtifactID: payload.ArtifactID,
+		Size: payload.Size, Quality: payload.Quality, ResponseFormat: payload.ResponseFormat, Voice: payload.Voice, Format: payload.Format,
+		Instructions: payload.Instructions, Seconds: payload.Seconds, Count: payload.Count,
+	})
+	if err != nil {
+		writeError(w, statusForError(err), err)
+		return
+	}
+	_ = h.store.AddEvent(r.Context(), run.ID, "artifact.generated", map[string]any{"artifact_id": artifact.ID, "modality": artifact.Modality, "source": "admin"})
+	_ = h.store.AddObservabilityEvent(r.Context(), run.CustomerID, run.ID, "artifact_generated", map[string]any{"artifact_id": artifact.ID, "modality": artifact.Modality, "source": "admin"})
+	writeJSON(w, http.StatusCreated, artifact)
 }
 
 func (h *Handler) listRunArtifacts(w http.ResponseWriter, r *http.Request) {

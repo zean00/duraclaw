@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -109,6 +110,34 @@ func TestBuildArtifactRegistryAddsProviderProcessor(t *testing.T) {
 	processor, ok := registry.ProcessorFor(artifacts.Artifact{Modality: "image", MediaType: "image/png", StorageRef: "https://example.test/image.png"})
 	if !ok || !strings.Contains(processor.Name(), "openrouter") {
 		t.Fatalf("processor=%#v ok=%v", processor, ok)
+	}
+}
+
+func TestMainWiresProviderRegistryIntoACPHandler(t *testing.T) {
+	raw, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(raw)
+	for _, want := range []string{
+		"providerRegistry := buildProviderRegistry(cfg)",
+		"modelConfig := buildModelConfig(cfg)",
+		"WithProviders(providerRegistry, modelConfig)",
+		"runtime.NewWorkerWithProviders(store, providerRegistry, modelConfig",
+	} {
+		if !strings.Contains(src, want) {
+			t.Fatalf("main missing provider wiring %q", want)
+		}
+	}
+}
+
+func TestBuildMediaBlobStore(t *testing.T) {
+	if got := buildMediaBlobStore(config{}); got != nil {
+		t.Fatalf("expected nil store")
+	}
+	got := buildMediaBlobStore(config{GeneratedMediaDir: "/tmp/generated", GeneratedMediaRefPrefix: "object://generated"})
+	if got == nil {
+		t.Fatalf("expected media blob store")
 	}
 }
 
