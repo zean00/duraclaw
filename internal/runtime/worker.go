@@ -284,6 +284,7 @@ func (w *Worker) process(ctx context.Context, run *db.Run) error {
 	if _, err := w.policyEngine().Enforce(ctx, "pre_run", w.policyContext(run, "", "", text)); err != nil {
 		return err
 	}
+	scope = mergePromptInjectionRisk(scope, detectPromptInjectionRisk(text))
 	var recommendations <-chan recommendationSidecarResult
 	if !scope.InjectionRisk {
 		recommendations = w.startRecommendationSidecar(ctx, run, scope, text)
@@ -1101,8 +1102,7 @@ func (w *Worker) judgeScope(ctx context.Context, run *db.Run, content string) (s
 		return scopeJudgement{}, err
 	}
 	risk := detectPromptInjectionRisk(content)
-	judgement.InjectionRisk = risk.Risky
-	judgement.InjectionReason = risk.Reason
+	judgement = mergePromptInjectionRisk(judgement, risk)
 	judgement = normalizeInitialScopeJudgement(judgement, threshold)
 	_ = w.store.AddEvent(ctx, run.ID, "scope.judged", map[string]any{"provider": result.Provider, "model": result.Model, "intent": judgement.Intent, "pass": "initial", "injection_risk": judgement.InjectionRisk, "injection_reason": judgement.InjectionReason})
 	if strings.EqualFold(strings.TrimSpace(judgement.Intent), "implicit") {
@@ -1115,9 +1115,7 @@ func (w *Worker) judgeScope(ctx context.Context, run *db.Run, content string) (s
 			if err != nil {
 				return scopeJudgement{}, err
 			}
-			contextRisk := detectPromptInjectionRisk(scopeContext)
-			judgement.InjectionRisk = risk.Risky || contextRisk.Risky
-			judgement.InjectionReason = strings.Trim(strings.Join([]string{risk.Reason, contextRisk.Reason}, "; "), "; ")
+			judgement = mergePromptInjectionRisk(mergePromptInjectionRisk(judgement, risk), detectPromptInjectionRisk(scopeContext))
 			_ = w.store.AddEvent(ctx, run.ID, "scope.judged", map[string]any{"provider": result.Provider, "model": result.Model, "intent": judgement.Intent, "pass": "context", "injection_risk": judgement.InjectionRisk, "injection_reason": judgement.InjectionReason})
 		}
 	}
@@ -1212,6 +1210,19 @@ func detectPromptInjectionRisk(text string) promptInjectionRisk {
 		}
 	}
 	return promptInjectionRisk{}
+}
+
+func mergePromptInjectionRisk(judgement scopeJudgement, risk promptInjectionRisk) scopeJudgement {
+	if !risk.Risky {
+		return judgement
+	}
+	judgement.InjectionRisk = true
+	if strings.TrimSpace(judgement.InjectionReason) == "" {
+		judgement.InjectionReason = risk.Reason
+	} else if !strings.Contains(judgement.InjectionReason, risk.Reason) {
+		judgement.InjectionReason += "; " + risk.Reason
+	}
+	return judgement
 }
 
 func (w *Worker) scopeJudgeContext(ctx context.Context, run *db.Run) (string, error) {

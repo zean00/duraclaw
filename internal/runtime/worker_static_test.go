@@ -191,6 +191,12 @@ func TestScopeRunsBeforeSideEffects(t *testing.T) {
 	if !strings.Contains(src, "prompt_injection.recommendation_blocked") {
 		t.Fatalf("recommendation side effects should be blocked on injection risk")
 	}
+	buildContext := strings.Index(src, "text, err := w.buildContextPhase(ctx, run, workflowContext)")
+	mergeRisk := strings.Index(src, "scope = mergePromptInjectionRisk(scope, detectPromptInjectionRisk(text))")
+	toolGate := strings.Index(src, "if !scope.InjectionRisk")
+	if buildContext < 0 || mergeRisk < buildContext || toolGate < mergeRisk {
+		t.Fatalf("built context injection risk should be merged before side-effect gates")
+	}
 }
 
 func TestRecommendationPipelineReusesScopeContextDecision(t *testing.T) {

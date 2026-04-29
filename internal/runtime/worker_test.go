@@ -180,6 +180,21 @@ func TestDetectPromptInjectionRisk(t *testing.T) {
 	}
 }
 
+func TestMergePromptInjectionRisk(t *testing.T) {
+	judgement := mergePromptInjectionRisk(scopeJudgement{InScope: true}, promptInjectionRisk{Risky: true, Reason: "marker"})
+	if !judgement.InjectionRisk || judgement.InjectionReason != "marker" {
+		t.Fatalf("judgement=%#v", judgement)
+	}
+	judgement = mergePromptInjectionRisk(judgement, promptInjectionRisk{Risky: true, Reason: "marker"})
+	if judgement.InjectionReason != "marker" {
+		t.Fatalf("duplicate reason should not be appended: %#v", judgement)
+	}
+	judgement = mergePromptInjectionRisk(judgement, promptInjectionRisk{Risky: true, Reason: "other"})
+	if judgement.InjectionReason != "marker; other" {
+		t.Fatalf("reason=%q", judgement.InjectionReason)
+	}
+}
+
 func TestStringSetTrimsAndDropsEmptyValues(t *testing.T) {
 	got := stringSet([]string{" a ", "", "b"})
 	if len(got) != 2 || !got["a"] || !got["b"] {
