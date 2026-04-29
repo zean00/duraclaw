@@ -1774,6 +1774,9 @@ func (w *Worker) mcpManagerForRun(ctx context.Context, run *db.Run) (*mcp.Manage
 }
 
 func (w *Worker) mcpToolManifest(ctx context.Context, run *db.Run) (string, error) {
+	if strings.TrimSpace(run.CustomerID) == "" || strings.TrimSpace(run.AgentInstanceID) == "" {
+		return "", nil
+	}
 	manager, err := w.mcpManagerForRun(ctx, run)
 	if err != nil || manager == nil {
 		return "", err

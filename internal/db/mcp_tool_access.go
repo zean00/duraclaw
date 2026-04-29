@@ -78,31 +78,40 @@ func (s *Store) UpsertMCPToolAccessRule(ctx context.Context, rule MCPToolAccessR
 	if err != nil {
 		return nil, err
 	}
-	_ = json.Unmarshal(allowedJSON, &out.AllowedTools)
-	_ = json.Unmarshal(deniedJSON, &out.DeniedTools)
+	if err := decodeMCPToolLists(allowedJSON, deniedJSON, &out); err != nil {
+		return nil, err
+	}
 	s.invalidateMCPToolAccess(rule.CustomerID, rule.AgentInstanceID, rule.UserID, rule.ServerName)
 	return &out, nil
 }
 
 func (s *Store) MCPToolAccessRule(ctx context.Context, customerID, agentInstanceID, userID, serverName string) (*MCPToolAccessRule, error) {
+	customerID = strings.TrimSpace(customerID)
+	agentInstanceID = strings.TrimSpace(agentInstanceID)
+	userID = strings.TrimSpace(userID)
+	serverName = strings.TrimSpace(serverName)
 	var out MCPToolAccessRule
 	var allowedJSON, deniedJSON []byte
 	err := s.pool.QueryRow(ctx, `
 		SELECT customer_id, agent_instance_id, user_id, server_name, allowed_tools, denied_tools, metadata, updated_at
 		FROM mcp_tool_access_rules
 		WHERE customer_id=$1 AND agent_instance_id=$2 AND user_id=$3 AND server_name=$4`,
-		customerID, agentInstanceID, strings.TrimSpace(userID), serverName).
+		customerID, agentInstanceID, userID, serverName).
 		Scan(&out.CustomerID, &out.AgentInstanceID, &out.UserID, &out.ServerName, &allowedJSON, &deniedJSON, &out.Metadata, &out.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
-	_ = json.Unmarshal(allowedJSON, &out.AllowedTools)
-	_ = json.Unmarshal(deniedJSON, &out.DeniedTools)
+	if err := decodeMCPToolLists(allowedJSON, deniedJSON, &out); err != nil {
+		return nil, err
+	}
 	return &out, nil
 }
 
 func (s *Store) DeleteMCPToolAccessRule(ctx context.Context, customerID, agentInstanceID, userID, serverName string) error {
+	customerID = strings.TrimSpace(customerID)
+	agentInstanceID = strings.TrimSpace(agentInstanceID)
 	userID = strings.TrimSpace(userID)
+	serverName = strings.TrimSpace(serverName)
 	_, err := s.pool.Exec(ctx, `
 		DELETE FROM mcp_tool_access_rules
 		WHERE customer_id=$1 AND agent_instance_id=$2 AND user_id=$3 AND server_name=$4`,
@@ -114,6 +123,10 @@ func (s *Store) DeleteMCPToolAccessRule(ctx context.Context, customerID, agentIn
 }
 
 func (s *Store) EffectiveMCPToolAccess(ctx context.Context, customerID, agentInstanceID, userID, serverName string) (EffectiveMCPToolAccess, error) {
+	customerID = strings.TrimSpace(customerID)
+	agentInstanceID = strings.TrimSpace(agentInstanceID)
+	userID = strings.TrimSpace(userID)
+	serverName = strings.TrimSpace(serverName)
 	key := mcpToolAccessCacheKey(customerID, agentInstanceID, userID, serverName)
 	if cached, ok := s.mcpAccessCache.Load(key); ok {
 		entry := cached.(mcpToolAccessCacheEntry)
@@ -131,6 +144,13 @@ func (s *Store) EffectiveMCPToolAccess(ctx context.Context, customerID, agentIns
 }
 
 func (s *Store) CheckMCPToolAccess(ctx context.Context, customerID, agentInstanceID, userID, serverName, toolName string) error {
+	customerID = strings.TrimSpace(customerID)
+	agentInstanceID = strings.TrimSpace(agentInstanceID)
+	serverName = strings.TrimSpace(serverName)
+	toolName = strings.TrimSpace(toolName)
+	if customerID == "" || agentInstanceID == "" || serverName == "" || toolName == "" {
+		return ValidationError{Message: "customer_id, agent_instance_id, server_name, and tool_name are required for MCP tool access"}
+	}
 	access, err := s.EffectiveMCPToolAccess(ctx, customerID, agentInstanceID, userID, serverName)
 	if err != nil {
 		return err
@@ -213,4 +233,16 @@ func mcpToolSet(values []string) map[string]bool {
 		out[value] = true
 	}
 	return out
+}
+
+func decodeMCPToolLists(allowedJSON, deniedJSON []byte, out *MCPToolAccessRule) error {
+	if err := json.Unmarshal(allowedJSON, &out.AllowedTools); err != nil {
+		return fmt.Errorf("decode mcp allowed tools: %w", err)
+	}
+	if err := json.Unmarshal(deniedJSON, &out.DeniedTools); err != nil {
+		return fmt.Errorf("decode mcp denied tools: %w", err)
+	}
+	out.AllowedTools = normalizedStrings(out.AllowedTools)
+	out.DeniedTools = normalizedStrings(out.DeniedTools)
+	return nil
 }

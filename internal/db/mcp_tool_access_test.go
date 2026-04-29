@@ -72,3 +72,29 @@ func TestStoreMCPToolAccessRuleEffectiveAndCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestStoreCheckMCPToolAccessRequiresContext(t *testing.T) {
+	store, mock := newMockStore(t)
+	err := store.CheckMCPToolAccess(context.Background(), "", "a1", "u1", "srv", "search")
+	if err == nil || !strings.Contains(err.Error(), "customer_id") {
+		t.Fatalf("expected validation error, got %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStoreMCPToolAccessRuleRejectsMalformedToolLists(t *testing.T) {
+	store, mock := newMockStore(t)
+	now := time.Now().UTC()
+	mock.ExpectQuery("FROM mcp_tool_access_rules").
+		WithArgs("c1", "a1", "u1", "srv").
+		WillReturnRows(mcpToolAccessRows().AddRow("c1", "a1", "u1", "srv", []byte(`{"bad":true}`), []byte(`[]`), []byte(`{}`), now))
+	_, err := store.MCPToolAccessRule(context.Background(), " c1 ", " a1 ", " u1 ", " srv ")
+	if err == nil || !strings.Contains(err.Error(), "allowed tools") {
+		t.Fatalf("expected decode error, got %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
