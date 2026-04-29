@@ -12,6 +12,11 @@ type fakeMCPStore struct {
 	started   bool
 	completed bool
 	errText   *string
+	accessErr error
+}
+
+func (s *fakeMCPStore) CheckMCPToolAccess(context.Context, string, string, string, string, string) error {
+	return s.accessErr
 }
 
 func (s *fakeMCPStore) StartMCPCall(context.Context, string, string, string, any) (string, error) {
@@ -49,6 +54,20 @@ func TestExecutorPersistsAndInjectsToolCallID(t *testing.T) {
 	}
 	if !store.started || !store.completed || client.seenToolCallID != "mcp-call-1" || got["ok"] != true {
 		t.Fatalf("store=%#v client=%#v got=%#v", store, client, got)
+	}
+}
+
+func TestExecutorChecksToolAccessBeforePersisting(t *testing.T) {
+	store := &fakeMCPStore{accessErr: errors.New("denied")}
+	client := &fakeMCPClient{}
+	manager := NewManager()
+	manager.Register("srv", client)
+	_, err := NewExecutor(manager, store).CallTool(context.Background(), ExecutionContext{RunID: "run-1"}, "srv", "tool", nil)
+	if err == nil {
+		t.Fatalf("expected access error")
+	}
+	if store.started || store.completed {
+		t.Fatalf("access denial should not persist MCP call: %#v", store)
 	}
 }
 

@@ -1790,9 +1790,16 @@ func (w *Worker) mcpToolManifest(ctx context.Context, run *db.Run) (string, erro
 		if err != nil {
 			continue
 		}
+		access, err := w.store.EffectiveMCPToolAccess(ctx, run.CustomerID, run.AgentInstanceID, run.UserID, status.Name)
+		if err != nil {
+			return "", err
+		}
 		for _, tool := range tools {
 			name := strings.TrimSpace(tool.Name)
 			if name == "" {
+				continue
+			}
+			if !db.MCPToolAllowed(access, name) {
 				continue
 			}
 			line := "- " + status.Name + "." + name

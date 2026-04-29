@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -151,7 +152,10 @@ type ToolCallRecord struct {
 	Error     *string         `json:"error,omitempty"`
 }
 
-type Store struct{ pool Pool }
+type Store struct {
+	pool           Pool
+	mcpAccessCache sync.Map
+}
 
 func NewStore(pool Pool) *Store { return &Store{pool: pool} }
 

@@ -347,6 +347,32 @@ func TestAdminMCPRoutes(t *testing.T) {
 	}
 }
 
+func TestAdminMCPToolsCanBeFilteredByAccessRule(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	now := time.Now().UTC()
+	mock.ExpectQuery("FROM mcp_tool_access_rules").
+		WithArgs("c1", "a1", "u1", "srv").
+		WillReturnRows(pgxmock.NewRows([]string{"customer_id", "agent_instance_id", "user_id", "server_name", "allowed_tools", "denied_tools", "metadata", "updated_at"}).
+			AddRow("c1", "a1", "u1", "srv", []byte(`["other"]`), []byte(`["blocked"]`), []byte(`{}`), now))
+
+	manager := mcp.NewManager()
+	manager.Register("srv", adminMCPClient{})
+	handler := NewHandler(db.NewStore(mock)).WithMCPManager(manager).Routes()
+	req := httptest.NewRequest(http.MethodGet, "/admin/mcp/servers/srv/tools?customer_id=c1&agent_instance_id=a1&user_id=u1", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), `"lookup"`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestMCPNotificationRequiresContext(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/admin/mcp/notifications", strings.NewReader(`{"server_name":"srv"}`))
 	rec := httptest.NewRecorder()

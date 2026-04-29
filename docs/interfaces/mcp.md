@@ -43,6 +43,14 @@ DURACLAW_MCP_CONFIG='{
 
 Agent instance versions can add per-version servers through `mcp_config.servers`.
 
+## Tool Access Rules
+
+MCP tool access can be narrowed per customer, agent instance, user, and server. If no rule exists, Duraclaw preserves the configured server behavior and exposes all discovered tools. A customer-level rule is the baseline; a user-level rule for the same customer, agent instance, and server replaces that baseline.
+
+Rules support both `allowed_tools` and `denied_tools`. `denied_tools` wins over `allowed_tools`. When `allowed_tools` is empty, every discovered tool is allowed except denied tools.
+
+Access is enforced when building the model-visible MCP tool manifest and again immediately before MCP tool execution.
+
 ## Admin Discovery
 
 - `GET /admin/mcp/servers`
@@ -52,6 +60,18 @@ Agent instance versions can add per-version servers through `mcp_config.servers`
 - `GET /admin/mcp/servers/{server_name}/prompts`
 - `POST /admin/mcp/servers/{server_name}/prompts/{prompt_name}/get`
 - `POST /admin/mcp/notifications`
+
+Customer-level access rules:
+
+- `PUT /admin/mcp/tool-access/customers/{customer_id}/agent-instances/{agent_instance_id}/servers/{server_name}`
+- `GET /admin/mcp/tool-access/customers/{customer_id}/agent-instances/{agent_instance_id}/servers/{server_name}`
+- `DELETE /admin/mcp/tool-access/customers/{customer_id}/agent-instances/{agent_instance_id}/servers/{server_name}`
+
+User-level access rules:
+
+- `PUT /admin/mcp/tool-access/customers/{customer_id}/agent-instances/{agent_instance_id}/users/{user_id}/servers/{server_name}`
+- `GET /admin/mcp/tool-access/customers/{customer_id}/agent-instances/{agent_instance_id}/users/{user_id}/servers/{server_name}`
+- `DELETE /admin/mcp/tool-access/customers/{customer_id}/agent-instances/{agent_instance_id}/users/{user_id}/servers/{server_name}`
 
 ## Retry Policy
 

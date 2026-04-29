@@ -11,6 +11,7 @@ import (
 )
 
 type CallStore interface {
+	CheckMCPToolAccess(ctx context.Context, customerID, agentInstanceID, userID, serverName, toolName string) error
 	StartMCPCall(ctx context.Context, runID, serverName, toolName string, request any) (string, error)
 	CompleteMCPCall(ctx context.Context, callID, runID string, response any, errText *string) error
 }
@@ -43,6 +44,9 @@ func (e *Executor) CallTool(ctx context.Context, exec ExecutionContext, serverNa
 	client, ok := e.manager.Client(serverName)
 	if !ok {
 		return nil, fmt.Errorf("mcp server %q not found", serverName)
+	}
+	if err := e.store.CheckMCPToolAccess(ctx, exec.CustomerID, exec.AgentInstanceID, exec.UserID, serverName, toolName); err != nil {
+		return nil, err
 	}
 	callID, err := e.store.StartMCPCall(ctx, exec.RunID, serverName, toolName, map[string]any{
 		"headers":   exec.Headers(),

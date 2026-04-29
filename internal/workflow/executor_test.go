@@ -202,6 +202,10 @@ func (s *fakeWorkflowStore) StartMCPCall(context.Context, string, string, string
 	return "mcp-call-1", nil
 }
 
+func (s *fakeWorkflowStore) CheckMCPToolAccess(context.Context, string, string, string, string, string) error {
+	return nil
+}
+
 func (s *fakeWorkflowStore) CompleteMCPCall(context.Context, string, string, any, *string) error {
 	return nil
 }

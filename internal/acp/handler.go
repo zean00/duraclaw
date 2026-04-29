@@ -1353,7 +1353,102 @@ func (h *Handler) listMCPTools(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
+	customerID := strings.TrimSpace(r.URL.Query().Get("customer_id"))
+	agentInstanceID := strings.TrimSpace(r.URL.Query().Get("agent_instance_id"))
+	if customerID != "" && agentInstanceID != "" && h.store != nil {
+		access, err := h.store.EffectiveMCPToolAccess(r.Context(), customerID, agentInstanceID, strings.TrimSpace(r.URL.Query().Get("user_id")), serverName)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		filtered := tools[:0]
+		for _, tool := range tools {
+			if db.MCPToolAllowed(access, tool.Name) {
+				filtered = append(filtered, tool)
+			}
+		}
+		tools = filtered
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"server_name": serverName, "tools": tools})
+}
+
+func (h *Handler) upsertCustomerMCPToolAccess(w http.ResponseWriter, r *http.Request) {
+	h.upsertMCPToolAccess(w, r, "")
+}
+
+func (h *Handler) upsertUserMCPToolAccess(w http.ResponseWriter, r *http.Request) {
+	h.upsertMCPToolAccess(w, r, r.PathValue("user_id"))
+}
+
+func (h *Handler) getCustomerMCPToolAccess(w http.ResponseWriter, r *http.Request) {
+	h.getMCPToolAccess(w, r, "")
+}
+
+func (h *Handler) getUserMCPToolAccess(w http.ResponseWriter, r *http.Request) {
+	h.getMCPToolAccess(w, r, r.PathValue("user_id"))
+}
+
+func (h *Handler) deleteCustomerMCPToolAccess(w http.ResponseWriter, r *http.Request) {
+	h.deleteMCPToolAccess(w, r, "")
+}
+
+func (h *Handler) deleteUserMCPToolAccess(w http.ResponseWriter, r *http.Request) {
+	h.deleteMCPToolAccess(w, r, r.PathValue("user_id"))
+}
+
+func (h *Handler) upsertMCPToolAccess(w http.ResponseWriter, r *http.Request, userID string) {
+	if h.store == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("store is not configured"))
+		return
+	}
+	var payload struct {
+		AllowedTools []string       `json:"allowed_tools"`
+		DeniedTools  []string       `json:"denied_tools"`
+		Metadata     map[string]any `json:"metadata"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	rule, err := h.store.UpsertMCPToolAccessRule(r.Context(), db.MCPToolAccessRule{
+		CustomerID: r.PathValue("customer_id"), AgentInstanceID: r.PathValue("agent_instance_id"), UserID: userID, ServerName: r.PathValue("server_name"),
+		AllowedTools: payload.AllowedTools, DeniedTools: payload.DeniedTools, Metadata: rawJSON(payload.Metadata),
+	})
+	if err != nil {
+		writeError(w, statusForError(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rule)
+}
+
+func (h *Handler) getMCPToolAccess(w http.ResponseWriter, r *http.Request, userID string) {
+	if h.store == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("store is not configured"))
+		return
+	}
+	rule, err := h.store.MCPToolAccessRule(r.Context(), r.PathValue("customer_id"), r.PathValue("agent_instance_id"), userID, r.PathValue("server_name"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	effective, err := h.store.EffectiveMCPToolAccess(r.Context(), r.PathValue("customer_id"), r.PathValue("agent_instance_id"), userID, r.PathValue("server_name"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"rule": rule, "effective": effective})
+}
+
+func (h *Handler) deleteMCPToolAccess(w http.ResponseWriter, r *http.Request, userID string) {
+	if h.store == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("store is not configured"))
+		return
+	}
+	if err := h.store.DeleteMCPToolAccessRule(r.Context(), r.PathValue("customer_id"), r.PathValue("agent_instance_id"), userID, r.PathValue("server_name")); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": true})
 }
 
 func (h *Handler) listMCPResources(w http.ResponseWriter, r *http.Request) {
@@ -2366,6 +2461,14 @@ func queryLimit(r *http.Request, fallback int) int {
 func mustJSONString(v any) string {
 	b, _ := json.Marshal(v)
 	return string(b)
+}
+
+func rawJSON(v any) json.RawMessage {
+	b, _ := json.Marshal(v)
+	if len(b) == 0 || string(b) == "null" {
+		return json.RawMessage(`{}`)
+	}
+	return b
 }
 
 func contentFormat(contentType string) string {

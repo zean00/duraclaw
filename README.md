@@ -258,6 +258,12 @@ The GitHub Actions workflow runs the full suite with a `pgvector/pgvector:pg17` 
 - `GET /admin/mcp/servers/{server_name}/prompts`
 - `POST /admin/mcp/servers/{server_name}/prompts/{prompt_name}/get`
 - `POST /admin/mcp/notifications`
+- `PUT /admin/mcp/tool-access/customers/{customer_id}/agent-instances/{agent_instance_id}/servers/{server_name}`
+- `GET /admin/mcp/tool-access/customers/{customer_id}/agent-instances/{agent_instance_id}/servers/{server_name}`
+- `DELETE /admin/mcp/tool-access/customers/{customer_id}/agent-instances/{agent_instance_id}/servers/{server_name}`
+- `PUT /admin/mcp/tool-access/customers/{customer_id}/agent-instances/{agent_instance_id}/users/{user_id}/servers/{server_name}`
+- `GET /admin/mcp/tool-access/customers/{customer_id}/agent-instances/{agent_instance_id}/users/{user_id}/servers/{server_name}`
+- `DELETE /admin/mcp/tool-access/customers/{customer_id}/agent-instances/{agent_instance_id}/users/{user_id}/servers/{server_name}`
 - `POST /admin/broadcasts`
 - `GET /admin/broadcasts?customer_id={customer_id}`
 - `GET /admin/broadcasts/{broadcast_id}/targets?customer_id={customer_id}`

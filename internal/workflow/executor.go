@@ -48,6 +48,7 @@ type Store interface {
 	CompleteToolCall(ctx context.Context, callID, runID string, result any, errText *string) error
 	StartMCPCall(ctx context.Context, runID, serverName, toolName string, request any) (string, error)
 	CompleteMCPCall(ctx context.Context, callID, runID string, response any, errText *string) error
+	CheckMCPToolAccess(ctx context.Context, customerID, agentInstanceID, userID, serverName, toolName string) error
 	ListMemories(ctx context.Context, customerID, userID string, limit int) ([]db.Memory, error)
 	AddMemory(ctx context.Context, customerID, userID, sessionID, memoryType, content string, metadata any) (string, error)
 	ListPreferences(ctx context.Context, customerID, userID string, limit int) ([]db.Preference, error)

@@ -105,6 +105,7 @@ Supported part types include `text`, `artifact_ref`, `location`, `structured_dat
 - Outbound intents, broadcasts, and delivery status.
 - Background runs.
 - MCP server discovery and notifications.
+- MCP tool access rules by customer, agent instance, user, and server.
 - Retention cleanup.
 - Admin media generation.
 
