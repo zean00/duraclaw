@@ -19,6 +19,12 @@ type Sink interface {
 	Handle(ctx context.Context, item db.OutboxItem) error
 }
 
+type BatchSink interface {
+	Sink
+	HandleBatch(ctx context.Context, topic string, items []db.OutboxItem) error
+	SupportsBatch(topic string) bool
+}
+
 type OutboxWorker struct {
 	store      OutboxStore
 	sink       Sink
@@ -48,6 +54,53 @@ func (w *OutboxWorker) RunOnce(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	if batchSink, ok := w.sink.(BatchSink); ok && batchSinkSupportsAnyTopic(batchSink, items) {
+		return w.runBatch(ctx, batchSink, items)
+	}
+	completed := 0
+	for _, item := range items {
+		n, err := w.runSingleItems(ctx, []db.OutboxItem{item})
+		completed += n
+		if err != nil {
+			return completed, err
+		}
+	}
+	return completed, nil
+}
+
+func (w *OutboxWorker) runBatch(ctx context.Context, sink BatchSink, items []db.OutboxItem) (int, error) {
+	completed := 0
+	for _, group := range groupByTopic(items) {
+		if len(group.items) == 0 {
+			continue
+		}
+		if !sink.SupportsBatch(group.topic) {
+			n, err := w.runSingleItems(ctx, group.items)
+			completed += n
+			if err != nil {
+				return completed, err
+			}
+			continue
+		}
+		if err := sink.HandleBatch(ctx, group.topic, group.items); err != nil {
+			for _, item := range group.items {
+				_ = w.store.ReleaseOutbox(context.Background(), item.ID, w.retryDelay)
+			}
+			w.inc("outbox_failed")
+			return completed, err
+		}
+		for _, item := range group.items {
+			if err := w.store.CompleteOutbox(ctx, item.ID); err != nil {
+				return completed, err
+			}
+			completed++
+			w.inc("outbox_completed")
+		}
+	}
+	return completed, nil
+}
+
+func (w *OutboxWorker) runSingleItems(ctx context.Context, items []db.OutboxItem) (int, error) {
 	completed := 0
 	for _, item := range items {
 		if err := w.sink.Handle(ctx, item); err != nil {
@@ -62,6 +115,39 @@ func (w *OutboxWorker) RunOnce(ctx context.Context) (int, error) {
 		w.inc("outbox_completed")
 	}
 	return completed, nil
+}
+
+func batchSinkSupportsAnyTopic(sink BatchSink, items []db.OutboxItem) bool {
+	for _, group := range groupByTopic(items) {
+		if sink.SupportsBatch(group.topic) {
+			return true
+		}
+	}
+	return false
+}
+
+type topicGroup struct {
+	topic string
+	items []db.OutboxItem
+}
+
+func groupByTopic(items []db.OutboxItem) []topicGroup {
+	positions := map[string]int{}
+	var groups []topicGroup
+	for _, item := range items {
+		topic := item.Topic
+		if topic == "" {
+			topic = "default"
+		}
+		pos, ok := positions[topic]
+		if !ok {
+			positions[topic] = len(groups)
+			groups = append(groups, topicGroup{topic: topic})
+			pos = len(groups) - 1
+		}
+		groups[pos].items = append(groups[pos].items, item)
+	}
+	return groups
 }
 
 func (w *OutboxWorker) inc(name string) {

@@ -29,6 +29,7 @@ type config struct {
 	SessionCompactionThreshold  int
 	OutboxSink                  string
 	NexusOutboundURL            string
+	NexusOutboundBulkURL        string
 	NexusToken                  string
 	AdminToken                  string
 	ACPToken                    string
@@ -92,6 +93,7 @@ func loadConfig() (config, error) {
 		SessionCompactionThreshold:  envInt("DURACLAW_SESSION_COMPACTION_THRESHOLD_CHARS", 12000),
 		OutboxSink:                  envDefault("DURACLAW_OUTBOX_SINK", "log"),
 		NexusOutboundURL:            os.Getenv("NEXUS_OUTBOUND_URL"),
+		NexusOutboundBulkURL:        os.Getenv("NEXUS_OUTBOUND_BULK_URL"),
 		NexusToken:                  os.Getenv("NEXUS_TOKEN"),
 		AdminToken:                  os.Getenv("DURACLAW_ADMIN_TOKEN"),
 		ACPToken:                    os.Getenv("DURACLAW_ACP_TOKEN"),

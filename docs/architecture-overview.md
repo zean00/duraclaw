@@ -36,7 +36,7 @@ Same-session runs are serialized by the worker claim query. Different sessions m
 | Session monitor | Idle-session compaction, memory/preference extraction, and active-time pattern tracking. |
 | Customer profile retriever | Optional external profile refresh into `users.metadata`, with prompt exposure controlled by an allowlist. |
 | Scheduler | PostgreSQL-backed cron jobs, reminder subscriptions, workflow timer wakeups, and deterministic idempotency keys. |
-| Outbound | Durable outbound intents for Nexus-owned delivery and delivery status callbacks. |
+| Outbound | Durable outbound intents for Nexus-owned single or bulk delivery and delivery status callbacks. |
 | Observability | Durable audit events, run traces, counters, `/metrics`, and optional OTLP export. |
 
 ## Data Boundary

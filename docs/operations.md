@@ -72,6 +72,7 @@ Retention cleanup can remove old artifacts, events, outbox rows, async write job
 - Configure admin and ACP bearer tokens.
 - Use non-mock chat and embedding providers.
 - Configure outbound delivery to Nexus.
+- Configure `NEXUS_OUTBOUND_BULK_URL` when Nexus supports bulk outbound delivery for broadcasts or reminder fanout.
 - Configure media storage for generated artifacts.
 - Configure OTLP or scrape `/metrics`.
 - Set runtime limits for customers or agent instances.

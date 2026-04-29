@@ -173,7 +173,7 @@ func exportOTLPMetrics(ctx context.Context, exporter observability.OTLPExporter,
 func buildOutboxSink(cfg config) outbound.Sink {
 	switch cfg.OutboxSink {
 	case "http", "nexus":
-		return outbound.HTTPSink{URL: cfg.NexusOutboundURL, Token: cfg.NexusToken}
+		return outbound.HTTPSink{URL: cfg.NexusOutboundURL, BatchURL: cfg.NexusOutboundBulkURL, Token: cfg.NexusToken}
 	default:
 		return outbound.LogSink{}
 	}

@@ -147,8 +147,11 @@ Log sink is the default. Nexus delivery:
 ```bash
 DURACLAW_OUTBOX_SINK=nexus
 NEXUS_OUTBOUND_URL=http://nexus.internal/acp/outbound
+NEXUS_OUTBOUND_BULK_URL=http://nexus.internal/acp/outbound/bulk
 NEXUS_TOKEN=...
 ```
+
+If `NEXUS_OUTBOUND_BULK_URL` is configured, the outbox worker groups claimed outbound rows by topic and posts a batch payload. Without it, Duraclaw posts one outbound intent per request to `NEXUS_OUTBOUND_URL`.
 
 ## Session Monitor
 

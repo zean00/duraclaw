@@ -935,7 +935,7 @@ Broadcast target selection should support:
 - Explicit user list.
 - Segment query.
 
-Implementation status: broadcast creation accepts explicit targets and database-resolved target selections for all customer users, specific user IDs, users attached to an agent instance, reminder subscribers, and a constrained segment selector over durable session fields (`user_id_prefix`, `session_id_prefix`, `agent_instance_id`, and RFC3339 `updated_since`). Arbitrary SQL segment queries are intentionally not accepted. Nexus delivery status callbacks accept `sent_to_nexus`, `delivered`, `failed`, and `cancelled`, update outbound and broadcast target state transactionally, and persist durable outbound acknowledgement observability events.
+Implementation status: broadcast creation accepts explicit targets and database-resolved target selections for all customer users, specific user IDs, users attached to an agent instance, reminder subscribers, and a constrained segment selector over durable session fields (`user_id_prefix`, `session_id_prefix`, `agent_instance_id`, and RFC3339 `updated_since`). Arbitrary SQL segment queries are intentionally not accepted. Nexus delivery status callbacks accept `sent_to_nexus`, `delivered`, `failed`, and `cancelled`, update outbound and broadcast target state transactionally, and persist durable outbound acknowledgement observability events. Duraclaw can push outbound intents to Nexus one at a time or in topic-grouped bulk batches when `NEXUS_OUTBOUND_BULK_URL` is configured.
 
 Outbound message states:
 

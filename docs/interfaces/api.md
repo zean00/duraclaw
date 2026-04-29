@@ -101,3 +101,54 @@ Accepted statuses:
 - `cancelled`
 
 `sent` is accepted as a compatibility alias for `sent_to_nexus`.
+
+## Duraclaw-to-Nexus Push
+
+When `DURACLAW_OUTBOX_SINK=nexus`, Duraclaw pushes outbound intents to Nexus from the PostgreSQL outbox.
+
+Single endpoint payload is the stored outbound outbox payload:
+
+```json
+{
+  "outbound_intent_id": "intent-1",
+  "customer_id": "customer-1",
+  "user_id": "user-1",
+  "session_id": "session-1",
+  "run_id": "run-1",
+  "intent_type": "assistant_message",
+  "payload": {
+    "text": "Hello"
+  }
+}
+```
+
+Bulk endpoint payload, enabled by `NEXUS_OUTBOUND_BULK_URL`:
+
+```json
+{
+  "topic": "nexus.outbound_intent",
+  "items": [
+    {
+      "outbox_id": 1,
+      "topic": "nexus.outbound_intent",
+      "payload": {
+        "outbound_intent_id": "intent-1",
+        "customer_id": "customer-1",
+        "user_id": "user-1",
+        "session_id": "session-1",
+        "intent_type": "broadcast",
+        "payload": {}
+      }
+    }
+  ]
+}
+```
+
+Both single and bulk requests include:
+
+- `Authorization: Bearer {NEXUS_TOKEN}` when configured.
+- `X-Duraclaw-Outbox-Topic`.
+- `X-Duraclaw-Outbox-ID` for single sends.
+- `X-Duraclaw-Outbox-Batch-Size` for bulk sends.
+
+Duraclaw completes outbox rows only after Nexus returns a 2xx status. Failed sends are released for retry.
