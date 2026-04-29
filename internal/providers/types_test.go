@@ -107,6 +107,20 @@ func TestFunctionCallUnmarshalsStringAndObjectArguments(t *testing.T) {
 	}
 }
 
+func TestFunctionCallMarshalsNilArgumentsAsEmptyObjectString(t *testing.T) {
+	raw, err := json.Marshal(FunctionCall{Name: "list_memories"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["arguments"] != "{}" {
+		t.Fatalf("arguments=%#v raw=%s", payload["arguments"], raw)
+	}
+}
+
 func TestMessageTextUsesContentPartsWhenContentBlank(t *testing.T) {
 	got := Message{ContentParts: []ContentPart{
 		{Type: "image_url", ImageURL: &ImageURLContent{URL: "https://example.test/image.png"}},

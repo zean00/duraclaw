@@ -101,7 +101,11 @@ type FunctionCall struct {
 }
 
 func (f FunctionCall) MarshalJSON() ([]byte, error) {
-	rawArgs, err := json.Marshal(f.Arguments)
+	args := f.Arguments
+	if args == nil {
+		args = map[string]any{}
+	}
+	rawArgs, err := json.Marshal(args)
 	if err != nil {
 		return nil, err
 	}
