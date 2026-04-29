@@ -22,6 +22,26 @@ func (p *fakeLLMProvider) Chat(_ context.Context, messages []providers.Message, 
 	return &providers.LLMResponse{Content: "extracted text", FinishReason: "stop"}, nil
 }
 
+type fakeUploadLLMProvider struct {
+	fakeLLMProvider
+	uploaded providers.FileUploadRequest
+}
+
+func (p *fakeUploadLLMProvider) UploadFile(_ context.Context, req providers.FileUploadRequest) (*providers.FileUploadResult, error) {
+	p.uploaded = req
+	return &providers.FileUploadResult{ID: "file_123", Filename: req.Filename, Purpose: req.Purpose, Bytes: int64(len(req.Data))}, nil
+}
+
+type fakeTranscriptionProvider struct {
+	fakeLLMProvider
+	request providers.AudioTranscriptionRequest
+}
+
+func (p *fakeTranscriptionProvider) TranscribeAudio(_ context.Context, req providers.AudioTranscriptionRequest) (*providers.AudioTranscriptionResult, error) {
+	p.request = req
+	return &providers.AudioTranscriptionResult{Text: "hello from audio"}, nil
+}
+
 func TestRegistrySelectsProcessor(t *testing.T) {
 	reg := NewRegistry(MockProcessor{})
 	processor, ok := reg.ProcessorFor(Artifact{Modality: "image"})
@@ -84,17 +104,26 @@ func TestProviderProcessorProcessesAudioTranscript(t *testing.T) {
 	}
 }
 
-func TestProviderProcessorRejectsDocumentURLAsFileData(t *testing.T) {
+func TestProviderProcessorFetchesDocumentURLAsDataURI(t *testing.T) {
 	provider := &fakeLLMProvider{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/pdf")
+		_, _ = w.Write([]byte("%PDF-1.7"))
+	}))
+	defer server.Close()
 	processor := ProviderProcessor{Provider: provider, Model: "document"}
-	_, err := processor.Process(context.Background(), ProcessorContext{}, Artifact{
-		ID: "doc-1", Modality: "document", MediaType: "application/pdf", StorageRef: "https://example.test/doc.pdf",
+	reps, err := processor.Process(context.Background(), ProcessorContext{}, Artifact{
+		ID: "doc-1", Modality: "document", MediaType: "application/pdf", StorageRef: server.URL + "/doc.pdf",
 	})
-	if err == nil || !strings.Contains(err.Error(), "requires inline") {
-		t.Fatalf("err=%v", err)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(provider.messages) != 0 {
-		t.Fatalf("provider should not be called: %#v", provider.messages)
+	if len(reps) != 1 || reps[0].Type != "document_text" {
+		t.Fatalf("reps=%#v", reps)
+	}
+	file := provider.messages[0].ContentParts[1].File
+	if file == nil || !strings.HasPrefix(file.FileData, "data:application/pdf;base64,") {
+		t.Fatalf("messages=%#v", provider.messages)
 	}
 }
 
@@ -112,6 +141,49 @@ func TestProviderProcessorProcessesDocumentDataURI(t *testing.T) {
 	}
 	if provider.messages[0].ContentParts[1].File == nil || provider.messages[0].ContentParts[1].File.FileData == "" {
 		t.Fatalf("messages=%#v", provider.messages)
+	}
+}
+
+func TestProviderProcessorUploadsFetchedDocumentWhenSupported(t *testing.T) {
+	provider := &fakeUploadLLMProvider{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("document body"))
+	}))
+	defer server.Close()
+	processor := ProviderProcessor{Provider: provider, Model: "document"}
+	_, err := processor.Process(context.Background(), ProcessorContext{}, Artifact{
+		ID: "doc-1", Modality: "document", MediaType: "text/plain", StorageRef: server.URL + "/doc.txt",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(provider.uploaded.Data) != "document body" || provider.uploaded.Purpose != "user_data" {
+		t.Fatalf("uploaded=%#v", provider.uploaded)
+	}
+	file := provider.messages[0].ContentParts[1].File
+	if file == nil || file.FileID != "file_123" || file.FileData != "" {
+		t.Fatalf("messages=%#v", provider.messages)
+	}
+}
+
+func TestProviderProcessorUsesTranscriptionEndpointForAudio(t *testing.T) {
+	provider := &fakeTranscriptionProvider{}
+	processor := ProviderProcessor{Provider: provider, Model: "audio"}
+	reps, err := processor.Process(context.Background(), ProcessorContext{}, Artifact{
+		ID: "aud-1", Modality: "audio", MediaType: "audio/mpeg", Metadata: map[string]any{"base64": "aGVsbG8=", "format": "mp3"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reps) != 1 || reps[0].Summary != "hello from audio" || reps[0].Metadata["transcription_api"] != true {
+		t.Fatalf("reps=%#v", reps)
+	}
+	if string(provider.request.Data) != "hello" || provider.request.MediaType != "audio/mpeg" {
+		t.Fatalf("request=%#v", provider.request)
+	}
+	if len(provider.messages) != 0 {
+		t.Fatalf("chat should not be called: %#v", provider.messages)
 	}
 }
 

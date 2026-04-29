@@ -496,7 +496,20 @@ func (w *Worker) chat(ctx context.Context, run *db.Run, messages []providers.Mes
 		} else {
 			var resp *providers.LLMResponse
 			started := time.Now()
-			resp, err = provider.Chat(ctx, messages, toolDefs, candidate.Model, nil)
+			if durable, ok := provider.(providers.DurableProvider); ok {
+				resp, err = durable.ChatDurable(ctx, providers.CallMetadata{
+					CustomerID:      run.CustomerID,
+					UserID:          run.UserID,
+					AgentInstanceID: run.AgentInstanceID,
+					SessionID:       run.SessionID,
+					RunID:           run.ID,
+					RequestID:       run.RequestID,
+					Provider:        candidate.Provider,
+					Model:           candidate.Model,
+				}, messages, toolDefs, candidate.Model, nil)
+			} else {
+				resp, err = provider.Chat(ctx, messages, toolDefs, candidate.Model, nil)
+			}
 			if w.counters != nil {
 				w.counters.ObserveDuration("model_call_duration_seconds", time.Since(started))
 			}

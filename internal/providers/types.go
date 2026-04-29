@@ -106,6 +106,13 @@ type LLMResponse struct {
 	Usage        UsageInfo  `json:"usage,omitempty"`
 }
 
+type StreamDelta struct {
+	Content      string     `json:"content,omitempty"`
+	ToolCalls    []ToolCall `json:"tool_calls,omitempty"`
+	FinishReason string     `json:"finish_reason,omitempty"`
+	Usage        UsageInfo  `json:"usage,omitempty"`
+}
+
 type CallMetadata struct {
 	CustomerID      string
 	UserID          string
@@ -125,6 +132,120 @@ type LLMProvider interface {
 type DurableProvider interface {
 	LLMProvider
 	ChatDurable(ctx context.Context, meta CallMetadata, messages []Message, tools []ToolDefinition, model string, options map[string]any) (*LLMResponse, error)
+}
+
+type StreamingProvider interface {
+	LLMProvider
+	ChatStream(ctx context.Context, messages []Message, tools []ToolDefinition, model string, options map[string]any) (<-chan StreamDelta, error)
+}
+
+type AudioTranscriptionRequest struct {
+	Data           []byte
+	Filename       string
+	MediaType      string
+	Model          string
+	Language       string
+	Prompt         string
+	ResponseFormat string
+}
+
+type AudioTranscriptionResult struct {
+	Text     string
+	Usage    UsageInfo
+	Metadata map[string]any
+}
+
+type AudioTranscriptionProvider interface {
+	TranscribeAudio(ctx context.Context, req AudioTranscriptionRequest) (*AudioTranscriptionResult, error)
+}
+
+type FileUploadRequest struct {
+	Data      []byte
+	Filename  string
+	MediaType string
+	Purpose   string
+}
+
+type FileUploadResult struct {
+	ID       string
+	Filename string
+	Purpose  string
+	Bytes    int64
+	Metadata map[string]any
+}
+
+type FileUploadProvider interface {
+	UploadFile(ctx context.Context, req FileUploadRequest) (*FileUploadResult, error)
+}
+
+type ImageGenerationRequest struct {
+	Prompt         string
+	Model          string
+	Size           string
+	Quality        string
+	Background     string
+	ResponseFormat string
+	Count          int
+}
+
+type GeneratedImage struct {
+	URL           string `json:"url,omitempty"`
+	B64JSON       string `json:"b64_json,omitempty"`
+	RevisedPrompt string `json:"revised_prompt,omitempty"`
+}
+
+type ImageGenerationResult struct {
+	Images []GeneratedImage
+	Usage  UsageInfo
+}
+
+type ImageGenerator interface {
+	GenerateImage(ctx context.Context, req ImageGenerationRequest) (*ImageGenerationResult, error)
+}
+
+type AudioGenerationRequest struct {
+	Text           string
+	Model          string
+	Voice          string
+	Instructions   string
+	ResponseFormat string
+	Speed          float64
+}
+
+type AudioGenerationResult struct {
+	Data      []byte
+	MediaType string
+}
+
+type AudioGenerator interface {
+	GenerateAudio(ctx context.Context, req AudioGenerationRequest) (*AudioGenerationResult, error)
+}
+
+type VideoGenerationRequest struct {
+	Prompt  string
+	Model   string
+	Size    string
+	Seconds string
+	Count   int
+}
+
+type GeneratedVideo struct {
+	ID       string `json:"id,omitempty"`
+	Status   string `json:"status,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Progress int    `json:"progress,omitempty"`
+	Seconds  string `json:"seconds,omitempty"`
+	Size     string `json:"size,omitempty"`
+	URL      string `json:"url,omitempty"`
+	B64JSON  string `json:"b64_json,omitempty"`
+}
+
+type VideoGenerationResult struct {
+	Videos []GeneratedVideo
+}
+
+type VideoGenerator interface {
+	GenerateVideo(ctx context.Context, req VideoGenerationRequest) (*VideoGenerationResult, error)
 }
 
 type MockProvider struct{}
