@@ -535,7 +535,7 @@ type Artifact struct {
 }
 
 type ArtifactRepresentation struct {
-	ID         int64           `json:"id"`
+	ID         string          `json:"id"`
 	ArtifactID string          `json:"artifact_id"`
 	Type       string          `json:"representation_type"`
 	Summary    string          `json:"summary"`

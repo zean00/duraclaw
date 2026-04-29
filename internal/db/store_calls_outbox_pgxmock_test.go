@@ -23,7 +23,7 @@ func TestStoreArtifactAndCallHelpersWithPgxMock(t *testing.T) {
 	}
 	mock.ExpectQuery("SELECT r.id").WithArgs("art-1", "c1").
 		WillReturnRows(pgxmock.NewRows([]string{"id", "artifact_id", "representation_type", "summary", "metadata", "created_at"}).
-			AddRow(int64(1), "art-1", "summary", "text", []byte(`{}`), now))
+			AddRow("rep-1", "art-1", "summary", "text", []byte(`{}`), now))
 	reps, err := store.ArtifactRepresentations(ctx, "c1", "art-1")
 	if err != nil || len(reps) != 1 {
 		t.Fatalf("reps=%#v err=%v", reps, err)

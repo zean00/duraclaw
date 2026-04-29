@@ -11,11 +11,15 @@ import (
 	"testing"
 	"time"
 
+	"duraclaw/internal/artifacts"
 	"duraclaw/internal/db"
+	"duraclaw/internal/embeddings"
+	"duraclaw/internal/knowledge"
 	"duraclaw/internal/outbound"
 	"duraclaw/internal/providers"
 	"duraclaw/internal/runtime"
 	"duraclaw/internal/scheduler"
+	"duraclaw/internal/sessionmonitor"
 	"duraclaw/internal/wulan"
 )
 
@@ -33,6 +37,7 @@ func TestWulanCriticalPathE2E(t *testing.T) {
 	registry.Register("openrouter", fake)
 	worker := runtime.NewWorkerWithProviders(store, registry, providers.ModelConfig{Primary: "openrouter/openai/gpt-4.1-mini"}, "wulan-e2e-worker")
 	worker.WithOutbound(outbound.NewService(store))
+	worker.WithProcessors(artifacts.NewRegistry(artifacts.MockProcessor{}))
 	drainOutboxIfAny(t, ctx, store, nexus)
 
 	t.Run("durable failure then resume", func(t *testing.T) {
@@ -172,6 +177,118 @@ func TestWulanCriticalPathE2E(t *testing.T) {
 			t.Fatalf("expected workflow outbound")
 		}
 	})
+
+	t.Run("knowledge retrieval", func(t *testing.T) {
+		fake.Reset()
+		_, chunks, err := knowledge.NewIngester(store).WithEmbedder(embeddings.NewHashProvider(768)).IngestText(ctx, wulan.CustomerID, "Panduan Rutinitas Wulan", "wulan://knowledge/routine", "Rutinitas Wulan: mulai hari dengan tiga prioritas, jeda Quran 10 menit, dan review malam singkat.", map[string]any{"source": "e2e"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if chunks == 0 {
+			t.Fatalf("expected knowledge chunks")
+		}
+		run := nexusSend(t, store, "knowledge", "Apa rutinitas Wulan untuk hari produktif?")
+		if ok, err := worker.RunOnce(ctx); err != nil || !ok {
+			t.Fatalf("knowledge worker ok=%v err=%v", ok, err)
+		}
+		assertRunState(t, store, run.ID, "completed")
+		answer := latestAssistantText(t, pool, run.ID)
+		if !strings.Contains(strings.ToLower(answer), "tiga prioritas") || !strings.Contains(strings.ToLower(answer), "quran") {
+			t.Fatalf("knowledge answer=%q", answer)
+		}
+		if got := countPolicyMode(t, pool, run.ID, "pre_knowledge_retrieval"); got == 0 {
+			t.Fatalf("expected knowledge policy evaluation")
+		}
+	})
+
+	t.Run("session extraction memories preferences compaction", func(t *testing.T) {
+		fake.Reset()
+		sessionID := "wulan-e2e-session-monitor"
+		run := nexusSendInput(t, store, "session-monitor", map[string]any{"text": "Aku tinggal di Bandung. Aku lebih suka pengingat pagi jam 07:00. " + strings.Repeat("catatan panjang untuk kompaksi. ", 120)})
+		if err := store.SetRunState(ctx, run.ID, "completed", nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.InsertMessage(ctx, wulan.CustomerID, sessionID, run.ID, "user", map[string]any{"text": "Aku tinggal di Bandung. Aku lebih suka pengingat pagi jam 07:00. " + strings.Repeat("catatan panjang untuk kompaksi. ", 120)}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.InsertMessage(ctx, wulan.CustomerID, sessionID, run.ID, "assistant", map[string]any{"text": "Siap, Wulan catat preferensi pengingat pagi."}); err != nil {
+			t.Fatal(err)
+		}
+		monitor := sessionmonitor.NewService(store, registry, providers.ModelConfig{Primary: "openrouter/openai/gpt-4.1-mini"}, "wulan-e2e-session-monitor").WithIdleFor(time.Nanosecond).WithCompactionThreshold(100)
+		processed, err := monitor.RunOnce(ctx, time.Now().UTC())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if processed == 0 {
+			t.Fatalf("expected idle session to be processed")
+		}
+		memories, err := store.ListMemories(ctx, wulan.CustomerID, wulan.UserID, 20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !memoryContains(memories, "Bandung") {
+			t.Fatalf("memories=%#v", memories)
+		}
+		preferences, err := store.ListPreferences(ctx, wulan.CustomerID, wulan.UserID, 20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !preferenceContains(preferences, "07:00") {
+			t.Fatalf("preferences=%#v", preferences)
+		}
+		summary, err := store.SessionSummary(ctx, wulan.CustomerID, sessionID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if summary == nil || !strings.Contains(strings.ToLower(summary.Summary), "bandung") {
+			t.Fatalf("summary=%#v", summary)
+		}
+		if got := countObservabilityEvents(t, pool, wulan.CustomerID, "session_memory_extracted"); got == 0 {
+			t.Fatalf("expected session extraction observability event")
+		}
+	})
+
+	t.Run("multimodal artifacts voice image pdf", func(t *testing.T) {
+		fake.Reset()
+		run := nexusSendInput(t, store, "multimodal", map[string]any{
+			"text": "Ringkas voice note, gambar, dan PDF ini untuk Wulan.",
+			"parts": []map[string]any{
+				{"type": "text", "text": "Tolong proses lampiran."},
+				{"type": "artifact_ref", "data": map[string]any{"artifact_id": "voice-note-1"}},
+				{"type": "artifact_ref", "data": map[string]any{"artifact_id": "image-1"}},
+				{"type": "artifact_ref", "data": map[string]any{"artifact_id": "pdf-1"}},
+			},
+		})
+		for _, artifact := range []db.Artifact{
+			{ID: "voice-note-1", Modality: "audio", MediaType: "audio/ogg", Filename: "note.ogg", StorageRef: "memory://voice-note-1", State: "available"},
+			{ID: "image-1", Modality: "image", MediaType: "image/png", Filename: "photo.png", StorageRef: "memory://image-1", State: "available"},
+			{ID: "pdf-1", Modality: "document", MediaType: "application/pdf", Filename: "doc.pdf", StorageRef: "memory://pdf-1", State: "available"},
+		} {
+			if err := store.AttachArtifact(ctx, run.ID, artifact); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if ok, err := worker.RunOnce(ctx); err != nil || !ok {
+			t.Fatalf("multimodal worker ok=%v err=%v", ok, err)
+		}
+		assertRunState(t, store, run.ID, "completed")
+		if got := countProcessorCalls(t, pool, run.ID); got != 3 {
+			t.Fatalf("processor calls=%d", got)
+		}
+		for _, artifactID := range []string{"voice-note-1", "image-1", "pdf-1"} {
+			reps, err := store.ArtifactRepresentations(ctx, wulan.CustomerID, artifactID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(reps) == 0 {
+				t.Fatalf("missing representation for %s", artifactID)
+			}
+		}
+		answer := latestAssistantText(t, pool, run.ID)
+		if !strings.Contains(strings.ToLower(answer), "audio") || !strings.Contains(strings.ToLower(answer), "image") || !strings.Contains(strings.ToLower(answer), "document") {
+			t.Fatalf("multimodal answer=%q", answer)
+		}
+	})
 }
 
 func TestWulanOpenRouterLiveSmoke(t *testing.T) {
@@ -212,6 +329,12 @@ func (p *scriptedProvider) Chat(_ context.Context, messages []providers.Message,
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	text := joinedMessages(messages)
+	if options != nil && options["purpose"] == "session_compaction" {
+		return &providers.LLMResponse{Content: "Pengguna tinggal di Bandung dan menyukai pengingat pagi jam 07:00.", FinishReason: "stop"}, nil
+	}
+	if options != nil && options["purpose"] == "idle_memory_preference_extraction" {
+		return &providers.LLMResponse{Content: `{"memories":[{"type":"fact","content":"Pengguna tinggal di Bandung."}],"preferences":[{"category":"reminder","content":"Pengguna lebih suka pengingat pagi jam 07:00.","condition":{"time_of_day":"morning"}}]}`, FinishReason: "stop"}, nil
+	}
 	if options != nil && options["purpose"] == "scope_judge" {
 		if strings.Contains(strings.ToLower(text), "trading kripto") {
 			return &providers.LLMResponse{Content: `{"in_scope":false,"confidence":0.95,"reason":"financial advice","recommended_response":"Maaf, ini di luar cakupan Wulan. Wulan bisa bantu pengingat, catatan, rutinitas, dan produktivitas harian."}`, FinishReason: "stop"}, nil
@@ -225,6 +348,10 @@ func (p *scriptedProvider) Chat(_ context.Context, messages []providers.Message,
 	switch {
 	case strings.Contains(strings.ToLower(text), "telepon mama"):
 		return &providers.LLMResponse{Content: "Pengingat dari Wulan: Telepon Mama sekarang.", FinishReason: "stop"}, nil
+	case strings.Contains(strings.ToLower(text), "rutinitas wulan"):
+		return &providers.LLMResponse{Content: "Rutinitas Wulan: mulai dengan tiga prioritas, lanjutkan jeda Quran 10 menit, lalu review malam singkat.", FinishReason: "stop"}, nil
+	case strings.Contains(strings.ToLower(text), "artifact context"):
+		return &providers.LLMResponse{Content: "Ringkasan lampiran: audio voice note, image/gambar, dan document/PDF sudah diproses.", FinishReason: "stop"}, nil
 	case strings.Contains(strings.ToLower(text), "meeting jam 10"):
 		return &providers.LLMResponse{Content: "Prioritas hari ini: 1. Siapkan meeting jam 10. 2. Selesaikan tugas utama. 3. Sisipkan 10 menit baca Quran.", FinishReason: "stop"}, nil
 	case strings.Contains(strings.ToLower(text), "prioritas hari ini"):
@@ -389,12 +516,24 @@ func countPolicyDecisions(t *testing.T, pool db.Pool, runID, decision string) in
 	return countWhere(t, pool, `SELECT count(*) FROM policy_evaluations WHERE run_id=$1 AND decision=$2`, runID, decision)
 }
 
+func countPolicyMode(t *testing.T, pool db.Pool, runID, mode string) int {
+	return countWhere(t, pool, `SELECT count(*) FROM policy_evaluations WHERE run_id=$1 AND enforcement_mode=$2`, runID, mode)
+}
+
 func countRunEvents(t *testing.T, pool db.Pool, runID, typ string) int {
 	return countWhere(t, pool, `SELECT count(*) FROM run_events WHERE run_id=$1 AND event_type=$2`, runID, typ)
 }
 
 func countWorkflowRuns(t *testing.T, pool db.Pool, runID string) int {
 	return countWhere(t, pool, `SELECT count(*) FROM workflow_runs WHERE run_id=$1`, runID)
+}
+
+func countProcessorCalls(t *testing.T, pool db.Pool, runID string) int {
+	return countWhere(t, pool, `SELECT count(*) FROM processor_calls WHERE run_id=$1 AND state='succeeded'`, runID)
+}
+
+func countObservabilityEvents(t *testing.T, pool db.Pool, customerID, eventType string) int {
+	return countWhere(t, pool, `SELECT count(*) FROM observability_events WHERE customer_id=$1 AND event_type=$2`, customerID, eventType)
 }
 
 func countWhere(t *testing.T, pool db.Pool, sql string, args ...any) int {
@@ -410,6 +549,26 @@ func subscriptionDisabled(subs []db.ReminderSubscription, id string) bool {
 	for _, sub := range subs {
 		if sub.ID == id {
 			return !sub.Enabled
+		}
+	}
+	return false
+}
+
+func memoryContains(memories []db.Memory, needle string) bool {
+	needle = strings.ToLower(needle)
+	for _, memory := range memories {
+		if strings.Contains(strings.ToLower(memory.Content), needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func preferenceContains(preferences []db.Preference, needle string) bool {
+	needle = strings.ToLower(needle)
+	for _, preference := range preferences {
+		if strings.Contains(strings.ToLower(preference.Content), needle) {
+			return true
 		}
 	}
 	return false
