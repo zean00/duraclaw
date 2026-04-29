@@ -262,7 +262,7 @@ func (s *Store) CurrentWorkflowRun(ctx context.Context, runID, workflowDefinitio
 		WHERE run_id=$1
 		AND workflow_definition_id=$2
 		AND status IN ('running','awaiting_user')
-		ORDER BY created_at DESC
+		ORDER BY started_at DESC
 		LIMIT 1`, runID, workflowDefinitionID).
 		Scan(&run.ID, &run.RunID, &run.WorkflowDefinitionID, &run.WorkflowVersion, &run.Status, &run.CurrentNodeKey, &run.Input, &run.Output, &run.Error)
 	if err != nil {
