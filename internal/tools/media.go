@@ -1,12 +1,16 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,6 +64,61 @@ func (s FileMediaBlobStore) StoreGeneratedMedia(ctx context.Context, artifactID,
 		ref = path
 	}
 	return ref, int64(len(data)), checksum, nil
+}
+
+type HTTPMediaBlobStore struct {
+	PutURL    string
+	BaseURL   string
+	RefPrefix string
+	Headers   map[string]string
+	Client    *http.Client
+}
+
+func (s HTTPMediaBlobStore) StoreGeneratedMedia(ctx context.Context, artifactID, mediaType string, data []byte) (string, int64, string, error) {
+	name := safeArtifactFilename(artifactID) + mediaExtension(mediaType)
+	target := strings.TrimSpace(s.PutURL)
+	if target == "" {
+		base := strings.TrimRight(strings.TrimSpace(s.BaseURL), "/")
+		if base == "" {
+			return "", 0, "", fmt.Errorf("generated media HTTP PUT URL or base URL is required")
+		}
+		var err error
+		target, err = joinURLPath(base, name)
+		if err != nil {
+			return "", 0, "", err
+		}
+	}
+	sum := sha256.Sum256(data)
+	checksum := "sha256:" + hex.EncodeToString(sum[:])
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, target, bytes.NewReader(data))
+	if err != nil {
+		return "", 0, "", err
+	}
+	req.Header.Set("Content-Type", mediaType)
+	req.Header.Set("X-Checksum-SHA256", strings.TrimPrefix(checksum, "sha256:"))
+	for key, value := range s.Headers {
+		if strings.TrimSpace(key) != "" && strings.TrimSpace(value) != "" {
+			req.Header.Set(key, value)
+		}
+	}
+	client := s.Client
+	if client == nil {
+		client = &http.Client{Timeout: 60 * time.Second}
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", 0, "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return "", 0, "", fmt.Errorf("generated media upload status %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	refPrefix := strings.TrimRight(strings.TrimSpace(s.RefPrefix), "/")
+	if refPrefix != "" {
+		return refPrefix + "/" + name, int64(len(data)), checksum, nil
+	}
+	return target, int64(len(data)), checksum, nil
 }
 
 type MediaGenerationTool struct {
@@ -364,6 +423,18 @@ func dataURI(mediaType, b64 string) string {
 		return ""
 	}
 	return "data:" + mediaType + ";base64," + b64
+}
+
+func joinURLPath(base, name string) (string, error) {
+	parsed, err := url.Parse(base)
+	if err != nil {
+		return "", err
+	}
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return "", fmt.Errorf("generated media HTTP base URL must be absolute")
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/" + url.PathEscape(name)
+	return parsed.String(), nil
 }
 
 func mediaExtension(mediaType string) string {

@@ -312,6 +312,9 @@ func buildProviderRegistry(cfg config) *providers.Registry {
 }
 
 func buildMediaBlobStore(cfg config) tools.MediaBlobStore {
+	if strings.TrimSpace(cfg.GeneratedMediaHTTPPutURL) != "" || strings.TrimSpace(cfg.GeneratedMediaHTTPBaseURL) != "" {
+		return tools.HTTPMediaBlobStore{PutURL: cfg.GeneratedMediaHTTPPutURL, BaseURL: cfg.GeneratedMediaHTTPBaseURL, RefPrefix: cfg.GeneratedMediaRefPrefix, Headers: cfg.GeneratedMediaHTTPHeaders}
+	}
 	if strings.TrimSpace(cfg.GeneratedMediaDir) == "" {
 		return nil
 	}

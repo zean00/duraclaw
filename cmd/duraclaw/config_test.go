@@ -139,6 +139,14 @@ func TestBuildMediaBlobStore(t *testing.T) {
 	if got == nil {
 		t.Fatalf("expected media blob store")
 	}
+	got = buildMediaBlobStore(config{GeneratedMediaHTTPPutURL: "https://objects.example.test/signed/key?sig=abc", GeneratedMediaRefPrefix: "object://generated", GeneratedMediaHTTPHeaders: map[string]string{"Authorization": "Bearer token"}})
+	if got == nil {
+		t.Fatalf("expected http signed media blob store")
+	}
+	got = buildMediaBlobStore(config{GeneratedMediaHTTPBaseURL: "https://objects.example.test/generated", GeneratedMediaRefPrefix: "object://generated"})
+	if got == nil {
+		t.Fatalf("expected http base media blob store")
+	}
 }
 
 func TestBuildModelConfigPrefixesProvider(t *testing.T) {

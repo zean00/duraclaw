@@ -2,6 +2,9 @@ package tools
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -135,5 +138,49 @@ func TestGenerateVideoToolStoresBlobWithVideoExtension(t *testing.T) {
 	}
 	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 1 || filepath.Ext(entries[0].Name()) != ".mp4" {
 		t.Fatalf("entries=%v err=%v", entries, err)
+	}
+}
+
+func TestHTTPMediaBlobStoreUsesSignedPutURLAsIs(t *testing.T) {
+	var sawPath, sawType, sawChecksum, sawAuth, sawBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawPath = r.URL.RequestURI()
+		sawType = r.Header.Get("Content-Type")
+		sawChecksum = r.Header.Get("X-Checksum-SHA256")
+		sawAuth = r.Header.Get("Authorization")
+		raw, _ := io.ReadAll(r.Body)
+		sawBody = string(raw)
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+	ref, size, checksum, err := (HTTPMediaBlobStore{
+		PutURL:    server.URL + "/signed/key?signature=abc",
+		RefPrefix: "object://bucket/generated",
+		Headers:   map[string]string{"Authorization": "Bearer token"},
+	}).StoreGeneratedMedia(context.Background(), "img/1", "image/png", []byte("fake"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sawPath != "/signed/key?signature=abc" || sawType != "image/png" || sawAuth != "Bearer token" || sawBody != "fake" {
+		t.Fatalf("path=%q type=%q auth=%q body=%q", sawPath, sawType, sawAuth, sawBody)
+	}
+	if sawChecksum == "" || checksum == "" || size != 4 || ref != "object://bucket/generated/img-1.png" {
+		t.Fatalf("checksum=%q result checksum=%q size=%d ref=%q", sawChecksum, checksum, size, ref)
+	}
+}
+
+func TestHTTPMediaBlobStoreCanAppendToBaseURL(t *testing.T) {
+	var sawPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawPath = r.URL.Path
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+	ref, _, _, err := (HTTPMediaBlobStore{BaseURL: server.URL + "/objects", RefPrefix: "object://bucket/generated"}).StoreGeneratedMedia(context.Background(), "img/1", "image/png", []byte("fake"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sawPath != "/objects/img-1.png" || ref != "object://bucket/generated/img-1.png" {
+		t.Fatalf("path=%q ref=%q", sawPath, ref)
 	}
 }

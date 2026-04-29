@@ -55,6 +55,9 @@ type config struct {
 	EmbeddingDimensions         int
 	GeneratedMediaDir           string
 	GeneratedMediaRefPrefix     string
+	GeneratedMediaHTTPPutURL    string
+	GeneratedMediaHTTPBaseURL   string
+	GeneratedMediaHTTPHeaders   map[string]string
 }
 
 func loadConfig() (config, error) {
@@ -105,6 +108,9 @@ func loadConfig() (config, error) {
 		EmbeddingDimensions:         envInt("DURACLAW_EMBEDDING_DIMENSIONS", 768),
 		GeneratedMediaDir:           os.Getenv("DURACLAW_GENERATED_MEDIA_DIR"),
 		GeneratedMediaRefPrefix:     os.Getenv("DURACLAW_GENERATED_MEDIA_REF_PREFIX"),
+		GeneratedMediaHTTPPutURL:    os.Getenv("DURACLAW_GENERATED_MEDIA_HTTP_PUT_URL"),
+		GeneratedMediaHTTPBaseURL:   os.Getenv("DURACLAW_GENERATED_MEDIA_HTTP_BASE_URL"),
+		GeneratedMediaHTTPHeaders:   parseHeaders(os.Getenv("DURACLAW_GENERATED_MEDIA_HTTP_HEADERS")),
 	}
 	if cfg.DatabaseURL == "" {
 		return cfg, fmt.Errorf("DATABASE_URL is required")

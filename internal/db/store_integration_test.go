@@ -206,6 +206,51 @@ func TestStoreOutboxRetryPostgres(t *testing.T) {
 	}
 }
 
+func TestKnowledgeVectorSearchPostgres(t *testing.T) {
+	store, cleanup := integrationStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	suffix := time.Now().UTC().Format("20060102150405.000000000")
+	customerID := "c-vector-" + suffix
+	docID, err := store.CreateKnowledgeDocument(ctx, customerID, "vectors", "test://vectors", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nearID, err := store.AddKnowledgeChunk(ctx, docID, customerID, 0, "near vector chunk", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	farID, err := store.AddKnowledgeChunk(ctx, docID, customerID, 1, "far vector chunk", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	near := make([]float32, 768)
+	far := make([]float32, 768)
+	query := make([]float32, 768)
+	near[0] = 0.01
+	far[0] = 10
+	if err := store.SetKnowledgeChunkEmbedding(ctx, nearID, customerID, near); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetKnowledgeChunkEmbedding(ctx, farID, customerID, far); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.SearchKnowledgeChunks(ctx, customerID, query, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].ID != nearID || got[1].ID != farID {
+		t.Fatalf("unexpected vector order: %#v", got)
+	}
+	hybrid, err := store.SearchKnowledgeHybrid(ctx, customerID, "far", query, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hybrid) == 0 || hybrid[0].ID != nearID {
+		t.Fatalf("hybrid should prefer vector result first: %#v", hybrid)
+	}
+}
+
 func TestStoreWorkflowTimerResumePostgres(t *testing.T) {
 	store, cleanup := integrationStore(t)
 	defer cleanup()
