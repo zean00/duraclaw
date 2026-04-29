@@ -167,3 +167,25 @@ func TestScopeJudgeUsesTwoPassImplicitIntent(t *testing.T) {
 		}
 	}
 }
+
+func TestRecommendationPipelineReusesScopeContextDecision(t *testing.T) {
+	raw, err := os.ReadFile("worker.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(raw)
+	for _, want := range []string{
+		"startRecommendationSidecar(ctx, run, scope, text)",
+		"if !scope.InScope",
+		`strings.EqualFold(strings.TrimSpace(scope.Intent), "implicit")`,
+		"scopeJudgeContext(ctx, run)",
+		`return strings.TrimSpace(content), "direct_message", nil`,
+		"CreateRecommendationJob",
+		`Type:       "recommendation"`,
+		"mergeRecommendation(ctx, run, content, result.Result)",
+	} {
+		if !strings.Contains(src, want) {
+			t.Fatalf("recommendation pipeline missing %q", want)
+		}
+	}
+}

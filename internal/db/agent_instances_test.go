@@ -28,10 +28,29 @@ func TestValidateAgentInstanceVersionSpecAllowsKnownConfigKeys(t *testing.T) {
 				"forbidden_domains":     []string{"legal advice"},
 				"out_of_scope_guidance": "decline briefly",
 			},
+			"recommendation": map[string]any{
+				"enabled":          true,
+				"timeout_ms":       1500,
+				"model":            "openrouter/qwen/qwen3.6-35b-a3b",
+				"merge_model":      "openrouter/openai/gpt-4.1-mini",
+				"max_candidates":   5,
+				"allow_sponsored":  true,
+				"disclosure_style": "soft",
+			},
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestValidateAgentInstanceVersionSpecRejectsEnabledRecommendationWithoutTimeout(t *testing.T) {
+	err := ValidateAgentInstanceVersionSpecForTest(AgentInstanceVersionSpec{
+		CustomerID: "c", AgentInstanceID: "a",
+		ProfileConfig: map[string]any{"recommendation": map[string]any{"enabled": true}},
+	})
+	if err == nil {
+		t.Fatal("expected validation error")
 	}
 }
 

@@ -230,6 +230,9 @@ func (w *Worker) Loop(ctx context.Context, every time.Duration) error {
 		if err != nil && ctx.Err() != nil {
 			return ctx.Err()
 		}
+		if _, err := w.RunRecommendationJobs(ctx, 5); err != nil && ctx.Err() != nil {
+			return ctx.Err()
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -274,6 +277,7 @@ func (w *Worker) process(ctx context.Context, run *db.Run) error {
 	if !scope.InScope {
 		return w.completeOutOfScopeRun(ctx, run, scope)
 	}
+	recommendations := w.startRecommendationSidecar(ctx, run, scope, text)
 	messages, err := w.providerMessages(ctx, run, text)
 	if err != nil {
 		return err
@@ -290,16 +294,20 @@ func (w *Worker) process(ctx context.Context, run *db.Run) error {
 		return err
 	}
 	w.enqueueAsyncObservability(ctx, run, "checkpoint.provider_complete", map[string]any{"finish_reason": resp.FinishReason, "content_length": len(resp.Content)})
+	finalContent := resp.Content
+	if recommendations != nil {
+		finalContent = w.applyRecommendationResult(ctx, run, scope, finalContent, recommendations)
+	}
 	msgID, err := w.store.InsertMessage(ctx, run.CustomerID, run.SessionID, run.ID, "assistant", map[string]any{
-		"parts": []map[string]any{{"type": "text", "text": resp.Content}},
+		"parts": []map[string]any{{"type": "text", "text": finalContent}},
 	})
 	if err != nil {
 		return err
 	}
-	if err := w.emitFinalOutbound(ctx, run, msgID, resp.Content); err != nil {
+	if err := w.emitFinalOutbound(ctx, run, msgID, finalContent); err != nil {
 		return err
 	}
-	_ = w.updateSessionSummary(ctx, run, resp.Content)
+	_ = w.updateSessionSummary(ctx, run, finalContent)
 	return w.store.CompleteRunWithMessage(ctx, run.ID, msgID)
 }
 
@@ -983,6 +991,17 @@ type agentProfileConfig struct {
 		ScopeJudgeModel     string   `json:"scope_judge_model"`
 		ConfidenceThreshold float64  `json:"confidence_threshold"`
 	} `json:"domain_scope"`
+	Recommendation recommendationProfileConfig `json:"recommendation"`
+}
+
+type recommendationProfileConfig struct {
+	Enabled         bool   `json:"enabled"`
+	TimeoutMS       int    `json:"timeout_ms"`
+	Model           string `json:"model"`
+	MergeModel      string `json:"merge_model"`
+	MaxCandidates   int    `json:"max_candidates"`
+	AllowSponsored  bool   `json:"allow_sponsored"`
+	DisclosureStyle string `json:"disclosure_style"`
 }
 
 func (w *Worker) agentProfile(ctx context.Context, run *db.Run) (agentProfileConfig, error) {
@@ -1144,6 +1163,282 @@ func (w *Worker) scopeJudgeContext(ctx context.Context, run *db.Run) (string, er
 		sections = append(sections, "Recent conversation:\n"+strings.Join(lines, "\n"))
 	}
 	return strings.Join(sections, "\n\n"), nil
+}
+
+type recommendationSidecarResult struct {
+	ContextMode string
+	Context     string
+	Candidates  []db.RecommendationItem
+	Result      recommendationLLMResult
+	Err         error
+	TimedOut    bool
+}
+
+type recommendationLLMResult struct {
+	ShouldRecommend    bool    `json:"should_recommend"`
+	ItemID             string  `json:"item_id"`
+	RecommendationText string  `json:"recommendation_text"`
+	Reason             string  `json:"reason"`
+	Confidence         float64 `json:"confidence"`
+}
+
+func (w *Worker) startRecommendationSidecar(ctx context.Context, run *db.Run, scope scopeJudgement, content string) <-chan recommendationSidecarResult {
+	cfg, err := w.recommendationConfig(ctx, run)
+	if err != nil || !cfg.Enabled || cfg.TimeoutMS <= 0 {
+		return nil
+	}
+	ch := make(chan recommendationSidecarResult, 1)
+	go func() {
+		recCtx, mode, err := w.recommendationInputContext(ctx, run, scope, content)
+		if err != nil {
+			ch <- recommendationSidecarResult{ContextMode: mode, Err: err}
+			return
+		}
+		timeoutCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.TimeoutMS)*time.Millisecond)
+		defer cancel()
+		candidates, result, err := w.runRecommendationSelection(timeoutCtx, run, cfg, recCtx)
+		out := recommendationSidecarResult{ContextMode: mode, Context: recCtx, Candidates: candidates, Result: result, Err: err}
+		if errors.Is(err, context.DeadlineExceeded) || timeoutCtx.Err() == context.DeadlineExceeded {
+			out.TimedOut = true
+		}
+		ch <- out
+	}()
+	return ch
+}
+
+func (w *Worker) applyRecommendationResult(ctx context.Context, run *db.Run, scope scopeJudgement, content string, ch <-chan recommendationSidecarResult) string {
+	result := <-ch
+	candidateIDs := recommendationItemIDs(result.Candidates)
+	if result.Err != nil {
+		status := "failed"
+		if result.TimedOut {
+			status = "timeout"
+			_ = w.enqueueRecommendationJob(ctx, run, scope, content, result)
+		}
+		_, _ = w.store.RecordRecommendationDecision(ctx, db.RecommendationDecisionSpec{
+			CustomerID: run.CustomerID, RunID: run.ID, UserID: run.UserID, SessionID: run.SessionID,
+			ScopeIntent: scope.Intent, ContextMode: result.ContextMode, CandidateItemIDs: candidateIDs,
+			DeliveryStatus: status, Error: result.Err.Error(),
+		})
+		return content
+	}
+	if !result.Result.ShouldRecommend || strings.TrimSpace(result.Result.ItemID) == "" {
+		_, _ = w.store.RecordRecommendationDecision(ctx, db.RecommendationDecisionSpec{
+			CustomerID: run.CustomerID, RunID: run.ID, UserID: run.UserID, SessionID: run.SessionID,
+			ScopeIntent: scope.Intent, ContextMode: result.ContextMode, CandidateItemIDs: candidateIDs,
+			DeliveryStatus: "no_candidate", Reason: result.Result.Reason,
+		})
+		return content
+	}
+	merged, err := w.mergeRecommendation(ctx, run, content, result.Result)
+	if err != nil || strings.TrimSpace(merged) == "" {
+		if err == nil {
+			err = fmt.Errorf("recommendation merge returned empty response")
+		}
+		_, _ = w.store.RecordRecommendationDecision(ctx, db.RecommendationDecisionSpec{
+			CustomerID: run.CustomerID, RunID: run.ID, UserID: run.UserID, SessionID: run.SessionID,
+			ScopeIntent: scope.Intent, ContextMode: result.ContextMode, CandidateItemIDs: candidateIDs,
+			SelectedItemID: result.Result.ItemID, RecommendationText: result.Result.RecommendationText,
+			Reason: result.Result.Reason, DeliveryStatus: "failed", Error: err.Error(),
+		})
+		return content
+	}
+	_, _ = w.store.RecordRecommendationDecision(ctx, db.RecommendationDecisionSpec{
+		CustomerID: run.CustomerID, RunID: run.ID, UserID: run.UserID, SessionID: run.SessionID,
+		ScopeIntent: scope.Intent, ContextMode: result.ContextMode, CandidateItemIDs: candidateIDs,
+		SelectedItemID: result.Result.ItemID, RecommendationText: result.Result.RecommendationText,
+		Reason: result.Result.Reason, DeliveryStatus: "inline_merged",
+	})
+	return merged
+}
+
+func (w *Worker) recommendationConfig(ctx context.Context, run *db.Run) (recommendationProfileConfig, error) {
+	cfg, err := w.agentProfile(ctx, run)
+	if err != nil {
+		return recommendationProfileConfig{}, err
+	}
+	return cfg.Recommendation, nil
+}
+
+func (w *Worker) recommendationInputContext(ctx context.Context, run *db.Run, scope scopeJudgement, content string) (string, string, error) {
+	if strings.EqualFold(strings.TrimSpace(scope.Intent), "implicit") {
+		scopeContext, err := w.scopeJudgeContext(ctx, run)
+		if err != nil {
+			return "", "implicit_context", err
+		}
+		if strings.TrimSpace(scopeContext) != "" {
+			return strings.TrimSpace(scopeContext) + "\n\nUser request:\n" + strings.TrimSpace(content), "implicit_context", nil
+		}
+	}
+	return strings.TrimSpace(content), "direct_message", nil
+}
+
+func (w *Worker) runRecommendationSelection(ctx context.Context, run *db.Run, cfg recommendationProfileConfig, recCtx string) ([]db.RecommendationItem, recommendationLLMResult, error) {
+	limit := cfg.MaxCandidates
+	if limit <= 0 {
+		limit = 5
+	}
+	candidates, err := w.store.SearchRecommendationItems(ctx, run.CustomerID, recCtx, cfg.AllowSponsored, limit)
+	if err != nil || len(candidates) == 0 {
+		return candidates, recommendationLLMResult{Reason: "no catalog candidates"}, err
+	}
+	modelConfig, err := w.modelConfigForRun(ctx, run)
+	if err != nil {
+		return candidates, recommendationLLMResult{}, err
+	}
+	if strings.TrimSpace(cfg.Model) != "" {
+		modelConfig.Primary = cfg.Model
+		modelConfig.Fallbacks = nil
+	}
+	candidateJSON, _ := json.Marshal(candidates)
+	promptText := "Choose whether one catalog item is useful for this in-scope user request. Return JSON only with keys should_recommend boolean, item_id string, recommendation_text string, reason string, confidence number. Keep recommendation_text concise and non-intrusive. If sponsored, use a soft disclosure.\n\nUser/request context:\n" + recCtx + "\n\nCatalog candidates:\n" + string(candidateJSON)
+	result, err := w.providers.ChatWithFallback(ctx, modelConfig, []providers.Message{
+		{Role: "system", Content: "You are a recommendation selector. Recommend only when clearly helpful."},
+		{Role: "user", Content: promptText},
+	}, nil, map[string]any{"response_format": "json_object", "purpose": "recommendation"})
+	if err != nil {
+		return candidates, recommendationLLMResult{}, err
+	}
+	var parsed recommendationLLMResult
+	if err := json.Unmarshal([]byte(extractJSONObject(result.Response.Content)), &parsed); err != nil {
+		return candidates, recommendationLLMResult{}, err
+	}
+	if !recommendationCandidateExists(candidates, parsed.ItemID) {
+		parsed.ShouldRecommend = false
+		parsed.ItemID = ""
+	}
+	return candidates, parsed, nil
+}
+
+func (w *Worker) mergeRecommendation(ctx context.Context, run *db.Run, original string, rec recommendationLLMResult) (string, error) {
+	cfg, err := w.recommendationConfig(ctx, run)
+	if err != nil {
+		return "", err
+	}
+	modelConfig, err := w.modelConfigForRun(ctx, run)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(cfg.MergeModel) != "" {
+		modelConfig.Primary = cfg.MergeModel
+		modelConfig.Fallbacks = nil
+	}
+	promptText := "Merge the recommendation into the assistant response only if it fits naturally. Preserve the assistant's tone. Do not make it feel like an ad. Return only the final assistant message.\n\nAssistant response:\n" + original + "\n\nRecommendation:\n" + rec.RecommendationText
+	result, err := w.providers.ChatWithFallback(ctx, modelConfig, []providers.Message{
+		{Role: "system", Content: "You merge helpful recommendations into assistant replies without being intrusive."},
+		{Role: "user", Content: promptText},
+	}, nil, map[string]any{"purpose": "recommendation_merge"})
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(result.Response.Content), nil
+}
+
+func (w *Worker) enqueueRecommendationJob(ctx context.Context, run *db.Run, scope scopeJudgement, content string, result recommendationSidecarResult) error {
+	cfg, err := w.recommendationConfig(ctx, run)
+	if err != nil {
+		return err
+	}
+	_, err = w.store.CreateRecommendationJob(ctx, db.RecommendationJobSpec{
+		CustomerID: run.CustomerID, RunID: run.ID, UserID: run.UserID, SessionID: run.SessionID,
+		ScopeIntent: scope.Intent, ContextMode: result.ContextMode, RecommendationContext: result.Context,
+		OriginalResponse: content, Config: cfg, CandidateItemIDs: recommendationItemIDs(result.Candidates),
+	})
+	return err
+}
+
+func (w *Worker) RunRecommendationJobs(ctx context.Context, limit int) (int, error) {
+	if w.outbound == nil {
+		return 0, nil
+	}
+	jobs, err := w.store.ClaimRecommendationJobs(ctx, w.owner, limit, w.leaseFor)
+	if err != nil {
+		return 0, err
+	}
+	for _, job := range jobs {
+		if err := w.processRecommendationJob(ctx, job); err != nil {
+			_ = w.store.CompleteRecommendationJob(context.Background(), job.ID, "failed", err.Error())
+		}
+	}
+	return len(jobs), nil
+}
+
+func (w *Worker) processRecommendationJob(ctx context.Context, job db.RecommendationJob) error {
+	var cfg recommendationProfileConfig
+	if len(job.Config) > 0 {
+		_ = json.Unmarshal(job.Config, &cfg)
+	}
+	run := &db.Run{ID: derefString(job.RunID), CustomerID: job.CustomerID, UserID: job.UserID, SessionID: job.SessionID}
+	candidates, rec, err := w.runRecommendationSelection(ctx, run, cfg, job.RecommendationContext)
+	if err != nil {
+		return err
+	}
+	if !rec.ShouldRecommend || strings.TrimSpace(rec.ItemID) == "" {
+		_, _ = w.store.RecordRecommendationDecision(ctx, db.RecommendationDecisionSpec{
+			CustomerID: job.CustomerID, RunID: derefString(job.RunID), UserID: job.UserID, SessionID: job.SessionID,
+			ScopeIntent: job.ScopeIntent, ContextMode: job.ContextMode, CandidateItemIDs: recommendationItemIDs(candidates),
+			DeliveryStatus: "no_candidate", Reason: rec.Reason,
+		})
+		return w.store.CompleteRecommendationJob(ctx, job.ID, "no_candidate", "")
+	}
+	runID := derefString(job.RunID)
+	_, _, err = w.outbound.Emit(ctx, outbound.Intent{
+		CustomerID: job.CustomerID,
+		UserID:     job.UserID,
+		SessionID:  job.SessionID,
+		RunID:      runID,
+		Type:       "recommendation",
+		Payload: map[string]any{
+			"type":      "recommendation",
+			"run_id":    runID,
+			"message":   rec.RecommendationText,
+			"item_id":   rec.ItemID,
+			"sponsored": recommendationItemSponsored(candidates, rec.ItemID),
+		},
+	})
+	if err != nil {
+		return err
+	}
+	_, _ = w.store.RecordRecommendationDecision(ctx, db.RecommendationDecisionSpec{
+		CustomerID: job.CustomerID, RunID: runID, UserID: job.UserID, SessionID: job.SessionID,
+		ScopeIntent: job.ScopeIntent, ContextMode: job.ContextMode, CandidateItemIDs: recommendationItemIDs(candidates),
+		SelectedItemID: rec.ItemID, RecommendationText: rec.RecommendationText, Reason: rec.Reason,
+		DeliveryStatus: "outbound_queued",
+	})
+	return w.store.CompleteRecommendationJob(ctx, job.ID, "sent", "")
+}
+
+func recommendationItemIDs(items []db.RecommendationItem) []string {
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.ID)
+	}
+	return ids
+}
+
+func recommendationCandidateExists(items []db.RecommendationItem, id string) bool {
+	for _, item := range items {
+		if item.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func recommendationItemSponsored(items []db.RecommendationItem, id string) bool {
+	for _, item := range items {
+		if item.ID == id {
+			return item.Sponsored
+		}
+	}
+	return false
+}
+
+func derefString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 func (w *Worker) toolNames(ctx context.Context, run *db.Run) []string {

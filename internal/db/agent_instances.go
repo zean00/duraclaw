@@ -222,7 +222,7 @@ func validateAgentInstanceVersionSpec(spec AgentInstanceVersionSpec) error {
 	if err := validatePolicyConfigValues(spec.PolicyConfig); err != nil {
 		return err
 	}
-	if err := validateObjectConfig("profile_config", spec.ProfileConfig, []string{"personality", "communication_style", "language_capabilities", "domain_scope"}); err != nil {
+	if err := validateObjectConfig("profile_config", spec.ProfileConfig, []string{"personality", "communication_style", "language_capabilities", "domain_scope", "recommendation"}); err != nil {
 		return err
 	}
 	if err := validateProfileConfigValues(spec.ProfileConfig); err != nil {
@@ -254,6 +254,36 @@ func validateProfileConfigValues(value any) error {
 				if err := validateStringArray("profile_config.domain_scope."+key, raw); err != nil {
 					return err
 				}
+			}
+		}
+	}
+	if raw, ok := obj["recommendation"]; ok {
+		rec, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("profile_config.recommendation must be an object")
+		}
+		if enabled, _ := rec["enabled"].(bool); enabled {
+			timeout, ok := numericValue(rec["timeout_ms"])
+			if !ok || timeout <= 0 {
+				return fmt.Errorf("profile_config.recommendation.timeout_ms must be positive when recommendation is enabled")
+			}
+		}
+		for _, key := range []string{"model", "merge_model", "disclosure_style"} {
+			if raw, ok := rec[key]; ok {
+				if _, ok := raw.(string); !ok {
+					return fmt.Errorf("profile_config.recommendation.%s must be a string", key)
+				}
+			}
+		}
+		if raw, ok := rec["max_candidates"]; ok {
+			max, ok := numericValue(raw)
+			if !ok || max < 0 {
+				return fmt.Errorf("profile_config.recommendation.max_candidates must be a non-negative number")
+			}
+		}
+		if raw, ok := rec["allow_sponsored"]; ok {
+			if _, ok := raw.(bool); !ok {
+				return fmt.Errorf("profile_config.recommendation.allow_sponsored must be a boolean")
 			}
 		}
 	}
@@ -405,4 +435,9 @@ func validateNonNegativeInteger(name string, raw any) error {
 		return fmt.Errorf("%s must be a non-negative integer", name)
 	}
 	return nil
+}
+
+func numericValue(raw any) (float64, bool) {
+	value, ok := raw.(float64)
+	return value, ok
 }

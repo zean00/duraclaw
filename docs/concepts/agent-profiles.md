@@ -16,6 +16,13 @@ Policy packs remain the reusable enforcement and audit mechanism. Profiles are t
 - `domain_scope.out_of_scope_guidance`
 - `domain_scope.scope_judge_model`
 - `domain_scope.confidence_threshold`
+- `recommendation.enabled`
+- `recommendation.timeout_ms`
+- `recommendation.model`
+- `recommendation.merge_model`
+- `recommendation.max_candidates`
+- `recommendation.allow_sponsored`
+- `recommendation.disclosure_style`
 
 Example:
 
@@ -30,6 +37,15 @@ Example:
     "out_of_scope_guidance": "Briefly explain that the request is outside scope and offer an allowed alternative.",
     "scope_judge_model": "openrouter/openai/gpt-4.1-mini",
     "confidence_threshold": 0.6
+  },
+  "recommendation": {
+    "enabled": true,
+    "timeout_ms": 1500,
+    "model": "openrouter/qwen/qwen3.6-35b-a3b",
+    "merge_model": "openrouter/openai/gpt-4.1-mini",
+    "max_candidates": 5,
+    "allow_sponsored": true,
+    "disclosure_style": "soft"
   }
 }
 ```
@@ -57,6 +73,24 @@ If the request is out of scope or below threshold, Duraclaw:
 - Skips the main model/tool/workflow/MCP path.
 
 This prevents side effects from out-of-scope requests.
+
+## Recommendations
+
+When `profile_config.recommendation.enabled` is true, Duraclaw starts a recommendation sidecar after a request passes scope validation. `timeout_ms` is required and must be positive when enabled. If the sidecar finishes before timeout, the selected recommendation is merged into the final assistant response by an LLM so it stays non-intrusive. If the sidecar times out, Duraclaw queues a durable recommendation job and can later emit an outbound `recommendation` intent.
+
+The recommendation input reuses scope judgement context selection:
+
+- `direct` intent uses only the current user request.
+- `implicit` intent uses the summarized/recent conversation context plus the current request.
+
+Recommendation catalog items and audit logs are customer-scoped through:
+
+- `POST /admin/recommendations/items`
+- `GET /admin/recommendations/items?customer_id={customer_id}`
+- `PATCH /admin/recommendations/items/{item_id}`
+- `DELETE /admin/recommendations/items/{item_id}?customer_id={customer_id}`
+- `GET /admin/recommendations/decisions?customer_id={customer_id}`
+- `GET /admin/recommendations/jobs?customer_id={customer_id}`
 
 ## Create a Version With a Profile
 

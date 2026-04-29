@@ -230,6 +230,12 @@ The GitHub Actions workflow runs the full suite with a `pgvector/pgvector:pg17` 
 - `GET /admin/observability/events?customer_id={customer_id}`
 - `GET /admin/outbound-intents?customer_id={customer_id}`
 - `GET /admin/background-runs?customer_id={customer_id}`
+- `POST /admin/recommendations/items`
+- `GET /admin/recommendations/items?customer_id={customer_id}`
+- `PATCH /admin/recommendations/items/{item_id}`
+- `DELETE /admin/recommendations/items/{item_id}?customer_id={customer_id}`
+- `GET /admin/recommendations/decisions?customer_id={customer_id}`
+- `GET /admin/recommendations/jobs?customer_id={customer_id}`
 - `GET /admin/mcp/servers`
 - `GET /admin/mcp/servers/{server_name}/tools`
 - `GET /admin/mcp/servers/{server_name}/resources`

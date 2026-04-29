@@ -273,3 +273,22 @@ func TestThirteenthMigrationContainsSchedulerJobScope(t *testing.T) {
 		}
 	}
 }
+
+func TestFourteenthMigrationContainsRecommendations(t *testing.T) {
+	raw, err := migrationFS.ReadFile("migrations/0014_recommendations.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw)
+	for _, want := range []string{
+		"CREATE TABLE IF NOT EXISTS recommendation_items",
+		"CREATE TABLE IF NOT EXISTS recommendation_decisions",
+		"CREATE TABLE IF NOT EXISTS recommendation_jobs",
+		"recommendation_jobs_claim_idx",
+		"recommendation_items_customer_status_idx",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("migration missing %q", want)
+		}
+	}
+}
