@@ -20,18 +20,30 @@ type RuntimeLimits struct {
 	AsyncBufferSize            *int            `json:"async_buffer_size,omitempty"`
 	MaxAsyncPayloadBytes       *int            `json:"max_async_payload_bytes,omitempty"`
 	AsyncDegradeThresholdBytes *int            `json:"async_degrade_threshold_bytes,omitempty"`
+	MaxDailyTokens             *int            `json:"max_daily_tokens,omitempty"`
+	MaxWeeklyTokens            *int            `json:"max_weekly_tokens,omitempty"`
+	MaxMonthlyTokens           *int            `json:"max_monthly_tokens,omitempty"`
+	MaxDailyModelCostMicros    *int64          `json:"max_daily_model_cost_micros,omitempty"`
+	MaxWeeklyModelCostMicros   *int64          `json:"max_weekly_model_cost_micros,omitempty"`
+	MaxMonthlyModelCostMicros  *int64          `json:"max_monthly_model_cost_micros,omitempty"`
 	Metadata                   json.RawMessage `json:"metadata,omitempty"`
 	UpdatedAt                  time.Time       `json:"updated_at"`
 }
 
 type EffectiveRuntimeLimits struct {
-	MaxActiveRuns              int `json:"max_active_runs"`
-	MaxQueuedRuns              int `json:"max_queued_runs"`
-	MaxWorkflowRuns            int `json:"max_workflow_runs"`
-	MaxBackgroundRuns          int `json:"max_background_runs"`
-	AsyncBufferSize            int `json:"async_buffer_size"`
-	MaxAsyncPayloadBytes       int `json:"max_async_payload_bytes"`
-	AsyncDegradeThresholdBytes int `json:"async_degrade_threshold_bytes"`
+	MaxActiveRuns              int   `json:"max_active_runs"`
+	MaxQueuedRuns              int   `json:"max_queued_runs"`
+	MaxWorkflowRuns            int   `json:"max_workflow_runs"`
+	MaxBackgroundRuns          int   `json:"max_background_runs"`
+	AsyncBufferSize            int   `json:"async_buffer_size"`
+	MaxAsyncPayloadBytes       int   `json:"max_async_payload_bytes"`
+	AsyncDegradeThresholdBytes int   `json:"async_degrade_threshold_bytes"`
+	MaxDailyTokens             int   `json:"max_daily_tokens"`
+	MaxWeeklyTokens            int   `json:"max_weekly_tokens"`
+	MaxMonthlyTokens           int   `json:"max_monthly_tokens"`
+	MaxDailyModelCostMicros    int64 `json:"max_daily_model_cost_micros"`
+	MaxWeeklyModelCostMicros   int64 `json:"max_weekly_model_cost_micros"`
+	MaxMonthlyModelCostMicros  int64 `json:"max_monthly_model_cost_micros"`
 }
 
 func DefaultRuntimeLimits() EffectiveRuntimeLimits {
@@ -48,8 +60,8 @@ func DefaultRuntimeLimits() EffectiveRuntimeLimits {
 
 type QuotaExceededError struct {
 	Kind  string
-	Limit int
-	Count int
+	Limit int64
+	Count int64
 }
 
 func (e QuotaExceededError) Error() string {
@@ -85,8 +97,8 @@ func (s *Store) UpsertCustomerRuntimeLimits(ctx context.Context, limits RuntimeL
 	metadata := jsonObject(limits.Metadata)
 	var out RuntimeLimits
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO customer_runtime_limits(customer_id,max_active_runs,max_queued_runs,max_workflow_runs,max_background_runs,async_buffer_size,max_async_payload_bytes,async_degrade_threshold_bytes,metadata,updated_at)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,now())
+		INSERT INTO customer_runtime_limits(customer_id,max_active_runs,max_queued_runs,max_workflow_runs,max_background_runs,async_buffer_size,max_async_payload_bytes,async_degrade_threshold_bytes,max_daily_tokens,max_weekly_tokens,max_monthly_tokens,max_daily_model_cost_micros,max_weekly_model_cost_micros,max_monthly_model_cost_micros,metadata,updated_at)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,now())
 		ON CONFLICT (customer_id) DO UPDATE SET
 			max_active_runs=EXCLUDED.max_active_runs,
 			max_queued_runs=EXCLUDED.max_queued_runs,
@@ -95,11 +107,17 @@ func (s *Store) UpsertCustomerRuntimeLimits(ctx context.Context, limits RuntimeL
 			async_buffer_size=EXCLUDED.async_buffer_size,
 			max_async_payload_bytes=EXCLUDED.max_async_payload_bytes,
 			async_degrade_threshold_bytes=EXCLUDED.async_degrade_threshold_bytes,
+			max_daily_tokens=EXCLUDED.max_daily_tokens,
+			max_weekly_tokens=EXCLUDED.max_weekly_tokens,
+			max_monthly_tokens=EXCLUDED.max_monthly_tokens,
+			max_daily_model_cost_micros=EXCLUDED.max_daily_model_cost_micros,
+			max_weekly_model_cost_micros=EXCLUDED.max_weekly_model_cost_micros,
+			max_monthly_model_cost_micros=EXCLUDED.max_monthly_model_cost_micros,
 			metadata=EXCLUDED.metadata,
 			updated_at=now()
-		RETURNING customer_id, max_active_runs, max_queued_runs, max_workflow_runs, max_background_runs, async_buffer_size, max_async_payload_bytes, async_degrade_threshold_bytes, metadata, updated_at`,
-		limits.CustomerID, limits.MaxActiveRuns, limits.MaxQueuedRuns, limits.MaxWorkflowRuns, limits.MaxBackgroundRuns, limits.AsyncBufferSize, limits.MaxAsyncPayloadBytes, limits.AsyncDegradeThresholdBytes, metadata).
-		Scan(&out.CustomerID, &out.MaxActiveRuns, &out.MaxQueuedRuns, &out.MaxWorkflowRuns, &out.MaxBackgroundRuns, &out.AsyncBufferSize, &out.MaxAsyncPayloadBytes, &out.AsyncDegradeThresholdBytes, &out.Metadata, &out.UpdatedAt)
+		RETURNING customer_id, max_active_runs, max_queued_runs, max_workflow_runs, max_background_runs, async_buffer_size, max_async_payload_bytes, async_degrade_threshold_bytes, max_daily_tokens, max_weekly_tokens, max_monthly_tokens, max_daily_model_cost_micros, max_weekly_model_cost_micros, max_monthly_model_cost_micros, metadata, updated_at`,
+		limits.CustomerID, limits.MaxActiveRuns, limits.MaxQueuedRuns, limits.MaxWorkflowRuns, limits.MaxBackgroundRuns, limits.AsyncBufferSize, limits.MaxAsyncPayloadBytes, limits.AsyncDegradeThresholdBytes, limits.MaxDailyTokens, limits.MaxWeeklyTokens, limits.MaxMonthlyTokens, limits.MaxDailyModelCostMicros, limits.MaxWeeklyModelCostMicros, limits.MaxMonthlyModelCostMicros, metadata).
+		Scan(&out.CustomerID, &out.MaxActiveRuns, &out.MaxQueuedRuns, &out.MaxWorkflowRuns, &out.MaxBackgroundRuns, &out.AsyncBufferSize, &out.MaxAsyncPayloadBytes, &out.AsyncDegradeThresholdBytes, &out.MaxDailyTokens, &out.MaxWeeklyTokens, &out.MaxMonthlyTokens, &out.MaxDailyModelCostMicros, &out.MaxWeeklyModelCostMicros, &out.MaxMonthlyModelCostMicros, &out.Metadata, &out.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -109,10 +127,10 @@ func (s *Store) UpsertCustomerRuntimeLimits(ctx context.Context, limits RuntimeL
 func (s *Store) CustomerRuntimeLimits(ctx context.Context, customerID string) (*RuntimeLimits, error) {
 	var out RuntimeLimits
 	err := s.pool.QueryRow(ctx, `
-		SELECT customer_id, max_active_runs, max_queued_runs, max_workflow_runs, max_background_runs, async_buffer_size, max_async_payload_bytes, async_degrade_threshold_bytes, metadata, updated_at
+		SELECT customer_id, max_active_runs, max_queued_runs, max_workflow_runs, max_background_runs, async_buffer_size, max_async_payload_bytes, async_degrade_threshold_bytes, max_daily_tokens, max_weekly_tokens, max_monthly_tokens, max_daily_model_cost_micros, max_weekly_model_cost_micros, max_monthly_model_cost_micros, metadata, updated_at
 		FROM customer_runtime_limits
 		WHERE customer_id=$1`, customerID).
-		Scan(&out.CustomerID, &out.MaxActiveRuns, &out.MaxQueuedRuns, &out.MaxWorkflowRuns, &out.MaxBackgroundRuns, &out.AsyncBufferSize, &out.MaxAsyncPayloadBytes, &out.AsyncDegradeThresholdBytes, &out.Metadata, &out.UpdatedAt)
+		Scan(&out.CustomerID, &out.MaxActiveRuns, &out.MaxQueuedRuns, &out.MaxWorkflowRuns, &out.MaxBackgroundRuns, &out.AsyncBufferSize, &out.MaxAsyncPayloadBytes, &out.AsyncDegradeThresholdBytes, &out.MaxDailyTokens, &out.MaxWeeklyTokens, &out.MaxMonthlyTokens, &out.MaxDailyModelCostMicros, &out.MaxWeeklyModelCostMicros, &out.MaxMonthlyModelCostMicros, &out.Metadata, &out.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -135,8 +153,8 @@ func (s *Store) UpsertAgentInstanceRuntimeLimits(ctx context.Context, limits Run
 	metadata := jsonObject(limits.Metadata)
 	var out RuntimeLimits
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO agent_instance_runtime_limits(customer_id,agent_instance_id,max_active_runs,max_queued_runs,max_workflow_runs,max_background_runs,async_buffer_size,max_async_payload_bytes,async_degrade_threshold_bytes,metadata,updated_at)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now())
+		INSERT INTO agent_instance_runtime_limits(customer_id,agent_instance_id,max_active_runs,max_queued_runs,max_workflow_runs,max_background_runs,async_buffer_size,max_async_payload_bytes,async_degrade_threshold_bytes,max_daily_tokens,max_weekly_tokens,max_monthly_tokens,max_daily_model_cost_micros,max_weekly_model_cost_micros,max_monthly_model_cost_micros,metadata,updated_at)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,now())
 		ON CONFLICT (customer_id,agent_instance_id) DO UPDATE SET
 			max_active_runs=EXCLUDED.max_active_runs,
 			max_queued_runs=EXCLUDED.max_queued_runs,
@@ -145,11 +163,17 @@ func (s *Store) UpsertAgentInstanceRuntimeLimits(ctx context.Context, limits Run
 			async_buffer_size=EXCLUDED.async_buffer_size,
 			max_async_payload_bytes=EXCLUDED.max_async_payload_bytes,
 			async_degrade_threshold_bytes=EXCLUDED.async_degrade_threshold_bytes,
+			max_daily_tokens=EXCLUDED.max_daily_tokens,
+			max_weekly_tokens=EXCLUDED.max_weekly_tokens,
+			max_monthly_tokens=EXCLUDED.max_monthly_tokens,
+			max_daily_model_cost_micros=EXCLUDED.max_daily_model_cost_micros,
+			max_weekly_model_cost_micros=EXCLUDED.max_weekly_model_cost_micros,
+			max_monthly_model_cost_micros=EXCLUDED.max_monthly_model_cost_micros,
 			metadata=EXCLUDED.metadata,
 			updated_at=now()
-		RETURNING customer_id, agent_instance_id, max_active_runs, max_queued_runs, max_workflow_runs, max_background_runs, async_buffer_size, max_async_payload_bytes, async_degrade_threshold_bytes, metadata, updated_at`,
-		limits.CustomerID, limits.AgentInstanceID, limits.MaxActiveRuns, limits.MaxQueuedRuns, limits.MaxWorkflowRuns, limits.MaxBackgroundRuns, limits.AsyncBufferSize, limits.MaxAsyncPayloadBytes, limits.AsyncDegradeThresholdBytes, metadata).
-		Scan(&out.CustomerID, &out.AgentInstanceID, &out.MaxActiveRuns, &out.MaxQueuedRuns, &out.MaxWorkflowRuns, &out.MaxBackgroundRuns, &out.AsyncBufferSize, &out.MaxAsyncPayloadBytes, &out.AsyncDegradeThresholdBytes, &out.Metadata, &out.UpdatedAt)
+		RETURNING customer_id, agent_instance_id, max_active_runs, max_queued_runs, max_workflow_runs, max_background_runs, async_buffer_size, max_async_payload_bytes, async_degrade_threshold_bytes, max_daily_tokens, max_weekly_tokens, max_monthly_tokens, max_daily_model_cost_micros, max_weekly_model_cost_micros, max_monthly_model_cost_micros, metadata, updated_at`,
+		limits.CustomerID, limits.AgentInstanceID, limits.MaxActiveRuns, limits.MaxQueuedRuns, limits.MaxWorkflowRuns, limits.MaxBackgroundRuns, limits.AsyncBufferSize, limits.MaxAsyncPayloadBytes, limits.AsyncDegradeThresholdBytes, limits.MaxDailyTokens, limits.MaxWeeklyTokens, limits.MaxMonthlyTokens, limits.MaxDailyModelCostMicros, limits.MaxWeeklyModelCostMicros, limits.MaxMonthlyModelCostMicros, metadata).
+		Scan(&out.CustomerID, &out.AgentInstanceID, &out.MaxActiveRuns, &out.MaxQueuedRuns, &out.MaxWorkflowRuns, &out.MaxBackgroundRuns, &out.AsyncBufferSize, &out.MaxAsyncPayloadBytes, &out.AsyncDegradeThresholdBytes, &out.MaxDailyTokens, &out.MaxWeeklyTokens, &out.MaxMonthlyTokens, &out.MaxDailyModelCostMicros, &out.MaxWeeklyModelCostMicros, &out.MaxMonthlyModelCostMicros, &out.Metadata, &out.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -159,10 +183,10 @@ func (s *Store) UpsertAgentInstanceRuntimeLimits(ctx context.Context, limits Run
 func (s *Store) AgentInstanceRuntimeLimits(ctx context.Context, customerID, agentInstanceID string) (*RuntimeLimits, error) {
 	var out RuntimeLimits
 	err := s.pool.QueryRow(ctx, `
-		SELECT customer_id, agent_instance_id, max_active_runs, max_queued_runs, max_workflow_runs, max_background_runs, async_buffer_size, max_async_payload_bytes, async_degrade_threshold_bytes, metadata, updated_at
+		SELECT customer_id, agent_instance_id, max_active_runs, max_queued_runs, max_workflow_runs, max_background_runs, async_buffer_size, max_async_payload_bytes, async_degrade_threshold_bytes, max_daily_tokens, max_weekly_tokens, max_monthly_tokens, max_daily_model_cost_micros, max_weekly_model_cost_micros, max_monthly_model_cost_micros, metadata, updated_at
 		FROM agent_instance_runtime_limits
 		WHERE customer_id=$1 AND agent_instance_id=$2`, customerID, agentInstanceID).
-		Scan(&out.CustomerID, &out.AgentInstanceID, &out.MaxActiveRuns, &out.MaxQueuedRuns, &out.MaxWorkflowRuns, &out.MaxBackgroundRuns, &out.AsyncBufferSize, &out.MaxAsyncPayloadBytes, &out.AsyncDegradeThresholdBytes, &out.Metadata, &out.UpdatedAt)
+		Scan(&out.CustomerID, &out.AgentInstanceID, &out.MaxActiveRuns, &out.MaxQueuedRuns, &out.MaxWorkflowRuns, &out.MaxBackgroundRuns, &out.AsyncBufferSize, &out.MaxAsyncPayloadBytes, &out.AsyncDegradeThresholdBytes, &out.MaxDailyTokens, &out.MaxWeeklyTokens, &out.MaxMonthlyTokens, &out.MaxDailyModelCostMicros, &out.MaxWeeklyModelCostMicros, &out.MaxMonthlyModelCostMicros, &out.Metadata, &out.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -197,7 +221,7 @@ func (s *Store) EnforceRunQuota(ctx context.Context, customerID, agentInstanceID
 			return err
 		}
 		if count >= limits.MaxQueuedRuns {
-			return QuotaExceededError{Kind: "queued_runs", Limit: limits.MaxQueuedRuns, Count: count + 1}
+			return QuotaExceededError{Kind: "queued_runs", Limit: int64(limits.MaxQueuedRuns), Count: int64(count + 1)}
 		}
 	}
 	if limits.MaxActiveRuns > 0 {
@@ -206,7 +230,7 @@ func (s *Store) EnforceRunQuota(ctx context.Context, customerID, agentInstanceID
 			return err
 		}
 		if count >= limits.MaxActiveRuns {
-			return QuotaExceededError{Kind: "active_runs", Limit: limits.MaxActiveRuns, Count: count + 1}
+			return QuotaExceededError{Kind: "active_runs", Limit: int64(limits.MaxActiveRuns), Count: int64(count + 1)}
 		}
 	}
 	return nil
@@ -225,7 +249,7 @@ func (s *Store) EnforceWorkflowQuota(ctx context.Context, customerID, agentInsta
 		return err
 	}
 	if count >= limits.MaxWorkflowRuns {
-		return QuotaExceededError{Kind: "workflow_runs", Limit: limits.MaxWorkflowRuns, Count: count + 1}
+		return QuotaExceededError{Kind: "workflow_runs", Limit: int64(limits.MaxWorkflowRuns), Count: int64(count + 1)}
 	}
 	return nil
 }
@@ -250,7 +274,7 @@ func (s *Store) EnforceRunStartQuota(ctx context.Context, runID, customerID, age
 		return err
 	}
 	if count+1 > limits.MaxActiveRuns {
-		return QuotaExceededError{Kind: "active_runs", Limit: limits.MaxActiveRuns, Count: count + 1}
+		return QuotaExceededError{Kind: "active_runs", Limit: int64(limits.MaxActiveRuns), Count: int64(count + 1)}
 	}
 	return nil
 }
@@ -275,7 +299,7 @@ func (s *Store) EnforceBackgroundQuota(ctx context.Context, customerID, agentIns
 		return err
 	}
 	if count >= limits.MaxBackgroundRuns {
-		return QuotaExceededError{Kind: "background_runs", Limit: limits.MaxBackgroundRuns, Count: count + 1}
+		return QuotaExceededError{Kind: "background_runs", Limit: int64(limits.MaxBackgroundRuns), Count: int64(count + 1)}
 	}
 	return nil
 }
@@ -302,6 +326,24 @@ func applyRuntimeLimits(out *EffectiveRuntimeLimits, in *RuntimeLimits) {
 	if in.AsyncDegradeThresholdBytes != nil {
 		out.AsyncDegradeThresholdBytes = *in.AsyncDegradeThresholdBytes
 	}
+	if in.MaxDailyTokens != nil {
+		out.MaxDailyTokens = *in.MaxDailyTokens
+	}
+	if in.MaxWeeklyTokens != nil {
+		out.MaxWeeklyTokens = *in.MaxWeeklyTokens
+	}
+	if in.MaxMonthlyTokens != nil {
+		out.MaxMonthlyTokens = *in.MaxMonthlyTokens
+	}
+	if in.MaxDailyModelCostMicros != nil {
+		out.MaxDailyModelCostMicros = *in.MaxDailyModelCostMicros
+	}
+	if in.MaxWeeklyModelCostMicros != nil {
+		out.MaxWeeklyModelCostMicros = *in.MaxWeeklyModelCostMicros
+	}
+	if in.MaxMonthlyModelCostMicros != nil {
+		out.MaxMonthlyModelCostMicros = *in.MaxMonthlyModelCostMicros
+	}
 }
 
 func validateRuntimeLimits(limits RuntimeLimits) error {
@@ -313,6 +355,18 @@ func validateRuntimeLimits(limits RuntimeLimits) error {
 		"async_buffer_size":             limits.AsyncBufferSize,
 		"max_async_payload_bytes":       limits.MaxAsyncPayloadBytes,
 		"async_degrade_threshold_bytes": limits.AsyncDegradeThresholdBytes,
+		"max_daily_tokens":              limits.MaxDailyTokens,
+		"max_weekly_tokens":             limits.MaxWeeklyTokens,
+		"max_monthly_tokens":            limits.MaxMonthlyTokens,
+	} {
+		if value != nil && *value < 0 {
+			return ValidationError{Message: fmt.Sprintf("%s must be non-negative", name)}
+		}
+	}
+	for name, value := range map[string]*int64{
+		"max_daily_model_cost_micros":   limits.MaxDailyModelCostMicros,
+		"max_weekly_model_cost_micros":  limits.MaxWeeklyModelCostMicros,
+		"max_monthly_model_cost_micros": limits.MaxMonthlyModelCostMicros,
 	} {
 		if value != nil && *value < 0 {
 			return ValidationError{Message: fmt.Sprintf("%s must be non-negative", name)}

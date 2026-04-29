@@ -913,11 +913,13 @@ func TestRuntimeLimitRoutesUseStore(t *testing.T) {
 	active, queued, buffer := 2, 3, 25
 	mock.ExpectExec("INSERT INTO customers").WithArgs("c1").WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectQuery("INSERT INTO customer_runtime_limits").
-		WithArgs("c1", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), []byte(`{}`)).
+		WithArgs("c1", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), []byte(`{}`)).
 		WillReturnRows(pgxmock.NewRows([]string{
 			"customer_id", "max_active_runs", "max_queued_runs", "max_workflow_runs", "max_background_runs",
-			"async_buffer_size", "max_async_payload_bytes", "async_degrade_threshold_bytes", "metadata", "updated_at",
-		}).AddRow("c1", &active, &queued, nil, nil, &buffer, nil, nil, []byte(`{}`), now))
+			"async_buffer_size", "max_async_payload_bytes", "async_degrade_threshold_bytes",
+			"max_daily_tokens", "max_weekly_tokens", "max_monthly_tokens", "max_daily_model_cost_micros", "max_weekly_model_cost_micros", "max_monthly_model_cost_micros",
+			"metadata", "updated_at",
+		}).AddRow("c1", &active, &queued, nil, nil, &buffer, nil, nil, nil, nil, nil, nil, nil, nil, []byte(`{}`), now))
 	req := httptest.NewRequest(http.MethodPut, "/admin/runtime-limits/customer/c1", strings.NewReader(`{"max_active_runs":2,"max_queued_runs":3,"async_buffer_size":25}`))
 	rec := httptest.NewRecorder()
 	NewHandler(db.NewStore(mock)).Routes().ServeHTTP(rec, req)
@@ -928,13 +930,17 @@ func TestRuntimeLimitRoutesUseStore(t *testing.T) {
 	mock.ExpectQuery("SELECT customer_id").WithArgs("c1").
 		WillReturnRows(pgxmock.NewRows([]string{
 			"customer_id", "max_active_runs", "max_queued_runs", "max_workflow_runs", "max_background_runs",
-			"async_buffer_size", "max_async_payload_bytes", "async_degrade_threshold_bytes", "metadata", "updated_at",
-		}).AddRow("c1", &active, &queued, nil, nil, &buffer, nil, nil, []byte(`{}`), now))
+			"async_buffer_size", "max_async_payload_bytes", "async_degrade_threshold_bytes",
+			"max_daily_tokens", "max_weekly_tokens", "max_monthly_tokens", "max_daily_model_cost_micros", "max_weekly_model_cost_micros", "max_monthly_model_cost_micros",
+			"metadata", "updated_at",
+		}).AddRow("c1", &active, &queued, nil, nil, &buffer, nil, nil, nil, nil, nil, nil, nil, nil, []byte(`{}`), now))
 	mock.ExpectQuery("SELECT customer_id").WithArgs("c1").
 		WillReturnRows(pgxmock.NewRows([]string{
 			"customer_id", "max_active_runs", "max_queued_runs", "max_workflow_runs", "max_background_runs",
-			"async_buffer_size", "max_async_payload_bytes", "async_degrade_threshold_bytes", "metadata", "updated_at",
-		}).AddRow("c1", &active, &queued, nil, nil, &buffer, nil, nil, []byte(`{}`), now))
+			"async_buffer_size", "max_async_payload_bytes", "async_degrade_threshold_bytes",
+			"max_daily_tokens", "max_weekly_tokens", "max_monthly_tokens", "max_daily_model_cost_micros", "max_weekly_model_cost_micros", "max_monthly_model_cost_micros",
+			"metadata", "updated_at",
+		}).AddRow("c1", &active, &queued, nil, nil, &buffer, nil, nil, nil, nil, nil, nil, nil, nil, []byte(`{}`), now))
 	req = httptest.NewRequest(http.MethodGet, "/admin/runtime-limits/customer/c1", nil)
 	rec = httptest.NewRecorder()
 	NewHandler(db.NewStore(mock)).Routes().ServeHTTP(rec, req)

@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -148,6 +149,49 @@ type UsageInfo struct {
 	InputTokens  int `json:"input_tokens,omitempty"`
 	OutputTokens int `json:"output_tokens,omitempty"`
 	TotalTokens  int `json:"total_tokens,omitempty"`
+	CostMicros   int `json:"cost_micros,omitempty"`
+}
+
+func (u *UsageInfo) UnmarshalJSON(raw []byte) error {
+	type usageAlias UsageInfo
+	var payload struct {
+		usageAlias
+		PromptTokens     int `json:"prompt_tokens,omitempty"`
+		CompletionTokens int `json:"completion_tokens,omitempty"`
+		Cost             any `json:"cost,omitempty"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return err
+	}
+	*u = UsageInfo(payload.usageAlias)
+	if u.InputTokens == 0 {
+		u.InputTokens = payload.PromptTokens
+	}
+	if u.OutputTokens == 0 {
+		u.OutputTokens = payload.CompletionTokens
+	}
+	if u.TotalTokens == 0 {
+		u.TotalTokens = u.InputTokens + u.OutputTokens
+	}
+	if u.CostMicros == 0 {
+		u.CostMicros = costMicros(payload.Cost)
+	}
+	return nil
+}
+
+func costMicros(raw any) int {
+	switch v := raw.(type) {
+	case float64:
+		return int(v*1_000_000 + 0.5)
+	case string:
+		f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+		if err != nil {
+			return 0
+		}
+		return int(f*1_000_000 + 0.5)
+	default:
+		return 0
+	}
 }
 
 type LLMResponse struct {

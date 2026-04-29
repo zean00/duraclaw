@@ -32,7 +32,7 @@ func TestOpenAICompatibleProviderChat(t *testing.T) {
 				"message":       map[string]any{"content": "hello"},
 				"finish_reason": "stop",
 			}},
-			"usage": map[string]any{"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+			"usage": map[string]any{"input_tokens": 1, "output_tokens": 2, "total_tokens": 3, "cost": 0.000004},
 		})
 	}))
 	defer server.Close()
@@ -44,7 +44,7 @@ func TestOpenAICompatibleProviderChat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Content != "hello" || resp.Usage.TotalTokens != 3 {
+	if resp.Content != "hello" || resp.Usage.TotalTokens != 3 || resp.Usage.CostMicros != 4 {
 		t.Fatalf("resp=%#v", resp)
 	}
 	if sawAuth != "Bearer key" {

@@ -40,8 +40,10 @@ type Store interface {
 	WorkflowEdgeActivations(ctx context.Context, workflowRunID string) ([]db.WorkflowEdgeActivation, error)
 	StartWorkflowNodeRun(ctx context.Context, workflowRunID, nodeKey string, input any) (string, error)
 	CompleteWorkflowNodeRun(ctx context.Context, nodeRunID, state string, output any, errText *string) error
+	EnforceModelUsageQuota(ctx context.Context, customerID, agentInstanceID string) error
 	StartModelCall(ctx context.Context, runID, provider, model string, request any) (string, error)
 	CompleteModelCall(ctx context.Context, callID, runID string, response any, errText *string) error
+	RecordModelUsage(ctx context.Context, usage db.ModelUsage) error
 	StartToolCall(ctx context.Context, runID, toolName string, args any, retryable bool) (string, error)
 	CompleteToolCall(ctx context.Context, callID, runID string, result any, errText *string) error
 	StartMCPCall(ctx context.Context, runID, serverName, toolName string, request any) (string, error)
@@ -605,6 +607,9 @@ func (e *Executor) executeLLMCondition(ctx context.Context, req GraphRequest, no
 	messages := []providers.Message{{Role: "user", Content: prompt + "\nContext: " + mustJSONString(previous)}}
 	var lastErr error
 	for _, candidate := range candidates {
+		if err := e.store.EnforceModelUsageQuota(ctx, req.CustomerID, req.AgentInstanceID); err != nil {
+			return nil, "", err
+		}
 		callID, err := e.store.StartModelCall(ctx, req.RunID, candidate.Provider, candidate.Model, map[string]any{"node_key": node.NodeKey, "type": "llm_condition"})
 		if err != nil {
 			return nil, "", err
@@ -622,7 +627,14 @@ func (e *Executor) executeLLMCondition(ctx context.Context, req GraphRequest, no
 				} else if strings.TrimSpace(fmt.Sprint(out["route"])) == "" {
 					err = fmt.Errorf("llm_condition response missing route")
 				} else {
-					_ = e.store.CompleteModelCall(ctx, callID, req.RunID, map[string]any{"finish_reason": resp.FinishReason, "content_length": len(resp.Content)}, nil)
+					if err := e.store.RecordModelUsage(ctx, db.ModelUsage{
+						CustomerID: req.CustomerID, AgentInstanceID: req.AgentInstanceID, RunID: req.RunID, ModelCallID: callID,
+						Provider: candidate.Provider, Model: candidate.Model,
+						InputTokens: resp.Usage.InputTokens, OutputTokens: resp.Usage.OutputTokens, TotalTokens: resp.Usage.TotalTokens, CostMicros: int64(resp.Usage.CostMicros),
+					}); err != nil {
+						return nil, "", err
+					}
+					_ = e.store.CompleteModelCall(ctx, callID, req.RunID, map[string]any{"finish_reason": resp.FinishReason, "content_length": len(resp.Content), "usage": resp.Usage}, nil)
 					return out, "succeeded", nil
 				}
 			}
@@ -650,6 +662,9 @@ func (e *Executor) executeModelCall(ctx context.Context, req GraphRequest, node 
 	messages := []providers.Message{{Role: "user", Content: promptText + "\nContext: " + mustJSONString(previous)}}
 	var lastErr error
 	for _, candidate := range candidates {
+		if err := e.store.EnforceModelUsageQuota(ctx, req.CustomerID, req.AgentInstanceID); err != nil {
+			return nil, "", err
+		}
 		callID, err := e.store.StartModelCall(ctx, req.RunID, candidate.Provider, candidate.Model, map[string]any{"node_key": node.NodeKey, "type": "model_call"})
 		if err != nil {
 			return nil, "", err
@@ -671,7 +686,14 @@ func (e *Executor) executeModelCall(ctx context.Context, req GraphRequest, node 
 					}
 				}
 				if err == nil {
-					_ = e.store.CompleteModelCall(ctx, callID, req.RunID, map[string]any{"finish_reason": resp.FinishReason, "content_length": len(resp.Content)}, nil)
+					if err := e.store.RecordModelUsage(ctx, db.ModelUsage{
+						CustomerID: req.CustomerID, AgentInstanceID: req.AgentInstanceID, RunID: req.RunID, ModelCallID: callID,
+						Provider: candidate.Provider, Model: candidate.Model,
+						InputTokens: resp.Usage.InputTokens, OutputTokens: resp.Usage.OutputTokens, TotalTokens: resp.Usage.TotalTokens, CostMicros: int64(resp.Usage.CostMicros),
+					}); err != nil {
+						return nil, "", err
+					}
+					_ = e.store.CompleteModelCall(ctx, callID, req.RunID, map[string]any{"finish_reason": resp.FinishReason, "content_length": len(resp.Content), "usage": resp.Usage}, nil)
 					return out, "succeeded", nil
 				}
 			}

@@ -174,11 +174,19 @@ func (s *fakeWorkflowStore) AddEvent(_ context.Context, _ string, typ string, _ 
 	return nil
 }
 
+func (s *fakeWorkflowStore) EnforceModelUsageQuota(context.Context, string, string) error {
+	return nil
+}
+
 func (s *fakeWorkflowStore) StartModelCall(context.Context, string, string, string, any) (string, error) {
 	return "model-call-1", nil
 }
 
 func (s *fakeWorkflowStore) CompleteModelCall(context.Context, string, string, any, *string) error {
+	return nil
+}
+
+func (s *fakeWorkflowStore) RecordModelUsage(context.Context, db.ModelUsage) error {
 	return nil
 }
 

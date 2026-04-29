@@ -178,7 +178,7 @@ func (s *Store) enforceRunQuotaTx(ctx context.Context, tx pgx.Tx, customerID, ag
 			return err
 		}
 		if count >= limits.MaxQueuedRuns {
-			return QuotaExceededError{Kind: "queued_runs", Limit: limits.MaxQueuedRuns, Count: count + 1}
+			return QuotaExceededError{Kind: "queued_runs", Limit: int64(limits.MaxQueuedRuns), Count: int64(count + 1)}
 		}
 	}
 	if limits.MaxActiveRuns > 0 {
@@ -187,7 +187,7 @@ func (s *Store) enforceRunQuotaTx(ctx context.Context, tx pgx.Tx, customerID, ag
 			return err
 		}
 		if count >= limits.MaxActiveRuns {
-			return QuotaExceededError{Kind: "active_runs", Limit: limits.MaxActiveRuns, Count: count + 1}
+			return QuotaExceededError{Kind: "active_runs", Limit: int64(limits.MaxActiveRuns), Count: int64(count + 1)}
 		}
 	}
 	return nil
@@ -213,7 +213,7 @@ func (s *Store) enforceBackgroundQuotaTx(ctx context.Context, tx pgx.Tx, custome
 		return err
 	}
 	if count >= limits.MaxBackgroundRuns {
-		return QuotaExceededError{Kind: "background_runs", Limit: limits.MaxBackgroundRuns, Count: count + 1}
+		return QuotaExceededError{Kind: "background_runs", Limit: int64(limits.MaxBackgroundRuns), Count: int64(count + 1)}
 	}
 	return nil
 }

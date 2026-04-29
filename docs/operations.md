@@ -77,3 +77,10 @@ Retention cleanup can remove old artifacts, events, outbox rows, async write job
 - Configure OTLP or scrape `/metrics`.
 - Set runtime limits for customers or agent instances.
 - Run database backups and retention jobs.
+
+Runtime limits can be set at customer scope or overridden at agent-instance scope. Supported quota fields include run concurrency/queue limits, workflow/background run limits, async-write limits, and model usage budgets:
+
+- `max_daily_tokens`, `max_weekly_tokens`, `max_monthly_tokens`
+- `max_daily_model_cost_micros`, `max_weekly_model_cost_micros`, `max_monthly_model_cost_micros`
+
+Model cost quotas use micro-USD integer units. For example, `1000000` means USD 1.00.

@@ -160,6 +160,25 @@ func TestSeventhMigrationContainsRuntimeLimitsAndAsyncWrites(t *testing.T) {
 	}
 }
 
+func TestFifteenthMigrationContainsModelUsageQuotas(t *testing.T) {
+	raw, err := migrationFS.ReadFile("migrations/0015_model_usage_quotas.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw)
+	for _, want := range []string{
+		"max_daily_tokens",
+		"max_weekly_model_cost_micros",
+		"max_monthly_model_cost_micros",
+		"CREATE TABLE IF NOT EXISTS model_usage_ledger",
+		"CREATE INDEX IF NOT EXISTS model_usage_ledger_customer_period_idx",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("migration missing %q", want)
+		}
+	}
+}
+
 func TestEighthMigrationContainsSummariesAndBackgroundSchema(t *testing.T) {
 	raw, err := migrationFS.ReadFile("migrations/0008_summaries_and_background.sql")
 	if err != nil {

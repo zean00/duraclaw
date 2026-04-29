@@ -69,11 +69,13 @@ func TestStoreRuntimeLimitsWithPgxMock(t *testing.T) {
 
 	mock.ExpectExec("INSERT INTO customers").WithArgs("c1").WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectQuery("INSERT INTO customer_runtime_limits").
-		WithArgs("c1", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), []byte(`{}`)).
+		WithArgs("c1", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), []byte(`{}`)).
 		WillReturnRows(pgxmock.NewRows([]string{
 			"customer_id", "max_active_runs", "max_queued_runs", "max_workflow_runs", "max_background_runs",
-			"async_buffer_size", "max_async_payload_bytes", "async_degrade_threshold_bytes", "metadata", "updated_at",
-		}).AddRow("c1", &active, &queued, nil, nil, &buffer, nil, nil, []byte(`{}`), now))
+			"async_buffer_size", "max_async_payload_bytes", "async_degrade_threshold_bytes",
+			"max_daily_tokens", "max_weekly_tokens", "max_monthly_tokens", "max_daily_model_cost_micros", "max_weekly_model_cost_micros", "max_monthly_model_cost_micros",
+			"metadata", "updated_at",
+		}).AddRow("c1", &active, &queued, nil, nil, &buffer, nil, nil, nil, nil, nil, nil, nil, nil, []byte(`{}`), now))
 	limits, err := store.UpsertCustomerRuntimeLimits(ctx, RuntimeLimits{
 		CustomerID:      "c1",
 		MaxActiveRuns:   &active,
@@ -87,8 +89,10 @@ func TestStoreRuntimeLimitsWithPgxMock(t *testing.T) {
 	mock.ExpectQuery("SELECT customer_id").WithArgs("c1").
 		WillReturnRows(pgxmock.NewRows([]string{
 			"customer_id", "max_active_runs", "max_queued_runs", "max_workflow_runs", "max_background_runs",
-			"async_buffer_size", "max_async_payload_bytes", "async_degrade_threshold_bytes", "metadata", "updated_at",
-		}).AddRow("c1", &active, &queued, nil, nil, &buffer, nil, nil, []byte(`{}`), now))
+			"async_buffer_size", "max_async_payload_bytes", "async_degrade_threshold_bytes",
+			"max_daily_tokens", "max_weekly_tokens", "max_monthly_tokens", "max_daily_model_cost_micros", "max_weekly_model_cost_micros", "max_monthly_model_cost_micros",
+			"metadata", "updated_at",
+		}).AddRow("c1", &active, &queued, nil, nil, &buffer, nil, nil, nil, nil, nil, nil, nil, nil, []byte(`{}`), now))
 	got, err := store.CustomerRuntimeLimits(ctx, "c1")
 	if err != nil || got.CustomerID != "c1" || got.AsyncBufferSize == nil || *got.AsyncBufferSize != buffer {
 		t.Fatalf("customer limits=%#v err=%v", got, err)
@@ -114,13 +118,17 @@ func TestStoreEffectiveRuntimeLimitsAndQuotasWithPgxMock(t *testing.T) {
 	mock.ExpectQuery("SELECT customer_id").WithArgs("c1").
 		WillReturnRows(pgxmock.NewRows([]string{
 			"customer_id", "max_active_runs", "max_queued_runs", "max_workflow_runs", "max_background_runs",
-			"async_buffer_size", "max_async_payload_bytes", "async_degrade_threshold_bytes", "metadata", "updated_at",
-		}).AddRow("c1", &active, &queued, &workflow, &background, nil, nil, nil, []byte(`{}`), now))
+			"async_buffer_size", "max_async_payload_bytes", "async_degrade_threshold_bytes",
+			"max_daily_tokens", "max_weekly_tokens", "max_monthly_tokens", "max_daily_model_cost_micros", "max_weekly_model_cost_micros", "max_monthly_model_cost_micros",
+			"metadata", "updated_at",
+		}).AddRow("c1", &active, &queued, &workflow, &background, nil, nil, nil, nil, nil, nil, nil, nil, nil, []byte(`{}`), now))
 	mock.ExpectQuery("SELECT customer_id").WithArgs("c1", "a1").
 		WillReturnRows(pgxmock.NewRows([]string{
 			"customer_id", "agent_instance_id", "max_active_runs", "max_queued_runs", "max_workflow_runs", "max_background_runs",
-			"async_buffer_size", "max_async_payload_bytes", "async_degrade_threshold_bytes", "metadata", "updated_at",
-		}).AddRow("c1", "a1", nil, nil, nil, nil, intPtr(50), nil, nil, []byte(`{}`), now))
+			"async_buffer_size", "max_async_payload_bytes", "async_degrade_threshold_bytes",
+			"max_daily_tokens", "max_weekly_tokens", "max_monthly_tokens", "max_daily_model_cost_micros", "max_weekly_model_cost_micros", "max_monthly_model_cost_micros",
+			"metadata", "updated_at",
+		}).AddRow("c1", "a1", nil, nil, nil, nil, intPtr(50), nil, nil, nil, nil, nil, nil, nil, nil, []byte(`{}`), now))
 	effective, err := store.EffectiveRuntimeLimits(ctx, "c1", "a1")
 	if err != nil || effective.MaxActiveRuns != active || effective.AsyncBufferSize != 50 {
 		t.Fatalf("effective=%#v err=%v", effective, err)
@@ -129,8 +137,10 @@ func TestStoreEffectiveRuntimeLimitsAndQuotasWithPgxMock(t *testing.T) {
 	mock.ExpectQuery("SELECT customer_id").WithArgs("c1").
 		WillReturnRows(pgxmock.NewRows([]string{
 			"customer_id", "max_active_runs", "max_queued_runs", "max_workflow_runs", "max_background_runs",
-			"async_buffer_size", "max_async_payload_bytes", "async_degrade_threshold_bytes", "metadata", "updated_at",
-		}).AddRow("c1", &active, &queued, &workflow, &background, nil, nil, nil, []byte(`{}`), now))
+			"async_buffer_size", "max_async_payload_bytes", "async_degrade_threshold_bytes",
+			"max_daily_tokens", "max_weekly_tokens", "max_monthly_tokens", "max_daily_model_cost_micros", "max_weekly_model_cost_micros", "max_monthly_model_cost_micros",
+			"metadata", "updated_at",
+		}).AddRow("c1", &active, &queued, &workflow, &background, nil, nil, nil, nil, nil, nil, nil, nil, nil, []byte(`{}`), now))
 	mock.ExpectQuery("SELECT customer_id").WithArgs("c1", "a1").WillReturnError(pgx.ErrNoRows)
 	mock.ExpectQuery("SELECT count").WithArgs("c1", "a1", []string{"queued"}).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
@@ -141,8 +151,10 @@ func TestStoreEffectiveRuntimeLimitsAndQuotasWithPgxMock(t *testing.T) {
 	mock.ExpectQuery("SELECT customer_id").WithArgs("c1").
 		WillReturnRows(pgxmock.NewRows([]string{
 			"customer_id", "max_active_runs", "max_queued_runs", "max_workflow_runs", "max_background_runs",
-			"async_buffer_size", "max_async_payload_bytes", "async_degrade_threshold_bytes", "metadata", "updated_at",
-		}).AddRow("c1", &active, &queued, &workflow, &background, nil, nil, nil, []byte(`{}`), now))
+			"async_buffer_size", "max_async_payload_bytes", "async_degrade_threshold_bytes",
+			"max_daily_tokens", "max_weekly_tokens", "max_monthly_tokens", "max_daily_model_cost_micros", "max_weekly_model_cost_micros", "max_monthly_model_cost_micros",
+			"metadata", "updated_at",
+		}).AddRow("c1", &active, &queued, &workflow, &background, nil, nil, nil, nil, nil, nil, nil, nil, nil, []byte(`{}`), now))
 	mock.ExpectQuery("SELECT customer_id").WithArgs("c1", "a1").WillReturnError(pgx.ErrNoRows)
 	mock.ExpectQuery("SELECT count").WithArgs("c1", "a1").
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
@@ -150,6 +162,37 @@ func TestStoreEffectiveRuntimeLimitsAndQuotasWithPgxMock(t *testing.T) {
 		t.Fatalf("expected workflow quota exceeded, got %v", err)
 	}
 
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStoreModelUsageQuotaWithPgxMock(t *testing.T) {
+	store, mock := newMockStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	dailyTokens := 10
+	dailyCost := int64(100)
+
+	mock.ExpectQuery("SELECT customer_id").WithArgs("c1").
+		WillReturnRows(pgxmock.NewRows([]string{
+			"customer_id", "max_active_runs", "max_queued_runs", "max_workflow_runs", "max_background_runs",
+			"async_buffer_size", "max_async_payload_bytes", "async_degrade_threshold_bytes",
+			"max_daily_tokens", "max_weekly_tokens", "max_monthly_tokens", "max_daily_model_cost_micros", "max_weekly_model_cost_micros", "max_monthly_model_cost_micros",
+			"metadata", "updated_at",
+		}).AddRow("c1", nil, nil, nil, nil, nil, nil, nil, &dailyTokens, nil, nil, &dailyCost, nil, nil, []byte(`{}`), now))
+	mock.ExpectQuery("SELECT customer_id").WithArgs("c1", "a1").WillReturnError(pgx.ErrNoRows)
+	mock.ExpectQuery("SELECT COALESCE\\(sum\\(total_tokens\\),0\\)").WithArgs("c1", "a1", pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows([]string{"sum"}).AddRow(int64(10)))
+	if err := store.EnforceModelUsageQuota(ctx, "c1", "a1"); !IsQuotaExceeded(err) {
+		t.Fatalf("expected token quota exceeded, got %v", err)
+	}
+
+	mock.ExpectExec("INSERT INTO model_usage_ledger").WithArgs("c1", "a1", "run-1", "call-1", "openrouter", "model", 1, 2, 3, int64(4)).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	if err := store.RecordModelUsage(ctx, ModelUsage{CustomerID: "c1", AgentInstanceID: "a1", RunID: "run-1", ModelCallID: "call-1", Provider: "openrouter", Model: "model", InputTokens: 1, OutputTokens: 2, CostMicros: 4}); err != nil {
+		t.Fatalf("record usage: %v", err)
+	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
 	}

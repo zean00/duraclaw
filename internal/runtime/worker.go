@@ -587,6 +587,13 @@ func (w *Worker) chat(ctx context.Context, run *db.Run, messages []providers.Mes
 	var lastErr error
 	for _, candidate := range candidates {
 		span.SetAttributes(attribute.String("duraclaw.model_provider", candidate.Provider), attribute.String("duraclaw.model", candidate.Model))
+		if err := w.store.EnforceModelUsageQuota(ctx, run.CustomerID, run.AgentInstanceID); err != nil {
+			if db.IsQuotaExceeded(err) {
+				_ = w.store.AddEvent(ctx, run.ID, "quota_exceeded", map[string]any{"error": err.Error(), "kind": "model_usage"})
+				_ = w.store.AddObservabilityEvent(ctx, run.CustomerID, run.ID, "quota_exceeded", map[string]any{"error": err.Error(), "agent_instance_id": run.AgentInstanceID, "kind": "model_usage"})
+			}
+			return nil, err
+		}
 		callID, err := w.store.StartModelCall(ctx, run.ID, candidate.Provider, candidate.Model, summary)
 		if err != nil {
 			return nil, err
@@ -618,6 +625,13 @@ func (w *Worker) chat(ctx context.Context, run *db.Run, messages []providers.Mes
 			}
 			if err == nil {
 				w.recordModelUsage(resp.Usage)
+				if err := w.store.RecordModelUsage(ctx, db.ModelUsage{
+					CustomerID: run.CustomerID, AgentInstanceID: run.AgentInstanceID, RunID: run.ID, ModelCallID: callID,
+					Provider: candidate.Provider, Model: candidate.Model,
+					InputTokens: resp.Usage.InputTokens, OutputTokens: resp.Usage.OutputTokens, TotalTokens: resp.Usage.TotalTokens, CostMicros: int64(resp.Usage.CostMicros),
+				}); err != nil {
+					return nil, err
+				}
 				if completeErr := w.store.CompleteModelCall(ctx, callID, run.ID, map[string]any{"finish_reason": resp.FinishReason, "content_length": len(resp.Content), "usage": resp.Usage}, nil); completeErr != nil {
 					return nil, completeErr
 				}
@@ -762,6 +776,9 @@ func (w *Worker) recordModelUsage(usage providers.UsageInfo) {
 	}
 	if usage.TotalTokens > 0 {
 		w.counters.Add("model_token_total", int64(usage.TotalTokens))
+	}
+	if usage.CostMicros > 0 {
+		w.counters.Add("model_cost_micros_total", int64(usage.CostMicros))
 	}
 }
 
