@@ -27,6 +27,8 @@ X-Trace-ID
 traceparent
 ```
 
+Channel headers are persisted on the run and exposed to the agent prompt context so profile instructions, policies, recommendations, and workflows can adapt response style or behavior per channel.
+
 ## Core ACP Routes
 
 Session and runs:

@@ -137,6 +137,9 @@ type GraphRequest struct {
 	AgentInstanceID      string         `json:"agent_instance_id,omitempty"`
 	SessionID            string         `json:"session_id,omitempty"`
 	RequestID            string         `json:"request_id,omitempty"`
+	ChannelType          string         `json:"channel_type,omitempty"`
+	ChannelUserID        string         `json:"channel_user_id,omitempty"`
+	ChannelConvID        string         `json:"channel_conversation_id,omitempty"`
 	TraceID              string         `json:"trace_id,omitempty"`
 	TraceParent          string         `json:"traceparent,omitempty"`
 	WorkflowDefinitionID string         `json:"workflow_definition_id"`
@@ -726,6 +729,7 @@ func (e *Executor) executeToolNode(ctx context.Context, req GraphRequest, node d
 	}
 	result := e.tools.Execute(ctx, tools.ExecutionContext{
 		CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID, RunID: req.RunID, ToolCallID: callID, RequestID: req.RequestID,
+		ChannelType: req.ChannelType, ChannelUserID: req.ChannelUserID, ChannelConvID: req.ChannelConvID,
 	}, name, args)
 	var errText *string
 	if result.IsError {
@@ -747,6 +751,7 @@ func (e *Executor) executeMCPNode(ctx context.Context, req GraphRequest, node db
 	args, _ := config["arguments"].(map[string]any)
 	result, err := mcp.NewExecutor(e.mcpManager, e.store).WithCounters(e.counters).CallTool(ctx, mcp.ExecutionContext{
 		CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID, RunID: req.RunID, RequestID: req.RequestID,
+		ChannelType: req.ChannelType, ChannelUserID: req.ChannelUserID, ChannelConvID: req.ChannelConvID,
 		TraceID: req.TraceID, TraceParent: req.TraceParent,
 	}, serverName, toolName, args)
 	if err != nil {
@@ -766,6 +771,7 @@ func (e *Executor) executeMCPListResources(ctx context.Context, req GraphRequest
 	}
 	resources, err := e.mcpManager.ListResources(ctx, mcp.ExecutionContext{
 		CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID, RunID: req.RunID, RequestID: req.RequestID,
+		ChannelType: req.ChannelType, ChannelUserID: req.ChannelUserID, ChannelConvID: req.ChannelConvID,
 		TraceID: req.TraceID, TraceParent: req.TraceParent,
 	}, serverName)
 	if err != nil {
@@ -794,6 +800,7 @@ func (e *Executor) executeMCPReadResource(ctx context.Context, req GraphRequest,
 	}
 	resource, err := e.mcpManager.ReadResource(ctx, mcp.ExecutionContext{
 		CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID, RunID: req.RunID, RequestID: req.RequestID,
+		ChannelType: req.ChannelType, ChannelUserID: req.ChannelUserID, ChannelConvID: req.ChannelConvID,
 		TraceID: req.TraceID, TraceParent: req.TraceParent,
 	}, serverName, uri)
 	if err != nil {
@@ -826,6 +833,7 @@ func (e *Executor) executeMCPResourceSubscription(ctx context.Context, req Graph
 	}
 	exec := mcp.ExecutionContext{
 		CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID, RunID: req.RunID, RequestID: req.RequestID,
+		ChannelType: req.ChannelType, ChannelUserID: req.ChannelUserID, ChannelConvID: req.ChannelConvID,
 		TraceID: req.TraceID, TraceParent: req.TraceParent,
 	}
 	if subscribe {
@@ -855,6 +863,7 @@ func (e *Executor) executeMCPListPrompts(ctx context.Context, req GraphRequest, 
 	}
 	prompts, err := e.mcpManager.ListPrompts(ctx, mcp.ExecutionContext{
 		CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID, RunID: req.RunID, RequestID: req.RequestID,
+		ChannelType: req.ChannelType, ChannelUserID: req.ChannelUserID, ChannelConvID: req.ChannelConvID,
 		TraceID: req.TraceID, TraceParent: req.TraceParent,
 	}, serverName)
 	if err != nil {
@@ -884,6 +893,7 @@ func (e *Executor) executeMCPGetPrompt(ctx context.Context, req GraphRequest, co
 	}
 	prompt, err := e.mcpManager.GetPrompt(ctx, mcp.ExecutionContext{
 		CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID, RunID: req.RunID, RequestID: req.RequestID,
+		ChannelType: req.ChannelType, ChannelUserID: req.ChannelUserID, ChannelConvID: req.ChannelConvID,
 		TraceID: req.TraceID, TraceParent: req.TraceParent,
 	}, serverName, name, args)
 	if err != nil {

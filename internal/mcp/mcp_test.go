@@ -10,8 +10,9 @@ import (
 func TestExecutionContextHeaders(t *testing.T) {
 	headers := (ExecutionContext{
 		CustomerID: "c", UserID: "u", AgentInstanceID: "a", SessionID: "s", RunID: "r", ToolCallID: "t", RequestID: "req",
+		ChannelType: "web", ChannelUserID: "cu", ChannelConvID: "conv",
 	}).Headers()
-	for _, key := range []string{"X-Customer-ID", "X-User-ID", "X-Agent-Instance-ID", "X-Session-ID", "X-Run-ID", "X-Tool-Call-ID", "X-Request-ID"} {
+	for _, key := range []string{"X-Customer-ID", "X-User-ID", "X-Agent-Instance-ID", "X-Session-ID", "X-Run-ID", "X-Tool-Call-ID", "X-Request-ID", "X-Channel-Type", "X-Channel-User-ID", "X-Channel-Conversation-ID"} {
 		if headers[key] == "" {
 			t.Fatalf("missing %s in %#v", key, headers)
 		}

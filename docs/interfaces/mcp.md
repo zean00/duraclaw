@@ -25,6 +25,14 @@ X-Request-ID
 
 Stdio calls inject context into the process environment and JSON-RPC metadata envelope where supported.
 
+MCP HTTP and SSE calls also receive Nexus channel headers when present:
+
+```text
+X-Channel-Type
+X-Channel-User-ID
+X-Channel-Conversation-ID
+```
+
 ## Global Configuration
 
 ```bash

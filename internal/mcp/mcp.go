@@ -18,6 +18,9 @@ type ExecutionContext struct {
 	RunID           string
 	ToolCallID      string
 	RequestID       string
+	ChannelType     string
+	ChannelUserID   string
+	ChannelConvID   string
 	TraceID         string
 	TraceParent     string
 }
@@ -26,6 +29,7 @@ func (c ExecutionContext) Headers() map[string]string {
 	return map[string]string{
 		"X-Customer-ID": c.CustomerID, "X-User-ID": c.UserID, "X-Agent-Instance-ID": c.AgentInstanceID,
 		"X-Session-ID": c.SessionID, "X-Run-ID": c.RunID, "X-Tool-Call-ID": c.ToolCallID, "X-Request-ID": c.RequestID,
+		"X-Channel-Type": c.ChannelType, "X-Channel-User-ID": c.ChannelUserID, "X-Channel-Conversation-ID": c.ChannelConvID,
 		"X-Trace-ID": c.TraceID, "traceparent": c.TraceParent,
 	}
 }

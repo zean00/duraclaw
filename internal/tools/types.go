@@ -21,6 +21,9 @@ type ExecutionContext struct {
 	RunID           string
 	ToolCallID      string
 	RequestID       string
+	ChannelType     string
+	ChannelUserID   string
+	ChannelConvID   string
 }
 
 type Tool interface {

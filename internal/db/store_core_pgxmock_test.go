@@ -123,6 +123,11 @@ func TestStoreMessagesCheckpointsAndStepsWithPgxMock(t *testing.T) {
 	if err != nil || traceID != "trace" || traceParent != "parent" {
 		t.Fatalf("traceID=%q traceParent=%q err=%v", traceID, traceParent, err)
 	}
+	mock.ExpectQuery("SELECT channel_context").WithArgs("run-1").WillReturnRows(pgxmock.NewRows([]string{"channel_context"}).AddRow([]byte(`{"channel_type":"web","channel_user_id":"cu","channel_conversation_id":"conv","trace_id":"trace","traceparent":"parent"}`)))
+	channel, err := store.RunChannelContext(ctx, "run-1")
+	if err != nil || channel.ChannelType != "web" || channel.ChannelUserID != "cu" || channel.ChannelConversationID != "conv" {
+		t.Fatalf("channel=%#v err=%v", channel, err)
+	}
 
 	mock.ExpectQuery("INSERT INTO run_steps").WithArgs("run-1", "model", []byte(`{"prompt":"hi"}`)).
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow("step-1"))

@@ -52,6 +52,14 @@ type Run struct {
 	CompletedAt            *time.Time      `json:"completed_at,omitempty"`
 }
 
+type ChannelContext struct {
+	ChannelType           string `json:"channel_type,omitempty"`
+	ChannelUserID         string `json:"channel_user_id,omitempty"`
+	ChannelConversationID string `json:"channel_conversation_id,omitempty"`
+	TraceID               string `json:"trace_id,omitempty"`
+	TraceParent           string `json:"traceparent,omitempty"`
+}
+
 type RunStep struct {
 	ID          string          `json:"id"`
 	RunID       string          `json:"run_id"`
@@ -450,15 +458,32 @@ func (s *Store) Checkpoint(ctx context.Context, runID, key string, state any) er
 }
 
 func (s *Store) RunTraceContext(ctx context.Context, runID string) (traceID, traceParent string, err error) {
+	channel, err := s.RunChannelContext(ctx, runID)
+	if err != nil {
+		return "", "", err
+	}
+	return channel.TraceID, channel.TraceParent, nil
+}
+
+func (s *Store) RunChannelContext(ctx context.Context, runID string) (ChannelContext, error) {
 	var channel []byte
 	if err := s.pool.QueryRow(ctx, `SELECT channel_context FROM runs WHERE id=$1`, runID).Scan(&channel); err != nil {
-		return "", "", err
+		return ChannelContext{}, err
 	}
 	var payload map[string]any
 	_ = json.Unmarshal(channel, &payload)
-	traceID, _ = payload["trace_id"].(string)
-	traceParent, _ = payload["traceparent"].(string)
-	return strings.TrimSpace(traceID), strings.TrimSpace(traceParent), nil
+	out := ChannelContext{}
+	out.ChannelType, _ = payload["channel_type"].(string)
+	out.ChannelUserID, _ = payload["channel_user_id"].(string)
+	out.ChannelConversationID, _ = payload["channel_conversation_id"].(string)
+	out.TraceID, _ = payload["trace_id"].(string)
+	out.TraceParent, _ = payload["traceparent"].(string)
+	out.ChannelType = strings.TrimSpace(out.ChannelType)
+	out.ChannelUserID = strings.TrimSpace(out.ChannelUserID)
+	out.ChannelConversationID = strings.TrimSpace(out.ChannelConversationID)
+	out.TraceID = strings.TrimSpace(out.TraceID)
+	out.TraceParent = strings.TrimSpace(out.TraceParent)
+	return out, nil
 }
 
 func (s *Store) withTraceCheckpoint(ctx context.Context, runID, key string, state any) any {

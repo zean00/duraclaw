@@ -56,6 +56,17 @@ type runTraceContext struct {
 	TraceParent string
 }
 
+func (w *Worker) runChannelContext(ctx context.Context, runID string) db.ChannelContext {
+	if w == nil || w.store == nil || runID == "" {
+		return db.ChannelContext{}
+	}
+	channel, err := w.store.RunChannelContext(ctx, runID)
+	if err != nil {
+		return db.ChannelContext{}
+	}
+	return channel
+}
+
 func (w *Worker) runTraceContext(ctx context.Context, runID string) runTraceContext {
 	if w == nil || w.store == nil || runID == "" {
 		return runTraceContext{}
@@ -417,6 +428,9 @@ func (w *Worker) buildContextPhase(ctx context.Context, run *db.Run, workflowCon
 		return "", err
 	}
 	text := extractText(run.Input)
+	if channel := w.channelPromptContext(ctx, run); channel != "" {
+		text = channel + "\n\nUser request:\n" + text
+	}
 	if workflowContext != "" {
 		text = text + "\n\nWorkflow context:\n" + workflowContext
 	}
@@ -828,6 +842,9 @@ func (w *Worker) providerMessages(ctx context.Context, run *db.Run, currentText 
 	}
 	if profileInstructions != "" {
 		promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: profileInstructions})
+	}
+	if channelContext := w.channelPromptContext(ctx, run); channelContext != "" {
+		promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: channelContext})
 	}
 	workflowManifest, err := workflow.PromptManifest(ctx, w.store, run.CustomerID, run.AgentInstanceID)
 	if err != nil {
@@ -1244,6 +1261,9 @@ func mergePromptInjectionRisk(judgement scopeJudgement, risk promptInjectionRisk
 
 func (w *Worker) scopeJudgeContext(ctx context.Context, run *db.Run) (string, error) {
 	var sections []string
+	if channel := w.channelPromptContext(ctx, run); channel != "" {
+		sections = append(sections, channel)
+	}
 	if summary, err := w.sessionSummaryContext(ctx, run); err != nil {
 		return "", err
 	} else if strings.TrimSpace(summary) != "" {
@@ -1363,6 +1383,7 @@ func (w *Worker) recommendationConfig(ctx context.Context, run *db.Run) (recomme
 }
 
 func (w *Worker) recommendationInputContext(ctx context.Context, run *db.Run, scope scopeJudgement, content string) (string, string, error) {
+	channelContext := w.channelPromptContext(ctx, run)
 	if strings.EqualFold(strings.TrimSpace(scope.Intent), "implicit") {
 		scopeContext, err := w.scopeJudgeContext(ctx, run)
 		if err != nil {
@@ -1371,6 +1392,9 @@ func (w *Worker) recommendationInputContext(ctx context.Context, run *db.Run, sc
 		if strings.TrimSpace(scopeContext) != "" {
 			return strings.TrimSpace(scopeContext) + "\n\nUser request:\n" + strings.TrimSpace(content), "implicit_context", nil
 		}
+	}
+	if channelContext != "" {
+		return channelContext + "\n\nUser request:\n" + strings.TrimSpace(content), "direct_message", nil
 	}
 	return strings.TrimSpace(content), "direct_message", nil
 }
@@ -1783,10 +1807,12 @@ func (w *Worker) mcpToolManifest(ctx context.Context, run *db.Run) (string, erro
 	}
 	var lines []string
 	traceCtx := w.runTraceContext(ctx, run.ID)
+	channelCtx := w.runChannelContext(ctx, run.ID)
 	for _, status := range manager.Statuses() {
 		discoveryCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		tools, err := manager.ListTools(discoveryCtx, mcp.ExecutionContext{
 			CustomerID: run.CustomerID, UserID: run.UserID, AgentInstanceID: run.AgentInstanceID, SessionID: run.SessionID, RunID: run.ID, RequestID: run.RequestID,
+			ChannelType: channelCtx.ChannelType, ChannelUserID: channelCtx.ChannelUserID, ChannelConvID: channelCtx.ChannelConversationID,
 			TraceID: traceCtx.TraceID, TraceParent: traceCtx.TraceParent,
 		}, status.Name)
 		cancel()
@@ -1915,9 +1941,15 @@ func (w *Worker) policyEngine() *policy.Engine {
 }
 
 func (w *Worker) policyContext(run *db.Run, stepID, subject, content string) policy.Context {
+	channel := w.runChannelContext(context.Background(), run.ID)
 	pc := policy.Context{
 		CustomerID: run.CustomerID, UserID: run.UserID, AgentInstanceID: run.AgentInstanceID,
 		SessionID: run.SessionID, RunID: run.ID, StepID: stepID, Content: content,
+		AdditionalFields: map[string]any{
+			"channel_type":            channel.ChannelType,
+			"channel_user_id":         channel.ChannelUserID,
+			"channel_conversation_id": channel.ChannelConversationID,
+		},
 	}
 	if ids, err := w.policyPackIDsForRun(context.Background(), run); err == nil && len(ids) > 0 {
 		pc.PolicyPackIDs = ids
@@ -1928,6 +1960,14 @@ func (w *Worker) policyContext(run *db.Run, stepID, subject, content string) pol
 		pc.WorkflowID = subject
 	}
 	return pc
+}
+
+func (w *Worker) channelPromptContext(ctx context.Context, run *db.Run) string {
+	channel := w.runChannelContext(ctx, run.ID)
+	if channel.ChannelType == "" {
+		return ""
+	}
+	return "Channel context from Nexus:\nChannel type: " + channel.ChannelType + "\nUse channel_type when applying channel-specific style, formatting, length, or delivery constraints."
 }
 
 func (w *Worker) userProfileContext(ctx context.Context, run *db.Run) (string, error) {
@@ -2080,6 +2120,7 @@ func (w *Worker) executeToolCalls(ctx context.Context, run *db.Run, stepID strin
 		}
 	}
 	results := make([]toolExecutionResult, 0, len(calls))
+	channelCtx := w.runChannelContext(ctx, run.ID)
 	for _, call := range calls {
 		if err := w.toolAllowedForRun(ctx, run, call.Function.Name); err != nil {
 			return nil, err
@@ -2113,6 +2154,7 @@ func (w *Worker) executeToolCalls(ctx context.Context, run *db.Run, stepID strin
 		started := time.Now()
 		result := toolRegistry.Execute(ctx, tools.ExecutionContext{
 			CustomerID: run.CustomerID, UserID: run.UserID, AgentInstanceID: run.AgentInstanceID, SessionID: run.SessionID, RunID: run.ID, ToolCallID: callID, RequestID: run.RequestID,
+			ChannelType: channelCtx.ChannelType, ChannelUserID: channelCtx.ChannelUserID, ChannelConvID: channelCtx.ChannelConversationID,
 		}, call.Function.Name, call.Function.Arguments)
 		if w.counters != nil {
 			w.counters.ObserveDuration("tool_call_duration_seconds", time.Since(started))
@@ -2242,6 +2284,7 @@ func (w *Worker) executeInternalTool(ctx context.Context, run *db.Run, stepID st
 			return "", err
 		}
 		traceCtx := w.runTraceContext(ctx, run.ID)
+		channelCtx := w.runChannelContext(ctx, run.ID)
 		result, err := workflow.NewExecutor(w.store).
 			WithProviders(w.providers, modelConfig).
 			WithTools(toolRegistry).
@@ -2252,7 +2295,9 @@ func (w *Worker) executeInternalTool(ctx context.Context, run *db.Run, stepID st
 			WithProcessors(w.processors).
 			ExecuteGraph(ctx, workflow.GraphRequest{
 				RunID: run.ID, CustomerID: run.CustomerID, UserID: run.UserID, AgentInstanceID: run.AgentInstanceID,
-				SessionID: run.SessionID, RequestID: run.RequestID, TraceID: traceCtx.TraceID, TraceParent: traceCtx.TraceParent, WorkflowDefinitionID: workflowID, Input: input,
+				SessionID: run.SessionID, RequestID: run.RequestID,
+				ChannelType: channelCtx.ChannelType, ChannelUserID: channelCtx.ChannelUserID, ChannelConvID: channelCtx.ChannelConversationID,
+				TraceID: traceCtx.TraceID, TraceParent: traceCtx.TraceParent, WorkflowDefinitionID: workflowID, Input: input,
 			})
 		if err != nil {
 			return "", err
