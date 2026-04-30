@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -361,6 +362,8 @@ func (w *Worker) runWorkflowPhase(ctx context.Context, run *db.Run) (string, err
 		return "", err
 	}
 	traceCtx := w.runTraceContext(ctx, run.ID)
+	channelCtx := w.runChannelContext(ctx, run.ID)
+	locationContext := locationPromptContext(run.Input)
 	stepID, err := w.store.StartRunStep(ctx, run.ID, "workflow_graph", map[string]any{"workflow_id": workflowID})
 	if err != nil {
 		return "", err
@@ -385,6 +388,10 @@ func (w *Worker) runWorkflowPhase(ctx context.Context, run *db.Run) (string, err
 			AgentInstanceID:      run.AgentInstanceID,
 			SessionID:            run.SessionID,
 			RequestID:            run.RequestID,
+			ChannelType:          channelCtx.ChannelType,
+			ChannelUserID:        channelCtx.ChannelUserID,
+			ChannelConvID:        channelCtx.ChannelConversationID,
+			LocationContext:      locationContext,
 			TraceID:              traceCtx.TraceID,
 			TraceParent:          traceCtx.TraceParent,
 			WorkflowDefinitionID: workflowID,
@@ -843,6 +850,9 @@ func (w *Worker) providerMessages(ctx context.Context, run *db.Run, currentText 
 	if channelContext := w.channelPromptContext(ctx, run); channelContext != "" {
 		promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: channelContext})
 	}
+	if locationContext := locationPromptContext(run.Input); locationContext != "" {
+		promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: locationContext})
+	}
 	workflowManifest, err := workflow.PromptManifest(ctx, w.store, run.CustomerID, run.AgentInstanceID)
 	if err != nil {
 		return nil, err
@@ -1166,6 +1176,9 @@ func (w *Worker) runScopeJudge(ctx context.Context, run *db.Run, modelConfig pro
 		},
 		"untrusted_user_request": strings.TrimSpace(content),
 	}
+	if runtimeContext := w.trustedRuntimeContext(ctx, run); runtimeContext != "" {
+		request["trusted_runtime_context"] = runtimeContext
+	}
 	if strings.TrimSpace(scopeContext) != "" {
 		request["untrusted_conversation_context"] = strings.TrimSpace(scopeContext)
 	}
@@ -1260,6 +1273,9 @@ func (w *Worker) scopeJudgeContext(ctx context.Context, run *db.Run) (string, er
 	var sections []string
 	if channel := w.channelPromptContext(ctx, run); channel != "" {
 		sections = append(sections, channel)
+	}
+	if location := locationPromptContext(run.Input); location != "" {
+		sections = append(sections, location)
 	}
 	if summary, err := w.sessionSummaryContext(ctx, run); err != nil {
 		return "", err
@@ -1381,6 +1397,8 @@ func (w *Worker) recommendationConfig(ctx context.Context, run *db.Run) (recomme
 
 func (w *Worker) recommendationInputContext(ctx context.Context, run *db.Run, scope scopeJudgement, content string) (string, string, error) {
 	channelContext := w.channelPromptContext(ctx, run)
+	locationContext := locationPromptContext(run.Input)
+	prefix := strings.TrimSpace(strings.Join(nonEmptyStrings(channelContext, locationContext), "\n\n"))
 	if strings.EqualFold(strings.TrimSpace(scope.Intent), "implicit") {
 		scopeContext, err := w.scopeJudgeContext(ctx, run)
 		if err != nil {
@@ -1390,8 +1408,8 @@ func (w *Worker) recommendationInputContext(ctx context.Context, run *db.Run, sc
 			return strings.TrimSpace(scopeContext) + "\n\nUser request:\n" + strings.TrimSpace(content), "implicit_context", nil
 		}
 	}
-	if channelContext != "" {
-		return channelContext + "\n\nUser request:\n" + strings.TrimSpace(content), "direct_message", nil
+	if prefix != "" {
+		return prefix + "\n\nUser request:\n" + strings.TrimSpace(content), "direct_message", nil
 	}
 	return strings.TrimSpace(content), "direct_message", nil
 }
@@ -1939,6 +1957,11 @@ func (w *Worker) policyEngine() *policy.Engine {
 
 func (w *Worker) policyContext(run *db.Run, stepID, subject, content string) policy.Context {
 	channel := w.runChannelContext(context.Background(), run.ID)
+	locations := locationContexts(run.Input)
+	location := ""
+	if len(locations) > 0 {
+		location = locations[0].Summary
+	}
 	pc := policy.Context{
 		CustomerID: run.CustomerID, UserID: run.UserID, AgentInstanceID: run.AgentInstanceID,
 		SessionID: run.SessionID, RunID: run.ID, StepID: stepID, Content: content,
@@ -1946,6 +1969,8 @@ func (w *Worker) policyContext(run *db.Run, stepID, subject, content string) pol
 			"channel_type":            channel.ChannelType,
 			"channel_user_id":         channel.ChannelUserID,
 			"channel_conversation_id": channel.ChannelConversationID,
+			"location":                location,
+			"locations":               locationContextSummaries(locations),
 		},
 	}
 	if ids, err := w.policyPackIDsForRun(context.Background(), run); err == nil && len(ids) > 0 {
@@ -1965,6 +1990,99 @@ func (w *Worker) channelPromptContext(ctx context.Context, run *db.Run) string {
 		return ""
 	}
 	return "Channel context from Nexus:\nChannel type: " + channel.ChannelType + "\nUse channel_type when applying channel-specific style, formatting, length, or delivery constraints."
+}
+
+func (w *Worker) trustedRuntimeContext(ctx context.Context, run *db.Run) string {
+	return strings.Join(nonEmptyStrings(w.channelPromptContext(ctx, run), locationPromptContext(run.Input)), "\n\n")
+}
+
+type locationContext struct {
+	Latitude  string
+	Longitude string
+	Label     string
+	Summary   string
+}
+
+func locationPromptContext(raw json.RawMessage) string {
+	locations := locationContexts(raw)
+	if len(locations) == 0 {
+		return ""
+	}
+	lines := make([]string, 0, len(locations))
+	for _, loc := range locations {
+		lines = append(lines, "- "+loc.Summary)
+	}
+	return "Trusted user-shared location context:\n" + strings.Join(lines, "\n") + "\nUse this only when relevant to the user's request."
+}
+
+func locationContexts(raw json.RawMessage) []locationContext {
+	var payload struct {
+		Parts []db.ContentPart `json:"parts"`
+	}
+	_ = json.Unmarshal(raw, &payload)
+	var out []locationContext
+	for _, part := range payload.Parts {
+		if part.Type != "location" || part.Data == nil {
+			continue
+		}
+		loc := locationContext{
+			Latitude:  locationString(part.Data, "latitude", "lat"),
+			Longitude: locationString(part.Data, "longitude", "lng", "lon"),
+			Label:     locationString(part.Data, "label", "name", "address"),
+		}
+		var fields []string
+		if loc.Latitude != "" {
+			fields = append(fields, "latitude "+loc.Latitude)
+		}
+		if loc.Longitude != "" {
+			fields = append(fields, "longitude "+loc.Longitude)
+		}
+		if loc.Label != "" {
+			fields = append(fields, "label "+loc.Label)
+		}
+		if len(fields) == 0 {
+			continue
+		}
+		loc.Summary = "User shared location: " + strings.Join(fields, ", ")
+		out = append(out, loc)
+	}
+	return out
+}
+
+func locationString(data map[string]any, keys ...string) string {
+	for _, key := range keys {
+		switch v := data[key].(type) {
+		case string:
+			if strings.TrimSpace(v) != "" {
+				return strings.TrimSpace(v)
+			}
+		case float64:
+			return strconv.FormatFloat(v, 'f', -1, 64)
+		case int:
+			return strconv.Itoa(v)
+		}
+	}
+	return ""
+}
+
+func locationContextSummaries(locations []locationContext) []string {
+	out := make([]string, 0, len(locations))
+	for _, loc := range locations {
+		if loc.Summary != "" {
+			out = append(out, loc.Summary)
+		}
+	}
+	return out
+}
+
+func nonEmptyStrings(values ...string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			out = append(out, strings.TrimSpace(value))
+		}
+	}
+	return out
 }
 
 func (w *Worker) userProfileContext(ctx context.Context, run *db.Run) (string, error) {
@@ -2282,6 +2400,7 @@ func (w *Worker) executeInternalTool(ctx context.Context, run *db.Run, stepID st
 		}
 		traceCtx := w.runTraceContext(ctx, run.ID)
 		channelCtx := w.runChannelContext(ctx, run.ID)
+		locationContext := locationPromptContext(run.Input)
 		result, err := workflow.NewExecutor(w.store).
 			WithProviders(w.providers, modelConfig).
 			WithTools(toolRegistry).
@@ -2294,7 +2413,8 @@ func (w *Worker) executeInternalTool(ctx context.Context, run *db.Run, stepID st
 				RunID: run.ID, CustomerID: run.CustomerID, UserID: run.UserID, AgentInstanceID: run.AgentInstanceID,
 				SessionID: run.SessionID, RequestID: run.RequestID,
 				ChannelType: channelCtx.ChannelType, ChannelUserID: channelCtx.ChannelUserID, ChannelConvID: channelCtx.ChannelConversationID,
-				TraceID: traceCtx.TraceID, TraceParent: traceCtx.TraceParent, WorkflowDefinitionID: workflowID, Input: input,
+				LocationContext: locationContext,
+				TraceID:         traceCtx.TraceID, TraceParent: traceCtx.TraceParent, WorkflowDefinitionID: workflowID, Input: input,
 			})
 		if err != nil {
 			return "", err

@@ -26,6 +26,18 @@ func TestExtractTextFromContentParts(t *testing.T) {
 	}
 }
 
+func TestLocationPromptContextFromContentParts(t *testing.T) {
+	raw, _ := json.Marshal(map[string]any{
+		"parts": []map[string]any{
+			{"type": "location", "data": map[string]any{"latitude": -6.2, "longitude": 106.8, "label": "Jakarta"}},
+		},
+	})
+	got := locationPromptContext(raw)
+	if !strings.Contains(got, "User shared location") || !strings.Contains(got, "latitude -6.2") || !strings.Contains(got, "longitude 106.8") || !strings.Contains(got, "label Jakarta") {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestArtifactRefsFromContentParts(t *testing.T) {
 	raw, _ := json.Marshal(map[string]any{
 		"parts": []map[string]any{

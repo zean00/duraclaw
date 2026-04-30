@@ -759,6 +759,30 @@ func TestExecuteGraphTransformAndOutboundNodes(t *testing.T) {
 	}
 }
 
+func TestExecuteGraphIncludesRuntimeContextInInitialOutput(t *testing.T) {
+	store := &fakeWorkflowStore{
+		nodes: []db.WorkflowNode{
+			{NodeKey: "transform", NodeType: "transform", Config: json.RawMessage(`{"map":{"seen_location":"location","seen_channel":"channel.type","seen_topic":"topic"}}`)},
+		},
+	}
+	got, err := NewExecutor(store).ExecuteGraph(context.Background(), GraphRequest{
+		RunID:                "run-1",
+		WorkflowDefinitionID: "wf-1",
+		ChannelType:          "whatsapp",
+		LocationContext:      "User shared location: latitude -6.2, longitude 106.8, label Office",
+		Input:                map[string]any{"topic": "prayer reminder"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Output["seen_location"] != "User shared location: latitude -6.2, longitude 106.8, label Office" {
+		t.Fatalf("location not propagated: %#v", got.Output)
+	}
+	if got.Output["seen_channel"] != "whatsapp" || got.Output["seen_topic"] != "prayer reminder" {
+		t.Fatalf("runtime context not propagated: %#v", got.Output)
+	}
+}
+
 func TestExecuteGraphLoopNodeLimitsItems(t *testing.T) {
 	store := &fakeWorkflowStore{
 		nodes: []db.WorkflowNode{

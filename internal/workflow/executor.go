@@ -140,6 +140,7 @@ type GraphRequest struct {
 	ChannelType          string         `json:"channel_type,omitempty"`
 	ChannelUserID        string         `json:"channel_user_id,omitempty"`
 	ChannelConvID        string         `json:"channel_conversation_id,omitempty"`
+	LocationContext      string         `json:"location_context,omitempty"`
 	TraceID              string         `json:"trace_id,omitempty"`
 	TraceParent          string         `json:"traceparent,omitempty"`
 	WorkflowDefinitionID string         `json:"workflow_definition_id"`
@@ -314,7 +315,7 @@ func (e *Executor) queueStartIfFresh(ctx context.Context, workflowRunID, start s
 }
 
 func (e *Executor) runReadyQueue(ctx context.Context, req GraphRequest, g *graphData, workflowRunID string) (*GraphResult, error) {
-	output := map[string]any{}
+	output := workflowInitialContext(req)
 	executions := 0
 	for {
 		states, err := e.stateMap(ctx, workflowRunID)
@@ -430,7 +431,7 @@ func (e *Executor) executeOne(ctx context.Context, req GraphRequest, node db.Wor
 	defer span.End()
 	if _, err := e.policyEngine().Enforce(ctx, "pre_workflow_node", policy.Context{
 		CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID,
-		RunID: req.RunID, WorkflowRunID: workflowRunID, WorkflowNodeKey: node.NodeKey,
+		RunID: req.RunID, WorkflowRunID: workflowRunID, WorkflowNodeKey: node.NodeKey, AdditionalFields: workflowPolicyFields(req),
 	}); err != nil {
 		msg := err.Error()
 		_ = e.store.SetWorkflowNodeState(context.Background(), workflowRunID, node.NodeKey, "failed", nil, &msg)
@@ -468,7 +469,7 @@ func (e *Executor) executeOne(ctx context.Context, req GraphRequest, node db.Wor
 	}
 	if _, err := e.policyEngine().Enforce(ctx, "post_workflow_node", policy.Context{
 		CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID,
-		RunID: req.RunID, WorkflowRunID: workflowRunID, WorkflowNodeKey: node.NodeKey, Content: mustJSONString(output),
+		RunID: req.RunID, WorkflowRunID: workflowRunID, WorkflowNodeKey: node.NodeKey, Content: mustJSONString(output), AdditionalFields: workflowPolicyFields(req),
 	}); err != nil {
 		msg := err.Error()
 		_ = e.store.CompleteWorkflowNodeRun(context.Background(), nodeRunID, "failed", output, &msg)
@@ -925,7 +926,7 @@ func (e *Executor) executeWriteMemory(ctx context.Context, req GraphRequest, con
 		return nil, "", fmt.Errorf("write_memory requires content or content_key")
 	}
 	if _, err := e.policyEngine().Enforce(ctx, "pre_memory_write", policy.Context{
-		CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID, RunID: req.RunID, Content: content,
+		CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID, RunID: req.RunID, Content: content, AdditionalFields: workflowPolicyFields(req),
 	}); err != nil {
 		return nil, "", err
 	}
@@ -958,7 +959,7 @@ func (e *Executor) executeWritePreference(ctx context.Context, req GraphRequest,
 		return nil, "", fmt.Errorf("write_preference requires content or content_key")
 	}
 	if _, err := e.policyEngine().Enforce(ctx, "pre_memory_write", policy.Context{
-		CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID, RunID: req.RunID, Content: content,
+		CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID, RunID: req.RunID, Content: content, AdditionalFields: workflowPolicyFields(req),
 	}); err != nil {
 		return nil, "", err
 	}
@@ -979,7 +980,7 @@ func (e *Executor) executeRetrieveKnowledge(ctx context.Context, req GraphReques
 		limit = 5
 	}
 	if _, err := e.policyEngine().Enforce(ctx, "pre_knowledge_retrieval", policy.Context{
-		CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID, RunID: req.RunID, Content: query,
+		CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID, RunID: req.RunID, Content: query, AdditionalFields: workflowPolicyFields(req),
 	}); err != nil {
 		return nil, "", err
 	}
@@ -1037,11 +1038,10 @@ func (e *Executor) executeReadArtifact(ctx context.Context, req GraphRequest, co
 		}
 		if _, err := e.policyEngine().Enforce(ctx, "pre_artifact_read", policy.Context{
 			CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID, RunID: req.RunID,
-			ArtifactID: artifact.ID,
-			AdditionalFields: map[string]any{
+			ArtifactID: artifact.ID, AdditionalFields: workflowPolicyFieldsWith(req, map[string]any{
 				"modality":   artifact.Modality,
 				"media_type": artifact.MediaType,
-			},
+			}),
 		}); err != nil {
 			return nil, "", err
 		}
@@ -1074,7 +1074,7 @@ func (e *Executor) executeProcessArtifact(ctx context.Context, req GraphRequest,
 		}
 		if _, err := e.policyEngine().Enforce(ctx, "pre_artifact_process", policy.Context{
 			CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID, RunID: req.RunID,
-			ArtifactID: artifact.ID, Processor: processor.Name(),
+			ArtifactID: artifact.ID, Processor: processor.Name(), AdditionalFields: workflowPolicyFields(req),
 		}); err != nil {
 			return nil, "", err
 		}
@@ -1094,7 +1094,7 @@ func (e *Executor) executeProcessArtifact(ctx context.Context, req GraphRequest,
 		for _, rep := range reps {
 			if _, err := e.policyEngine().Enforce(ctx, "post_artifact_process", policy.Context{
 				CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID, RunID: req.RunID,
-				ArtifactID: artifact.ID, Processor: processor.Name(), Content: rep.Summary,
+				ArtifactID: artifact.ID, Processor: processor.Name(), Content: rep.Summary, AdditionalFields: workflowPolicyFields(req),
 			}); err != nil {
 				msg := err.Error()
 				_ = e.store.CompleteProcessorCall(context.Background(), callID, req.RunID, nil, &msg)
@@ -1170,7 +1170,7 @@ func (e *Executor) executeEmitOutbound(ctx context.Context, req GraphRequest, co
 	}
 	if _, err := e.policyEngine().Enforce(ctx, "pre_outbound", policy.Context{
 		CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, SessionID: req.SessionID, RunID: req.RunID,
-		Content: mustJSONString(payload),
+		Content: mustJSONString(payload), AdditionalFields: workflowPolicyFields(req),
 	}); err != nil {
 		return nil, "", err
 	}
@@ -1681,6 +1681,44 @@ func (e *Executor) ResumeAwaitingUser(ctx context.Context, req ResumeRequest) er
 		return err
 	}
 	return e.store.AddEvent(ctx, req.RunID, "workflow.resumed", map[string]any{"workflow_run_id": req.WorkflowRunID, "node_key": req.NodeKey})
+}
+
+func workflowPolicyFields(req GraphRequest) map[string]any {
+	return map[string]any{
+		"channel_type":            req.ChannelType,
+		"channel_user_id":         req.ChannelUserID,
+		"channel_conversation_id": req.ChannelConvID,
+		"location":                req.LocationContext,
+	}
+}
+
+func workflowPolicyFieldsWith(req GraphRequest, extra map[string]any) map[string]any {
+	fields := workflowPolicyFields(req)
+	for key, value := range extra {
+		fields[key] = value
+	}
+	return fields
+}
+
+func workflowInitialContext(req GraphRequest) map[string]any {
+	out := map[string]any{}
+	if len(req.Input) > 0 {
+		out["input"] = req.Input
+		for key, value := range req.Input {
+			out[key] = value
+		}
+	}
+	if req.ChannelType != "" || req.ChannelUserID != "" || req.ChannelConvID != "" {
+		out["channel"] = map[string]any{
+			"type":            req.ChannelType,
+			"user_id":         req.ChannelUserID,
+			"conversation_id": req.ChannelConvID,
+		}
+	}
+	if req.LocationContext != "" {
+		out["location"] = req.LocationContext
+	}
+	return out
 }
 
 var _ Store = (*db.Store)(nil)
