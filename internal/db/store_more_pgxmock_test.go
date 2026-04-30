@@ -187,7 +187,7 @@ func TestStoreModelUsageQuotaWithPgxMock(t *testing.T) {
 		t.Fatalf("expected token quota exceeded, got %v", err)
 	}
 
-	mock.ExpectExec("INSERT INTO model_usage_ledger").WithArgs("c1", "a1", "run-1", "call-1", "openrouter", "model", 1, 2, 3, int64(4)).
+	mock.ExpectExec("INSERT INTO model_usage_ledger").WithArgs("c1", "run-1", "call-1", "openrouter", "model", 1, 2, 3, int64(4)).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	if err := store.RecordModelUsage(ctx, ModelUsage{CustomerID: "c1", UserID: "u1", AgentInstanceID: "a1", RunID: "run-1", ModelCallID: "call-1", Provider: "openrouter", Model: "model", InputTokens: 1, OutputTokens: 2, CostMicros: 4}); err != nil {
 		t.Fatalf("record usage: %v", err)

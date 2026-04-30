@@ -97,8 +97,8 @@ func (s *Store) enforceModelUsageQuotaForLimits(ctx context.Context, customerID,
 }
 
 func (s *Store) RecordModelUsage(ctx context.Context, usage ModelUsage) error {
-	if usage.CustomerID == "" || usage.AgentInstanceID == "" || usage.RunID == "" || usage.ModelCallID == "" {
-		return ValidationError{Message: "customer_id, agent_instance_id, run_id, and model_call_id are required"}
+	if usage.CustomerID == "" || usage.RunID == "" || usage.ModelCallID == "" {
+		return ValidationError{Message: "customer_id, run_id, and model_call_id are required"}
 	}
 	if usage.TotalTokens <= 0 {
 		usage.TotalTokens = usage.InputTokens + usage.OutputTokens
@@ -108,15 +108,15 @@ func (s *Store) RecordModelUsage(ctx context.Context, usage ModelUsage) error {
 	}
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO model_usage_ledger(customer_id,user_id,agent_instance_id,run_id,model_call_id,provider,model,input_tokens,output_tokens,total_tokens,cost_micros)
-		SELECT $1,user_id,$2,$3,$4,$5,$6,$7,$8,$9,$10
+		SELECT $1,user_id,agent_instance_id,$2,$3,$4,$5,$6,$7,$8,$9
 		FROM runs
-		WHERE id=$3
+		WHERE id=$2
 		AND customer_id=$1
 		AND EXISTS (
 			SELECT 1
 			FROM model_calls
-			WHERE id=$4
-			AND run_id=$3
+			WHERE id=$3
+			AND run_id=$2
 			AND state='succeeded'
 		)
 		ON CONFLICT (model_call_id) DO UPDATE SET
@@ -125,7 +125,7 @@ func (s *Store) RecordModelUsage(ctx context.Context, usage ModelUsage) error {
 			output_tokens=EXCLUDED.output_tokens,
 			total_tokens=EXCLUDED.total_tokens,
 			cost_micros=EXCLUDED.cost_micros`,
-		usage.CustomerID, usage.AgentInstanceID, usage.RunID, usage.ModelCallID, usage.Provider, usage.Model, usage.InputTokens, usage.OutputTokens, usage.TotalTokens, usage.CostMicros)
+		usage.CustomerID, usage.RunID, usage.ModelCallID, usage.Provider, usage.Model, usage.InputTokens, usage.OutputTokens, usage.TotalTokens, usage.CostMicros)
 	return err
 }
 
