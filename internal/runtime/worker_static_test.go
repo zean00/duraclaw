@@ -199,6 +199,27 @@ func TestScopeRunsBeforeSideEffects(t *testing.T) {
 	}
 }
 
+func TestChannelContextStaysOutOfBuiltUserText(t *testing.T) {
+	raw, err := os.ReadFile("worker.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(raw)
+	if strings.Contains(src, `text = channel + "\n\nUser request:\n" + text`) {
+		t.Fatalf("trusted channel context should not be merged into built user text")
+	}
+	for _, want := range []string{
+		"channelPromptContext(ctx, run)",
+		`prompt.Message{Role: "system", Content: channelContext}`,
+		`"channel_type":`,
+		"ChannelType: channelCtx.ChannelType",
+	} {
+		if !strings.Contains(src, want) {
+			t.Fatalf("channel context propagation missing %q", want)
+		}
+	}
+}
+
 func TestRecommendationPipelineReusesScopeContextDecision(t *testing.T) {
 	raw, err := os.ReadFile("worker.go")
 	if err != nil {

@@ -428,9 +428,6 @@ func (w *Worker) buildContextPhase(ctx context.Context, run *db.Run, workflowCon
 		return "", err
 	}
 	text := extractText(run.Input)
-	if channel := w.channelPromptContext(ctx, run); channel != "" {
-		text = channel + "\n\nUser request:\n" + text
-	}
 	if workflowContext != "" {
 		text = text + "\n\nWorkflow context:\n" + workflowContext
 	}
