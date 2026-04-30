@@ -2,9 +2,11 @@ package db
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/pashagolub/pgxmock/v4"
 )
 
@@ -62,7 +64,8 @@ func TestStoreCoreRunMutationMethodsWithPgxMock(t *testing.T) {
 
 	mock.ExpectBegin()
 	mock.ExpectQuery("WITH candidate").WithArgs("worker", "60.000000 seconds").
-		WillReturnRows(runRows().AddRow("run-1", "c1", "u1", "a1", "v1", "s1", "req", "idem", "leased", []byte(`{}`), nil, now, now, nil))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "customer_id", "user_id", "agent_instance_id", "agent_instance_version_id", "session_id", "request_id", "idempotency_key", "state", "input", "error", "created_at", "updated_at", "completed_at", "refinement_parent_run_id", "refinement_depth", "suppress_direct_outbound", "interrupt_window_started_at"}).
+			AddRow("run-1", "c1", "u1", "a1", "v1", "s1", "req", "idem", "leased", []byte(`{}`), nil, now, now, nil, "", 0, false, nil))
 	mock.ExpectCommit()
 	mock.ExpectRollback()
 	mock.ExpectExec("INSERT INTO run_events").WithArgs("run-1", "run.leased", pgxmock.AnyArg()).WillReturnResult(pgxmock.NewResult("INSERT", 1))
@@ -92,6 +95,45 @@ func TestStoreCoreRunMutationMethodsWithPgxMock(t *testing.T) {
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDeferRunIfActiveReturnsDeferredAck(t *testing.T) {
+	store, mock := newMockStore(t)
+	ctx := context.Background()
+	c := ACPContext{
+		CustomerID: "c1", UserID: "u1", AgentInstanceID: "a1", SessionID: "s1",
+		RequestID: "req-2", IdempotencyKey: "idem-2",
+	}
+
+	mock.ExpectQuery("SELECT id::text, active_run_id::text").WithArgs("c1", "s1", "idem-2").WillReturnError(pgx.ErrNoRows)
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT id::text").WithArgs("c1", "s1", "2.000000 seconds", 2).
+		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow("run-1"))
+	mock.ExpectQuery("INSERT INTO deferred_run_messages").WithArgs("c1", "u1", "a1", "s1", "run-1", "req-2", "idem-2", pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "active_run_id", "message_id"}).AddRow("defer-2", "run-1", ""))
+	mock.ExpectQuery("INSERT INTO messages").WithArgs("c1", "s1", pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow("msg-2"))
+	mock.ExpectQuery("UPDATE deferred_run_messages").WithArgs("defer-2", "msg-2").
+		WillReturnRows(pgxmock.NewRows([]string{"message_id"}).AddRow("msg-2"))
+	mock.ExpectCommit()
+	mock.ExpectRollback()
+
+	ack, err := store.DeferRunIfActive(ctx, c, map[string]any{"text": "follow up"}, 2*time.Second, 2)
+	if err != nil || ack == nil || ack.State != "deferred" || ack.ActiveRunID != "run-1" || ack.MessageID != "msg-2" || ack.DeferredMessageID != "defer-2" {
+		t.Fatalf("ack=%#v err=%v", ack, err)
+	}
+}
+
+func TestRefinementInputExposesContextInText(t *testing.T) {
+	input := refinementInput([]byte(`{"text":"first"}`), []DeferredRunMessage{{
+		ID: "defer-1", MessageID: "msg-1", Input: []byte(`{"parts":[{"type":"text","text":"second"}]}`), CreatedAt: time.Date(2026, 4, 30, 1, 2, 3, 0, time.UTC),
+	}}, "draft answer")
+	text, _ := input["text"].(string)
+	for _, want := range []string{"draft answer", "first", "second", "defer-1"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("text missing %q: %s", want, text)
+		}
 	}
 }
 

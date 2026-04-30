@@ -50,6 +50,10 @@ type Run struct {
 	CreatedAt              time.Time       `json:"created_at"`
 	UpdatedAt              time.Time       `json:"updated_at"`
 	CompletedAt            *time.Time      `json:"completed_at,omitempty"`
+	RefinementParentRunID  string          `json:"refinement_parent_run_id,omitempty"`
+	RefinementDepth        int             `json:"refinement_depth"`
+	SuppressDirectOutbound bool            `json:"suppress_direct_outbound"`
+	InterruptWindowStarted *time.Time      `json:"interrupt_window_started_at,omitempty"`
 }
 
 type ChannelContext struct {
@@ -86,6 +90,28 @@ type Event struct {
 	Type      string          `json:"type"`
 	Payload   json.RawMessage `json:"payload"`
 	CreatedAt time.Time       `json:"created_at"`
+}
+
+type DeferredRunMessage struct {
+	ID              string          `json:"id"`
+	CustomerID      string          `json:"customer_id"`
+	UserID          string          `json:"user_id"`
+	AgentInstanceID string          `json:"agent_instance_id"`
+	SessionID       string          `json:"session_id"`
+	ActiveRunID     string          `json:"active_run_id"`
+	MessageID       string          `json:"message_id,omitempty"`
+	RequestID       string          `json:"request_id"`
+	IdempotencyKey  string          `json:"idempotency_key"`
+	Input           json.RawMessage `json:"input"`
+	State           string          `json:"state"`
+	CreatedAt       time.Time       `json:"created_at"`
+}
+
+type DeferredRunAck struct {
+	State             string `json:"state"`
+	ActiveRunID       string `json:"active_run_id"`
+	MessageID         string `json:"message_id,omitempty"`
+	DeferredMessageID string `json:"deferred_message_id"`
 }
 
 type ObservabilityEvent struct {
@@ -258,6 +284,93 @@ func (s *Store) CreateRun(ctx context.Context, c ACPContext, input any) (*Run, e
 	return &r, nil
 }
 
+func (s *Store) DeferRunIfActive(ctx context.Context, c ACPContext, input any, window time.Duration, maxDepth int) (*DeferredRunAck, error) {
+	if window <= 0 {
+		return nil, nil
+	}
+	if maxDepth == 0 {
+		return nil, nil
+	}
+	if existing, err := s.deferredByIdempotencyKey(ctx, c.CustomerID, c.SessionID, c.IdempotencyKey); err == nil {
+		return existing, nil
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, err
+	}
+	inputJSON, _ := json.Marshal(input)
+	var ack DeferredRunAck
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		var activeRunID string
+		err := tx.QueryRow(ctx, `
+			SELECT id::text
+			FROM runs
+			WHERE customer_id=$1
+			AND session_id=$2
+			AND state IN ('leased','running','running_workflow','awaiting_user')
+			AND interrupt_window_started_at IS NOT NULL
+			AND now() <= interrupt_window_started_at + $3::interval
+			AND ($4 <= 0 OR refinement_depth < $4)
+			ORDER BY interrupt_window_started_at DESC
+			LIMIT 1
+			FOR UPDATE`, c.CustomerID, c.SessionID, fmt.Sprintf("%f seconds", window.Seconds()), maxDepth).
+			Scan(&activeRunID)
+		if err != nil {
+			return err
+		}
+		err = tx.QueryRow(ctx, `
+			INSERT INTO deferred_run_messages(customer_id,user_id,agent_instance_id,session_id,active_run_id,message_id,request_id,idempotency_key,input)
+			VALUES($1,$2,$3,$4,$5,NULL,$6,$7,$8)
+			ON CONFLICT (customer_id,session_id,idempotency_key) DO NOTHING
+			RETURNING id::text, active_run_id::text, COALESCE(message_id::text,'')`,
+			c.CustomerID, c.UserID, c.AgentInstanceID, c.SessionID, activeRunID, c.RequestID, c.IdempotencyKey, inputJSON).
+			Scan(&ack.DeferredMessageID, &ack.ActiveRunID, &ack.MessageID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return tx.QueryRow(ctx, `
+				SELECT id::text, active_run_id::text, COALESCE(message_id::text,''), state
+				FROM deferred_run_messages
+				WHERE customer_id=$1 AND session_id=$2 AND idempotency_key=$3
+				LIMIT 1`, c.CustomerID, c.SessionID, c.IdempotencyKey).
+				Scan(&ack.DeferredMessageID, &ack.ActiveRunID, &ack.MessageID, &ack.State)
+		}
+		if err != nil {
+			return err
+		}
+		var messageID string
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO messages(customer_id,session_id,run_id,role,content)
+			VALUES($1,$2,NULL,'user',$3)
+			RETURNING id::text`, c.CustomerID, c.SessionID, inputJSON).Scan(&messageID); err != nil {
+			return err
+		}
+		if err := tx.QueryRow(ctx, `
+			UPDATE deferred_run_messages
+			SET message_id=$2
+			WHERE id=$1
+			RETURNING COALESCE(message_id::text,'')`, ack.DeferredMessageID, messageID).Scan(&ack.MessageID); err != nil {
+			return err
+		}
+		ack.State = "deferred"
+		return nil
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &ack, nil
+}
+
+func (s *Store) deferredByIdempotencyKey(ctx context.Context, customerID, sessionID, key string) (*DeferredRunAck, error) {
+	var ack DeferredRunAck
+	err := s.pool.QueryRow(ctx, `
+		SELECT id::text, active_run_id::text, COALESCE(message_id::text,''), state
+		FROM deferred_run_messages
+		WHERE customer_id=$1 AND session_id=$2 AND idempotency_key=$3
+		LIMIT 1`, customerID, sessionID, key).
+		Scan(&ack.DeferredMessageID, &ack.ActiveRunID, &ack.MessageID, &ack.State)
+	return &ack, err
+}
+
 func (s *Store) GetRun(ctx context.Context, runID string) (*Run, error) {
 	var r Run
 	err := s.pool.QueryRow(ctx, `
@@ -342,9 +455,9 @@ func (s *Store) ClaimRun(ctx context.Context, owner string, leaseFor time.Durati
 			SET state='leased', lease_owner=$1, leased_at=now(), lease_expires_at=now()+$2::interval, updated_at=now()
 			FROM candidate
 			WHERE r.id=candidate.id
-			RETURNING r.id::text, r.customer_id, r.user_id, r.agent_instance_id, COALESCE(r.agent_instance_version_id::text,''), r.session_id, r.request_id, r.idempotency_key, r.state, r.input, r.error, r.created_at, r.updated_at, r.completed_at`,
+			RETURNING r.id::text, r.customer_id, r.user_id, r.agent_instance_id, COALESCE(r.agent_instance_version_id::text,''), r.session_id, r.request_id, r.idempotency_key, r.state, r.input, r.error, r.created_at, r.updated_at, r.completed_at, COALESCE(r.refinement_parent_run_id::text,''), r.refinement_depth, r.suppress_direct_outbound, r.interrupt_window_started_at`,
 			owner, fmt.Sprintf("%f seconds", leaseFor.Seconds()))
-		return row.Scan(&r.ID, &r.CustomerID, &r.UserID, &r.AgentInstanceID, &r.AgentInstanceVersionID, &r.SessionID, &r.RequestID, &r.IdempotencyKey, &r.State, &r.Input, &r.Error, &r.CreatedAt, &r.UpdatedAt, &r.CompletedAt)
+		return row.Scan(&r.ID, &r.CustomerID, &r.UserID, &r.AgentInstanceID, &r.AgentInstanceVersionID, &r.SessionID, &r.RequestID, &r.IdempotencyKey, &r.State, &r.Input, &r.Error, &r.CreatedAt, &r.UpdatedAt, &r.CompletedAt, &r.RefinementParentRunID, &r.RefinementDepth, &r.SuppressDirectOutbound, &r.InterruptWindowStarted)
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -448,6 +561,129 @@ func (s *Store) CompleteRunWithMessage(ctx context.Context, runID, messageID str
 		_ = s.AddObservabilityEvent(ctx, "", runID, "run_state_changed", map[string]any{"state": "completed"})
 	}
 	return err
+}
+
+func (s *Store) MarkRunInterruptWindowStarted(ctx context.Context, runID string) (time.Time, error) {
+	var started time.Time
+	err := s.pool.QueryRow(ctx, `
+		UPDATE runs
+		SET interrupt_window_started_at=COALESCE(interrupt_window_started_at, now()), updated_at=now()
+		WHERE id=$1
+		RETURNING interrupt_window_started_at`, runID).Scan(&started)
+	return started, err
+}
+
+func (s *Store) ClaimDeferredRunMessages(ctx context.Context, activeRunID string, windowStarted time.Time, window time.Duration) ([]DeferredRunMessage, error) {
+	if window <= 0 {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(ctx, `
+		UPDATE deferred_run_messages
+		SET state='claimed', claimed_at=now()
+		WHERE id IN (
+			SELECT id FROM deferred_run_messages
+			WHERE active_run_id=$1 AND state='deferred'
+			AND created_at >= $2 AND created_at <= $2 + $3::interval
+			ORDER BY created_at
+		)
+		RETURNING id::text, customer_id, user_id, agent_instance_id, session_id, active_run_id::text, COALESCE(message_id::text,''), request_id, idempotency_key, input, state, created_at`,
+		activeRunID, windowStarted, fmt.Sprintf("%f seconds", window.Seconds()))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []DeferredRunMessage
+	for rows.Next() {
+		var m DeferredRunMessage
+		if err := rows.Scan(&m.ID, &m.CustomerID, &m.UserID, &m.AgentInstanceID, &m.SessionID, &m.ActiveRunID, &m.MessageID, &m.RequestID, &m.IdempotencyKey, &m.Input, &m.State, &m.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) CompleteRunSuppressed(ctx context.Context, runID, messageID, content string, deferredCount int) error {
+	payload, _ := json.Marshal(map[string]any{"message_id": messageID, "content": content, "deferred_messages": deferredCount})
+	_, err := s.pool.Exec(ctx, `
+		UPDATE runs
+		SET state='completed', final_message_id=$2, suppress_direct_outbound=true, suppressed_response=$3, completed_at=now(), lease_owner=NULL, lease_expires_at=NULL, updated_at=now()
+		WHERE id=$1`, runID, messageID, payload)
+	if err == nil {
+		_ = s.AddEvent(ctx, runID, "run.completed_suppressed", map[string]any{"message_id": messageID, "deferred_messages": deferredCount})
+		_ = s.AddObservabilityEvent(ctx, "", runID, "run_state_changed", map[string]any{"state": "completed", "suppressed": true})
+	}
+	return err
+}
+
+func (s *Store) CreateRefinementRun(ctx context.Context, parent *Run, deferred []DeferredRunMessage, draft string, maxDepth int) (*Run, error) {
+	if parent == nil || len(deferred) == 0 {
+		return nil, fmt.Errorf("parent run and deferred messages are required")
+	}
+	if maxDepth > 0 && parent.RefinementDepth >= maxDepth {
+		return nil, fmt.Errorf("maximum refinement depth reached")
+	}
+	input := refinementInput(parent.Input, deferred, draft)
+	inputJSON, _ := json.Marshal(input)
+	idempotencyKey := fmt.Sprintf("refine:%s:%d", parent.ID, parent.RefinementDepth+1)
+	var versionArg any
+	if parent.AgentInstanceVersionID != "" {
+		versionArg = parent.AgentInstanceVersionID
+	}
+	var r Run
+	err := s.pool.QueryRow(ctx, `
+		INSERT INTO runs(customer_id,user_id,agent_instance_id,agent_instance_version_id,session_id,request_id,idempotency_key,state,input,channel_context,refinement_parent_run_id,refinement_depth)
+		SELECT customer_id,user_id,agent_instance_id,$2,session_id,request_id,$3,'queued',$4,channel_context,id,$5
+		FROM runs
+		WHERE id=$1
+		ON CONFLICT (customer_id,session_id,idempotency_key) DO UPDATE SET updated_at=runs.updated_at
+		RETURNING id::text, customer_id, user_id, agent_instance_id, COALESCE(agent_instance_version_id::text,''), session_id, request_id, idempotency_key, state, input, error, created_at, updated_at, completed_at, COALESCE(refinement_parent_run_id::text,''), refinement_depth, suppress_direct_outbound, interrupt_window_started_at`,
+		parent.ID, versionArg, idempotencyKey, inputJSON, parent.RefinementDepth+1).
+		Scan(&r.ID, &r.CustomerID, &r.UserID, &r.AgentInstanceID, &r.AgentInstanceVersionID, &r.SessionID, &r.RequestID, &r.IdempotencyKey, &r.State, &r.Input, &r.Error, &r.CreatedAt, &r.UpdatedAt, &r.CompletedAt, &r.RefinementParentRunID, &r.RefinementDepth, &r.SuppressDirectOutbound, &r.InterruptWindowStarted)
+	if err != nil {
+		return nil, err
+	}
+	_ = s.AddEvent(ctx, r.ID, "run.queued", map[string]any{"state": r.State, "refinement_parent_run_id": parent.ID, "deferred_messages": len(deferred)})
+	return &r, nil
+}
+
+func refinementInput(parentInput json.RawMessage, deferred []DeferredRunMessage, draft string) map[string]any {
+	var original any
+	_ = json.Unmarshal(parentInput, &original)
+	followups := make([]any, 0, len(deferred))
+	for _, msg := range deferred {
+		var input any
+		_ = json.Unmarshal(msg.Input, &input)
+		followups = append(followups, map[string]any{
+			"deferred_message_id": msg.ID,
+			"message_id":          msg.MessageID,
+			"created_at":          msg.CreatedAt.Format(time.RFC3339Nano),
+			"input":               input,
+		})
+	}
+	promptText := refinementPromptText(original, followups, draft)
+	return map[string]any{
+		"text": promptText,
+		"refinement": map[string]any{
+			"original_input":      original,
+			"suppressed_response": draft,
+			"followup_messages":   followups,
+		},
+	}
+}
+
+func refinementPromptText(original any, followups []any, draft string) string {
+	originalJSON, _ := json.Marshal(original)
+	followupsJSON, _ := json.Marshal(followups)
+	var b strings.Builder
+	b.WriteString("The assistant drafted a response, but the user sent follow-up messages before it was delivered. Refine the answer using the draft and the follow-up messages. Preserve completed side effects and do not repeat tool actions unless the user explicitly asks.\n\n")
+	b.WriteString("Original user input:\n")
+	b.Write(originalJSON)
+	b.WriteString("\n\nSuppressed draft response:\n")
+	b.WriteString(draft)
+	b.WriteString("\n\nDeferred follow-up messages:\n")
+	b.Write(followupsJSON)
+	return b.String()
 }
 
 func (s *Store) Checkpoint(ctx context.Context, runID, key string, state any) error {

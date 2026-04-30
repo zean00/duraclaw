@@ -31,25 +31,29 @@ import (
 const defaultMaxIterations = 6
 const streamDeltaFlushBytes = 2048
 const streamDeltaMaxEvents = 256
+const interruptWindow = 2 * time.Second
+const maxRefinementDepth = 2
 
 type Worker struct {
-	store          *db.Store
-	providers      *providers.Registry
-	modelConfig    providers.ModelConfig
-	processors     *artifacts.Registry
-	tools          *tools.Registry
-	mcpManager     *mcp.Manager
-	counters       *observability.Counters
-	otlp           observability.OTLPExporter
-	embedder       embeddings.Provider
-	asyncWriter    *asyncwrite.Writer
-	outbound       *outbound.Service
-	policy         *policy.Engine
-	mediaBlobStore tools.MediaBlobStore
-	profileFields  []string
-	owner          string
-	leaseFor       time.Duration
-	maxIterations  int
+	store           *db.Store
+	providers       *providers.Registry
+	modelConfig     providers.ModelConfig
+	processors      *artifacts.Registry
+	tools           *tools.Registry
+	mcpManager      *mcp.Manager
+	counters        *observability.Counters
+	otlp            observability.OTLPExporter
+	embedder        embeddings.Provider
+	asyncWriter     *asyncwrite.Writer
+	outbound        *outbound.Service
+	policy          *policy.Engine
+	mediaBlobStore  tools.MediaBlobStore
+	profileFields   []string
+	owner           string
+	leaseFor        time.Duration
+	maxIterations   int
+	interruptWindow time.Duration
+	maxRefineDepth  int
 }
 
 type runTraceContext struct {
@@ -115,7 +119,17 @@ func NewWorkerWithProviders(store *db.Store, registry *providers.Registry, model
 		toolRegistry.Register(tools.ListPreferencesTool{Store: store})
 		registerMediaGenerationTools(toolRegistry, registry, store, modelConfig, nil)
 	}
-	return &Worker{store: store, providers: registry, modelConfig: modelConfig, processors: artifacts.NewRegistry(artifacts.MockProcessor{}), tools: toolRegistry, policy: policy.NewEngine(store), owner: owner, leaseFor: 2 * time.Minute, maxIterations: defaultMaxIterations, embedder: embeddings.NewHashProvider(768)}
+	return &Worker{store: store, providers: registry, modelConfig: modelConfig, processors: artifacts.NewRegistry(artifacts.MockProcessor{}), tools: toolRegistry, policy: policy.NewEngine(store), owner: owner, leaseFor: 2 * time.Minute, maxIterations: defaultMaxIterations, interruptWindow: interruptWindow, maxRefineDepth: maxRefinementDepth, embedder: embeddings.NewHashProvider(768)}
+}
+
+func (w *Worker) WithRunRefinement(window time.Duration, maxDepth int) *Worker {
+	if window > 0 {
+		w.interruptWindow = window
+	}
+	if maxDepth >= 0 {
+		w.maxRefineDepth = maxDepth
+	}
+	return w
 }
 
 func (w *Worker) WithMediaBlobStore(store tools.MediaBlobStore) *Worker {
@@ -259,6 +273,11 @@ func (w *Worker) process(ctx context.Context, run *db.Run) error {
 	if err := w.store.SetRunState(ctx, run.ID, "running", nil); err != nil {
 		return err
 	}
+	windowStarted, err := w.store.MarkRunInterruptWindowStarted(ctx, run.ID)
+	if err != nil {
+		return err
+	}
+	run.InterruptWindowStarted = &windowStarted
 	if err := w.ensureRunnable(ctx, run.ID); err != nil {
 		return err
 	}
@@ -328,17 +347,7 @@ func (w *Worker) process(ctx context.Context, run *db.Run) error {
 	if recommendations != nil {
 		finalContent = w.applyRecommendationResult(ctx, run, scope, finalContent, recommendations)
 	}
-	msgID, err := w.store.InsertMessage(ctx, run.CustomerID, run.SessionID, run.ID, "assistant", map[string]any{
-		"parts": []map[string]any{{"type": "text", "text": finalContent}},
-	})
-	if err != nil {
-		return err
-	}
-	if err := w.emitFinalOutbound(ctx, run, msgID, finalContent); err != nil {
-		return err
-	}
-	_ = w.updateSessionSummary(ctx, run, finalContent)
-	return w.store.CompleteRunWithMessage(ctx, run.ID, msgID)
+	return w.finalizeAssistantResponse(ctx, run, finalContent)
 }
 
 func (w *Worker) runWorkflowPhase(ctx context.Context, run *db.Run) (string, error) {
@@ -454,13 +463,7 @@ func (w *Worker) completeOutOfScopeRun(ctx context.Context, run *db.Run, scope s
 	}
 	_ = w.store.AddEvent(ctx, run.ID, "scope.denied", map[string]any{"reason": scope.Reason, "confidence": scope.Confidence})
 	_ = w.store.AddObservabilityEvent(ctx, run.CustomerID, run.ID, "scope_denied", map[string]any{"reason": scope.Reason, "confidence": scope.Confidence})
-	msgID, err := w.store.InsertMessage(ctx, run.CustomerID, run.SessionID, run.ID, "assistant", map[string]any{
-		"parts": []map[string]any{{"type": "text", "text": response}},
-	})
-	if err != nil {
-		return err
-	}
-	return w.store.CompleteRunWithMessage(ctx, run.ID, msgID)
+	return w.finalizeAssistantResponse(ctx, run, response)
 }
 
 func (w *Worker) agentLoopPhase(ctx context.Context, run *db.Run, text string, messages []providers.Message, toolDefs []providers.ToolDefinition) (*providers.LLMResponse, error) {
@@ -589,6 +592,64 @@ func (w *Worker) emitFinalOutbound(ctx context.Context, run *db.Run, messageID, 
 		},
 	})
 	return err
+}
+
+func (w *Worker) emitTypingOutbound(ctx context.Context, run *db.Run, reason string) {
+	if w.outbound == nil {
+		return
+	}
+	_, _, _ = w.outbound.Emit(ctx, outbound.Intent{
+		CustomerID: run.CustomerID,
+		UserID:     run.UserID,
+		SessionID:  run.SessionID,
+		RunID:      run.ID,
+		Type:       "typing",
+		Payload: map[string]any{
+			"active_run_id": run.ID,
+			"state":         "processing",
+			"reason":        reason,
+		},
+	})
+}
+
+func (w *Worker) finalizeAssistantResponse(ctx context.Context, run *db.Run, finalContent string) error {
+	msgID, err := w.store.InsertMessage(ctx, run.CustomerID, run.SessionID, run.ID, "assistant", map[string]any{
+		"parts": []map[string]any{{"type": "text", "text": finalContent}},
+	})
+	if err != nil {
+		return err
+	}
+	if run.InterruptWindowStarted != nil && run.RefinementDepth < w.maxRefineDepth {
+		if remaining := run.InterruptWindowStarted.Add(w.interruptWindow).Sub(time.Now()); remaining > 0 {
+			timer := time.NewTimer(remaining)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+			}
+		}
+		deferred, err := w.store.ClaimDeferredRunMessages(ctx, run.ID, *run.InterruptWindowStarted, w.interruptWindow)
+		if err != nil {
+			return err
+		}
+		if len(deferred) > 0 {
+			if err := w.store.CompleteRunSuppressed(ctx, run.ID, msgID, finalContent, len(deferred)); err != nil {
+				return err
+			}
+			refinement, err := w.store.CreateRefinementRun(ctx, run, deferred, finalContent, w.maxRefineDepth)
+			if err != nil {
+				return err
+			}
+			w.emitTypingOutbound(ctx, refinement, "refinement_created")
+			return nil
+		}
+	}
+	if err := w.emitFinalOutbound(ctx, run, msgID, finalContent); err != nil {
+		return err
+	}
+	_ = w.updateSessionSummary(ctx, run, finalContent)
+	return w.store.CompleteRunWithMessage(ctx, run.ID, msgID)
 }
 
 func (w *Worker) chat(ctx context.Context, run *db.Run, messages []providers.Message, toolDefs []providers.ToolDefinition, summary map[string]any) (*providers.LLMResponse, error) {
@@ -2329,6 +2390,7 @@ func internalToolDefinitions() []providers.ToolDefinition {
 				Name:        "duraclaw.run_workflow",
 				Description: "Run an assigned durable workflow and return its output.",
 				Parameters: map[string]any{
+					"type": "object",
 					"properties": map[string]any{
 						"workflow_id": map[string]any{"type": "string"},
 						"input":       map[string]any{"type": "object"},
@@ -2344,6 +2406,7 @@ func internalToolDefinitions() []providers.ToolDefinition {
 				Name:        "duraclaw.ask_user",
 				Description: "Pause the run and ask the user for clarification.",
 				Parameters: map[string]any{
+					"type":                 "object",
 					"properties":           map[string]any{"question": map[string]any{"type": "string"}},
 					"required":             []any{"question"},
 					"additionalProperties": false,

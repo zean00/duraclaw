@@ -29,6 +29,8 @@ import (
 )
 
 const maxJSONBodyBytes = 2 << 20
+const defaultInterruptWindow = 2 * time.Second
+const defaultMaxRefinementDepth = 2
 
 type Handler struct {
 	store            *db.Store
@@ -45,14 +47,18 @@ type Handler struct {
 	mediaBlobStore   tools.MediaBlobStore
 	profileRetriever profiles.Retriever
 	logger           *slog.Logger
+	interruptWindow  time.Duration
+	maxRefineDepth   int
 }
 
 func NewHandler(store *db.Store) *Handler {
 	return &Handler{
-		store:    store,
-		workflow: workflow.NewExecutor(store),
-		counters: observability.NewCounters(),
-		logger:   observability.Logger(),
+		store:           store,
+		workflow:        workflow.NewExecutor(store),
+		counters:        observability.NewCounters(),
+		logger:          observability.Logger(),
+		interruptWindow: defaultInterruptWindow,
+		maxRefineDepth:  defaultMaxRefinementDepth,
 		artifactPolicy: policy.ArtifactRule{
 			MaxSizeBytes: 100 << 20,
 			MediaTypes: map[string]bool{
@@ -62,6 +68,16 @@ func NewHandler(store *db.Store) *Handler {
 			},
 		},
 	}
+}
+
+func (h *Handler) WithRunRefinement(window time.Duration, maxDepth int) *Handler {
+	if window > 0 {
+		h.interruptWindow = window
+	}
+	if maxDepth >= 0 {
+		h.maxRefineDepth = maxDepth
+	}
+	return h
 }
 
 func (h *Handler) WithAdminToken(token string) *Handler {
@@ -2117,6 +2133,24 @@ func (h *Handler) startRun(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.refreshUserProfile(r.Context(), c); err != nil {
 		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	deferred, err := h.store.DeferRunIfActive(r.Context(), c, payload, h.interruptWindow, h.maxRefineDepth)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if deferred != nil {
+		typingPayload, _ := json.Marshal(map[string]any{"active_run_id": deferred.ActiveRunID, "state": "processing", "reason": "deferred_followup"})
+		_, _, _ = h.store.CreateOutboundIntent(r.Context(), db.OutboundIntent{
+			CustomerID: c.CustomerID,
+			UserID:     c.UserID,
+			SessionID:  c.SessionID,
+			RunID:      &deferred.ActiveRunID,
+			Type:       "typing",
+			Payload:    typingPayload,
+		})
+		writeJSON(w, http.StatusAccepted, deferred)
 		return
 	}
 	run, err := h.store.CreateRun(r.Context(), c, payload)

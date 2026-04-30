@@ -31,6 +31,8 @@ type config struct {
 	SessionMonitorLimit         int
 	SessionMonitorMessageLimit  int
 	SessionCompactionThreshold  int
+	RunInterruptWindow          time.Duration
+	RunMaxRefinementDepth       int
 	OutboxSink                  string
 	NexusOutboundURL            string
 	NexusOutboundBulkURL        string
@@ -97,6 +99,8 @@ func loadConfig() (config, error) {
 		SessionMonitorLimit:         envInt("DURACLAW_SESSION_MONITOR_LIMIT", 25),
 		SessionMonitorMessageLimit:  envInt("DURACLAW_SESSION_MONITOR_MESSAGE_LIMIT", 40),
 		SessionCompactionThreshold:  envInt("DURACLAW_SESSION_COMPACTION_THRESHOLD_CHARS", 12000),
+		RunInterruptWindow:          time.Duration(envInt("DURACLAW_RUN_INTERRUPT_WINDOW_MS", 2000)) * time.Millisecond,
+		RunMaxRefinementDepth:       envInt("DURACLAW_RUN_MAX_REFINEMENT_DEPTH", 2),
 		OutboxSink:                  envDefault("DURACLAW_OUTBOX_SINK", "log"),
 		NexusOutboundURL:            os.Getenv("NEXUS_OUTBOUND_URL"),
 		NexusOutboundBulkURL:        os.Getenv("NEXUS_OUTBOUND_BULK_URL"),

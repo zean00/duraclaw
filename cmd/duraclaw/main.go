@@ -82,7 +82,8 @@ func main() {
 		WithProcessors(buildArtifactRegistry(cfg)).
 		WithEmbedder(embedder).
 		WithMediaBlobStore(mediaBlobStore).
-		WithProfilePromptFields(cfg.CustomerProfilePromptFields)
+		WithProfilePromptFields(cfg.CustomerProfilePromptFields).
+		WithRunRefinement(cfg.RunInterruptWindow, cfg.RunMaxRefinementDepth)
 	worker.SetMCPManager(mcpManager)
 	go func() {
 		if err := worker.Loop(ctx, cfg.WorkerInterval); err != nil && err != context.Canceled {
@@ -136,7 +137,7 @@ func main() {
 	}()
 	server := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           observability.InstrumentHTTP(acp.NewHandler(store).WithAdminToken(cfg.AdminToken).WithACPToken(cfg.ACPToken).WithRequireAuth(cfg.RequireAuth).WithCounters(counters).WithEmbedder(embedder).WithMCPManager(mcpManager).WithProviders(providerRegistry, modelConfig).WithMediaBlobStore(mediaBlobStore).WithProfileRetriever(profileRetriever).WithLogger(logger).Routes()),
+		Handler:           observability.InstrumentHTTP(acp.NewHandler(store).WithAdminToken(cfg.AdminToken).WithACPToken(cfg.ACPToken).WithRequireAuth(cfg.RequireAuth).WithCounters(counters).WithEmbedder(embedder).WithMCPManager(mcpManager).WithProviders(providerRegistry, modelConfig).WithMediaBlobStore(mediaBlobStore).WithProfileRetriever(profileRetriever).WithLogger(logger).WithRunRefinement(cfg.RunInterruptWindow, cfg.RunMaxRefinementDepth).Routes()),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {

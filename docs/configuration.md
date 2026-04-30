@@ -222,6 +222,13 @@ If `NEXUS_OUTBOUND_BULK_URL` is configured, the outbox worker groups claimed out
 | `DURACLAW_SESSION_MONITOR_MESSAGE_LIMIT` | `40` | Recent messages loaded for compaction/extraction. |
 | `DURACLAW_SESSION_COMPACTION_THRESHOLD_CHARS` | `12000` | Transcript size before summary compaction. |
 
+## Rapid Follow-Up Refinement
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `DURACLAW_RUN_INTERRUPT_WINDOW_MS` | `2000` | Window from pipeline start where same-session follow-up messages are deferred and folded into a refinement run. |
+| `DURACLAW_RUN_MAX_REFINEMENT_DEPTH` | `2` | Maximum chained refinement runs. Set to `0` to disable rapid follow-up deferral. |
+
 ## Customer Profile Retriever
 
 Duraclaw does not create a dedicated user-profile table. Optional external customer profile data is refreshed into `users.metadata.profile`.
