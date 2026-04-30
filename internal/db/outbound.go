@@ -55,7 +55,8 @@ func createOutboundIntentTx(ctx context.Context, tx pgx.Tx, intent OutboundInten
 		"customer_id":        intent.CustomerID,
 		"user_id":            intent.UserID,
 		"session_id":         intent.SessionID,
-		"run_id":             runID,
+		"run_id":             id,
+		"durable_run_id":     runID,
 		"intent_type":        intent.Type,
 		"payload":            json.RawMessage(payload),
 	}

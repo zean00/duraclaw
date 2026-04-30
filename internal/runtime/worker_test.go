@@ -263,11 +263,13 @@ func (t nonRetryableTool) Execute(context.Context, tools.ExecutionContext, map[s
 }
 
 type fakeOutboundStore struct {
-	intent db.OutboundIntent
+	intent  db.OutboundIntent
+	intents []db.OutboundIntent
 }
 
 func (s *fakeOutboundStore) CreateOutboundIntent(_ context.Context, intent db.OutboundIntent) (string, int64, error) {
 	s.intent = intent
+	s.intents = append(s.intents, intent)
 	return "intent-1", 1, nil
 }
 
@@ -287,7 +289,30 @@ func TestEmitFinalOutbound(t *testing.T) {
 	if err := json.Unmarshal(store.intent.Payload, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload["message_id"] != "msg-1" {
+	if payload["message_id"] != "msg-1" || payload["text"] != "hello" {
+		t.Fatalf("payload=%#v", payload)
+	}
+}
+
+func TestAgentActivityHonorsIncludeAndOmit(t *testing.T) {
+	outboundStore := &fakeOutboundStore{}
+	w := (&Worker{}).
+		WithOutbound(outbound.NewService(outboundStore)).
+		WithAgentActivity(ActivityConfig{Enabled: true, Include: []string{"thinking", "tool"}, Omit: []string{"tool"}})
+	run := &db.Run{ID: "run-1", CustomerID: "c", UserID: "u", SessionID: "s"}
+
+	w.emitAgentActivity(context.Background(), run, "thinking", "started", map[string]any{"phase": "test"})
+	w.emitAgentActivity(context.Background(), run, "tool", "started", map[string]any{"tool_name": "lookup"})
+	w.emitAgentActivity(context.Background(), run, "model", "started", nil)
+
+	if len(outboundStore.intents) != 1 || outboundStore.intents[0].Type != "agent_activity" {
+		t.Fatalf("intents=%#v", outboundStore.intents)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(outboundStore.intents[0].Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["activity_type"] != "thinking" || payload["state"] != "started" || payload["phase"] != "test" || payload["text"] != "thinking started" {
 		t.Fatalf("payload=%#v", payload)
 	}
 }

@@ -156,13 +156,16 @@ Single endpoint payload is the stored outbound outbox payload:
   "customer_id": "customer-1",
   "user_id": "user-1",
   "session_id": "session-1",
-  "run_id": "run-1",
+  "run_id": "intent-1",
+  "durable_run_id": "run-1",
   "intent_type": "assistant_message",
   "payload": {
     "text": "Hello"
   }
 }
 ```
+
+`run_id` is intentionally unique per outbound intent for Nexus delivery idempotency. The original Duraclaw durable run is preserved as `durable_run_id`.
 
 Bulk endpoint payload, enabled by `NEXUS_OUTBOUND_BULK_URL`:
 

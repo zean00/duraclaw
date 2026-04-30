@@ -83,7 +83,8 @@ func main() {
 		WithEmbedder(embedder).
 		WithMediaBlobStore(mediaBlobStore).
 		WithProfilePromptFields(cfg.CustomerProfilePromptFields).
-		WithRunRefinement(cfg.RunInterruptWindow, cfg.RunMaxRefinementDepth)
+		WithRunRefinement(cfg.RunInterruptWindow, cfg.RunMaxRefinementDepth).
+		WithAgentActivity(runtime.ActivityConfig{Enabled: cfg.AgentActivityEnabled, Include: cfg.AgentActivityInclude, Omit: cfg.AgentActivityOmit})
 	worker.SetMCPManager(mcpManager)
 	go func() {
 		if err := worker.Loop(ctx, cfg.WorkerInterval); err != nil && err != context.Canceled {

@@ -34,6 +34,12 @@ const streamDeltaMaxEvents = 256
 const interruptWindow = 2 * time.Second
 const maxRefinementDepth = 2
 
+type ActivityConfig struct {
+	Enabled bool
+	Include []string
+	Omit    []string
+}
+
 type Worker struct {
 	store           *db.Store
 	providers       *providers.Registry
@@ -54,6 +60,7 @@ type Worker struct {
 	maxIterations   int
 	interruptWindow time.Duration
 	maxRefineDepth  int
+	activity        ActivityConfig
 }
 
 type runTraceContext struct {
@@ -120,6 +127,11 @@ func NewWorkerWithProviders(store *db.Store, registry *providers.Registry, model
 		registerMediaGenerationTools(toolRegistry, registry, store, modelConfig, nil)
 	}
 	return &Worker{store: store, providers: registry, modelConfig: modelConfig, processors: artifacts.NewRegistry(artifacts.MockProcessor{}), tools: toolRegistry, policy: policy.NewEngine(store), owner: owner, leaseFor: 2 * time.Minute, maxIterations: defaultMaxIterations, interruptWindow: interruptWindow, maxRefineDepth: maxRefinementDepth, embedder: embeddings.NewHashProvider(768)}
+}
+
+func (w *Worker) WithAgentActivity(config ActivityConfig) *Worker {
+	w.activity = normalizeActivityConfig(config)
+	return w
 }
 
 func (w *Worker) WithRunRefinement(window time.Duration, maxDepth int) *Worker {
@@ -267,7 +279,7 @@ func (w *Worker) Loop(ctx context.Context, every time.Duration) error {
 	}
 }
 
-func (w *Worker) process(ctx context.Context, run *db.Run) error {
+func (w *Worker) process(ctx context.Context, run *db.Run) (err error) {
 	ctx, span := observability.StartSpan(ctx, "durable_run", attribute.String("duraclaw.run_id", run.ID), attribute.String("duraclaw.customer_id", run.CustomerID), attribute.String("duraclaw.session_id", run.SessionID))
 	defer span.End()
 	if err := w.store.SetRunState(ctx, run.ID, "running", nil); err != nil {
@@ -284,11 +296,34 @@ func (w *Worker) process(ctx context.Context, run *db.Run) error {
 	if err := w.store.Checkpoint(ctx, run.ID, "started", map[string]any{"state": "running"}); err != nil {
 		return err
 	}
+	w.emitAgentActivity(ctx, run, "thinking", "started", map[string]any{"phase": "durable_run"})
+	thinkingStarted := true
+	defer func() {
+		if !thinkingStarted {
+			return
+		}
+		details := map[string]any{"phase": "durable_run"}
+		if err == nil {
+			w.emitAgentActivity(ctx, run, "thinking", "completed", details)
+			return
+		}
+		var stopped runStoppedError
+		if errors.As(err, &stopped) && stopped.state == "awaiting_user" {
+			details["stopped_state"] = stopped.state
+			w.emitAgentActivity(ctx, run, "thinking", "completed", details)
+			return
+		}
+		details["error"] = err.Error()
+		w.emitAgentActivity(ctx, run, "thinking", "failed", details)
+	}()
 	initialText := extractText(run.Input)
+	w.emitAgentActivity(ctx, run, "scope", "started", map[string]any{"phase": "scope_judge"})
 	scope, err := w.judgeScope(ctx, run, initialText)
 	if err != nil {
+		w.emitAgentActivity(ctx, run, "scope", "failed", map[string]any{"error": err.Error()})
 		return err
 	}
+	w.emitAgentActivity(ctx, run, "scope", "completed", map[string]any{"in_scope": scope.InScope, "intent": scope.Intent, "injection_risk": scope.InjectionRisk})
 	if !scope.InScope {
 		return w.completeOutOfScopeRun(ctx, run, scope)
 	}
@@ -302,10 +337,13 @@ func (w *Worker) process(ctx context.Context, run *db.Run) error {
 	if err != nil {
 		return err
 	}
+	w.emitAgentActivity(ctx, run, "context", "started", map[string]any{"phase": "build_context"})
 	text, err := w.buildContextPhase(ctx, run, workflowContext)
 	if err != nil {
+		w.emitAgentActivity(ctx, run, "context", "failed", map[string]any{"error": err.Error()})
 		return err
 	}
+	w.emitAgentActivity(ctx, run, "context", "completed", map[string]any{"context_chars": len(text)})
 	if err := w.ensureRunnable(ctx, run.ID); err != nil {
 		return err
 	}
@@ -355,7 +393,9 @@ func (w *Worker) runWorkflowPhase(ctx context.Context, run *db.Run) (string, err
 	if workflowID == "" {
 		return "", nil
 	}
+	w.emitAgentActivity(ctx, run, "workflow", "started", map[string]any{"workflow_id": workflowID})
 	if err := w.workflowAllowedForRun(ctx, run, workflowID); err != nil {
+		w.emitAgentActivity(ctx, run, "workflow", "failed", map[string]any{"workflow_id": workflowID, "error": err.Error()})
 		return "", err
 	}
 	modelConfig, err := w.modelConfigForRun(ctx, run)
@@ -409,12 +449,14 @@ func (w *Worker) runWorkflowPhase(ctx context.Context, run *db.Run) (string, err
 	if err != nil {
 		msg := err.Error()
 		_ = w.store.CompleteRunStep(context.Background(), run.ID, stepID, "failed", nil, &msg)
+		w.emitAgentActivity(ctx, run, "workflow", "failed", map[string]any{"workflow_id": workflowID, "error": err.Error()})
 		return "", err
 	}
 	if result.State == "awaiting_user" {
 		if err := w.store.CompleteRunStep(ctx, run.ID, stepID, "succeeded", result, nil); err != nil {
 			return "", err
 		}
+		w.emitAgentActivity(ctx, run, "workflow", "awaiting_user", map[string]any{"workflow_id": workflowID})
 		return "", runStoppedError{runID: run.ID, state: "awaiting_user"}
 	}
 	outputText := workflowOutputText(result.Output)
@@ -429,6 +471,7 @@ func (w *Worker) runWorkflowPhase(ctx context.Context, run *db.Run) (string, err
 	if err := w.store.Checkpoint(ctx, run.ID, "workflow_graph_complete", result); err != nil {
 		return "", err
 	}
+	w.emitAgentActivity(ctx, run, "workflow", "completed", map[string]any{"workflow_id": workflowID})
 	return outputText, nil
 }
 
@@ -473,6 +516,7 @@ func (w *Worker) agentLoopPhase(ctx context.Context, run *db.Run, text string, m
 		return nil, err
 	}
 	for iteration := 1; iteration <= maxIterations; iteration++ {
+		w.emitAgentActivity(ctx, run, "model", "started", map[string]any{"iteration": iteration, "tools_available": len(toolDefs)})
 		modelStepID, err := w.store.StartRunStep(ctx, run.ID, "model_call", map[string]any{"messages": len(messages), "tools": len(toolDefs), "iteration": iteration})
 		if err != nil {
 			return nil, err
@@ -480,12 +524,14 @@ func (w *Worker) agentLoopPhase(ctx context.Context, run *db.Run, text string, m
 		if _, err := w.policyEngine().Enforce(ctx, "pre_model", w.policyContext(run, modelStepID, "", text)); err != nil {
 			msg := err.Error()
 			_ = w.store.CompleteRunStep(context.Background(), run.ID, modelStepID, "failed", nil, &msg)
+			w.emitAgentActivity(ctx, run, "model", "failed", map[string]any{"iteration": iteration, "error": err.Error()})
 			return nil, err
 		}
 		resp, err = w.chat(ctx, run, messages, toolDefs, map[string]any{"messages": len(messages), "tools": len(toolDefs), "iteration": iteration})
 		if err != nil {
 			msg := err.Error()
 			_ = w.store.CompleteRunStep(context.Background(), run.ID, modelStepID, "failed", nil, &msg)
+			w.emitAgentActivity(ctx, run, "model", "failed", map[string]any{"iteration": iteration, "error": err.Error()})
 			return nil, err
 		}
 		if _, err := w.policyEngine().Enforce(ctx, "post_model", w.policyContext(run, modelStepID, "", resp.Content)); err != nil {
@@ -496,6 +542,7 @@ func (w *Worker) agentLoopPhase(ctx context.Context, run *db.Run, text string, m
 		if err := w.store.CompleteRunStep(ctx, run.ID, modelStepID, "succeeded", map[string]any{"finish_reason": resp.FinishReason, "tool_calls": len(resp.ToolCalls), "iteration": iteration}, nil); err != nil {
 			return nil, err
 		}
+		w.emitAgentActivity(ctx, run, "model", "completed", map[string]any{"iteration": iteration, "finish_reason": resp.FinishReason, "tool_calls": len(resp.ToolCalls)})
 		if err := w.ensureRunnable(ctx, run.ID); err != nil {
 			return nil, err
 		}
@@ -506,11 +553,13 @@ func (w *Worker) agentLoopPhase(ctx context.Context, run *db.Run, text string, m
 		if err != nil {
 			return nil, err
 		}
+		w.emitAgentActivity(ctx, run, "tool", "batch_started", map[string]any{"iteration": iteration, "tool_calls": len(resp.ToolCalls)})
 		messages = append(messages, providers.Message{Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls})
 		toolResults, err := w.executeToolCalls(ctx, run, toolStepID, resp.ToolCalls)
 		if err != nil {
 			msg := err.Error()
 			_ = w.store.CompleteRunStep(context.Background(), run.ID, toolStepID, "failed", nil, &msg)
+			w.emitAgentActivity(ctx, run, "tool", "failed", map[string]any{"iteration": iteration, "error": err.Error()})
 			return nil, err
 		}
 		if err := w.store.CompleteRunStep(ctx, run.ID, toolStepID, "succeeded", map[string]any{"tool_results": len(toolResults), "iteration": iteration}, nil); err != nil {
@@ -522,6 +571,7 @@ func (w *Worker) agentLoopPhase(ctx context.Context, run *db.Run, text string, m
 		if err := w.store.Checkpoint(ctx, run.ID, "tools_complete", map[string]any{"tool_calls": len(toolResults)}); err != nil {
 			return nil, err
 		}
+		w.emitAgentActivity(ctx, run, "tool", "batch_completed", map[string]any{"iteration": iteration, "tool_results": len(toolResults)})
 		w.enqueueAsyncObservability(ctx, run, "checkpoint.tools_complete", map[string]any{"tool_results": toolResults, "iteration": iteration})
 		if iteration == maxIterations {
 			return nil, fmt.Errorf("agent loop exceeded %d iterations", maxIterations)
@@ -588,6 +638,7 @@ func (w *Worker) emitFinalOutbound(ctx context.Context, run *db.Run, messageID, 
 		Type:       "message",
 		Payload: map[string]any{
 			"message_id": messageID,
+			"text":       text,
 			"parts":      []map[string]any{{"type": "text", "text": text}},
 		},
 	})
@@ -610,6 +661,106 @@ func (w *Worker) emitTypingOutbound(ctx context.Context, run *db.Run, reason str
 			"reason":        reason,
 		},
 	})
+}
+
+func normalizeActivityConfig(config ActivityConfig) ActivityConfig {
+	config.Include = normalizeActivityList(config.Include)
+	config.Omit = normalizeActivityList(config.Omit)
+	return config
+}
+
+func normalizeActivityList(values []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
+}
+
+func (w *Worker) activityAllowed(activityType string) bool {
+	cfg := normalizeActivityConfig(w.activity)
+	if !cfg.Enabled {
+		return false
+	}
+	activityType = strings.ToLower(strings.TrimSpace(activityType))
+	if activityType == "" {
+		return false
+	}
+	if containsActivity(cfg.Omit, activityType) {
+		return false
+	}
+	return len(cfg.Include) == 0 || containsActivity(cfg.Include, activityType)
+}
+
+func containsActivity(values []string, activityType string) bool {
+	for _, value := range values {
+		if value == activityType || value == "*" || value == "all" {
+			return true
+		}
+	}
+	return false
+}
+
+func (w *Worker) emitAgentActivity(ctx context.Context, run *db.Run, activityType, state string, details map[string]any) {
+	if w == nil || run == nil || !w.activityAllowed(activityType) {
+		return
+	}
+	payload := map[string]any{
+		"activity_type": activityType,
+		"state":         state,
+		"run_id":        run.ID,
+	}
+	for key, value := range details {
+		payload[key] = value
+	}
+	payload["text"] = activityText(activityType, state, payload)
+	if w.store != nil {
+		_ = w.store.AddEvent(ctx, run.ID, "agent_activity."+activityType+"."+state, payload)
+	}
+	if w.outbound == nil {
+		return
+	}
+	_, _, _ = w.outbound.Emit(ctx, outbound.Intent{
+		CustomerID: run.CustomerID,
+		UserID:     run.UserID,
+		SessionID:  run.SessionID,
+		RunID:      run.ID,
+		Type:       "agent_activity",
+		Payload:    payload,
+	})
+}
+
+func activityText(activityType, state string, payload map[string]any) string {
+	switch activityType {
+	case "tool":
+		if toolName, _ := payload["tool_name"].(string); strings.TrimSpace(toolName) != "" {
+			return "Using tool: " + toolName
+		}
+	case "workflow":
+		if workflowID, _ := payload["workflow_id"].(string); strings.TrimSpace(workflowID) != "" {
+			return "Running workflow: " + workflowID
+		}
+	case "model":
+		return "Generating response"
+	case "scope":
+		return "Checking request scope"
+	case "context":
+		return "Building context"
+	case "artifact":
+		return "Processing artifact"
+	case "refinement":
+		return "Refining response"
+	}
+	if strings.TrimSpace(state) != "" {
+		return activityType + " " + state
+	}
+	return activityType
 }
 
 func (w *Worker) finalizeAssistantResponse(ctx context.Context, run *db.Run, finalContent string) error {
@@ -641,6 +792,7 @@ func (w *Worker) finalizeAssistantResponse(ctx context.Context, run *db.Run, fin
 			if err != nil {
 				return err
 			}
+			w.emitAgentActivity(ctx, refinement, "refinement", "created", map[string]any{"parent_run_id": run.ID, "deferred_messages": len(deferred)})
 			w.emitTypingOutbound(ctx, refinement, "refinement_created")
 			return nil
 		}
@@ -2301,15 +2453,19 @@ func (w *Worker) executeToolCalls(ctx context.Context, run *db.Run, stepID strin
 		if err := w.toolAllowedForRun(ctx, run, call.Function.Name); err != nil {
 			return nil, err
 		}
+		w.emitAgentActivity(ctx, run, "tool", "started", map[string]any{"tool_name": call.Function.Name, "tool_call_id": call.ID})
 		if w.isInternalTool(call.Function.Name) {
 			result, err := w.executeInternalTool(ctx, run, stepID, call)
 			if err != nil {
+				w.emitAgentActivity(ctx, run, "tool", "failed", map[string]any{"tool_name": call.Function.Name, "tool_call_id": call.ID, "error": err.Error()})
 				return nil, err
 			}
+			w.emitAgentActivity(ctx, run, "tool", "completed", map[string]any{"tool_name": call.Function.Name, "tool_call_id": call.ID})
 			results = append(results, toolExecutionResult{ToolCallID: call.ID, Content: result})
 			continue
 		}
 		if _, err := w.policyEngine().Enforce(ctx, "pre_tool", w.policyContext(run, stepID, call.Function.Name, "")); err != nil {
+			w.emitAgentActivity(ctx, run, "tool", "failed", map[string]any{"tool_name": call.Function.Name, "tool_call_id": call.ID, "error": err.Error()})
 			return nil, err
 		}
 		retryable := true
@@ -2347,14 +2503,17 @@ func (w *Worker) executeToolCalls(ctx context.Context, run *db.Run, stepID strin
 			return nil, err
 		}
 		if result.IsError {
+			w.emitAgentActivity(ctx, run, "tool", "failed", map[string]any{"tool_name": call.Function.Name, "tool_call_id": call.ID})
 			if result.Err != nil {
 				return nil, result.Err
 			}
 			return nil, fmt.Errorf("%s", result.ForLLM)
 		}
 		if _, err := w.policyEngine().Enforce(ctx, "post_tool", w.policyContext(run, stepID, call.Function.Name, result.ForLLM)); err != nil {
+			w.emitAgentActivity(ctx, run, "tool", "failed", map[string]any{"tool_name": call.Function.Name, "tool_call_id": call.ID, "error": err.Error()})
 			return nil, err
 		}
+		w.emitAgentActivity(ctx, run, "tool", "completed", map[string]any{"tool_name": call.Function.Name, "tool_call_id": call.ID})
 		results = append(results, toolExecutionResult{ToolCallID: call.ID, Content: call.Function.Name + ": " + result.ForLLM})
 	}
 	return results, nil
@@ -2555,6 +2714,7 @@ func (w *Worker) processArtifacts(ctx context.Context, run *db.Run) ([]string, e
 		}); err != nil {
 			return nil, err
 		}
+		w.emitAgentActivity(ctx, run, "artifact", "started", map[string]any{"artifact_id": a.ID, "processor": processor.Name(), "modality": a.Modality})
 		stepID, err := w.store.StartRunStep(ctx, run.ID, "artifact_processing", map[string]any{"artifact_id": a.ID, "processor": processor.Name()})
 		if err != nil {
 			return nil, err
@@ -2583,6 +2743,7 @@ func (w *Worker) processArtifacts(ctx context.Context, run *db.Run) ([]string, e
 			_ = w.store.CompleteProcessorCall(context.Background(), callID, run.ID, nil, &msg)
 			_ = w.store.SetArtifactState(context.Background(), a.ID, "failed")
 			_ = w.store.CompleteRunStep(context.Background(), run.ID, stepID, "failed", nil, &msg)
+			w.emitAgentActivity(ctx, run, "artifact", "failed", map[string]any{"artifact_id": a.ID, "processor": processor.Name(), "error": err.Error()})
 			return nil, err
 		}
 		for _, rep := range reps {
@@ -2622,6 +2783,7 @@ func (w *Worker) processArtifacts(ctx context.Context, run *db.Run) ([]string, e
 		if err := w.store.CompleteRunStep(ctx, run.ID, stepID, "succeeded", map[string]any{"representations": len(reps)}, nil); err != nil {
 			return nil, err
 		}
+		w.emitAgentActivity(ctx, run, "artifact", "completed", map[string]any{"artifact_id": a.ID, "processor": processor.Name(), "representations": len(reps)})
 	}
 	if len(summaries) > 0 {
 		if err := w.store.Checkpoint(ctx, run.ID, "artifacts_processed", map[string]any{"representations": len(summaries)}); err != nil {

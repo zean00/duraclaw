@@ -33,6 +33,9 @@ type config struct {
 	SessionCompactionThreshold  int
 	RunInterruptWindow          time.Duration
 	RunMaxRefinementDepth       int
+	AgentActivityEnabled        bool
+	AgentActivityInclude        []string
+	AgentActivityOmit           []string
 	OutboxSink                  string
 	NexusOutboundURL            string
 	NexusOutboundBulkURL        string
@@ -101,6 +104,9 @@ func loadConfig() (config, error) {
 		SessionCompactionThreshold:  envInt("DURACLAW_SESSION_COMPACTION_THRESHOLD_CHARS", 12000),
 		RunInterruptWindow:          time.Duration(envInt("DURACLAW_RUN_INTERRUPT_WINDOW_MS", 2000)) * time.Millisecond,
 		RunMaxRefinementDepth:       envInt("DURACLAW_RUN_MAX_REFINEMENT_DEPTH", 2),
+		AgentActivityEnabled:        envBool("DURACLAW_AGENT_ACTIVITY_ENABLED", false),
+		AgentActivityInclude:        splitCSV(os.Getenv("DURACLAW_AGENT_ACTIVITY_INCLUDE")),
+		AgentActivityOmit:           splitCSV(os.Getenv("DURACLAW_AGENT_ACTIVITY_OMIT")),
 		OutboxSink:                  envDefault("DURACLAW_OUTBOX_SINK", "log"),
 		NexusOutboundURL:            os.Getenv("NEXUS_OUTBOUND_URL"),
 		NexusOutboundBulkURL:        os.Getenv("NEXUS_OUTBOUND_BULK_URL"),

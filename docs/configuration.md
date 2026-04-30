@@ -229,6 +229,16 @@ If `NEXUS_OUTBOUND_BULK_URL` is configured, the outbox worker groups claimed out
 | `DURACLAW_RUN_INTERRUPT_WINDOW_MS` | `2000` | Window from pipeline start where same-session follow-up messages are deferred and folded into a refinement run. |
 | `DURACLAW_RUN_MAX_REFINEMENT_DEPTH` | `2` | Maximum chained refinement runs. Set to `0` to disable rapid follow-up deferral. |
 
+## Agent Activity Signals
+
+Duraclaw can emit user-visible activity intents while a run is processing. When enabled, matching activity events are written as durable run events and as outbound intents with `intent_type: "agent_activity"` for Nexus to map into channel-specific status UI.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `DURACLAW_AGENT_ACTIVITY_ENABLED` | `false` | Enables outbound `agent_activity` intents and matching durable `agent_activity.*` run events. |
+| `DURACLAW_AGENT_ACTIVITY_INCLUDE` | empty | Comma-separated allow list. Empty means all supported activity types. Supported values: `thinking`, `scope`, `context`, `workflow`, `model`, `tool`, `artifact`, `refinement`. |
+| `DURACLAW_AGENT_ACTIVITY_OMIT` | empty | Comma-separated deny list applied after include. Use this to suppress noisy types such as `model` or `tool`. |
+
 ## Customer Profile Retriever
 
 Duraclaw does not create a dedicated user-profile table. Optional external customer profile data is refreshed into `users.metadata.profile`.

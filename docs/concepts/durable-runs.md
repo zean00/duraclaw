@@ -64,6 +64,12 @@ Deferred run creation is idempotent by `(customer_id, session_id, idempotency_ke
 
 Completed side effects from a suppressed run are not rolled back. The refinement prompt includes the suppressed draft and tells the agent not to repeat completed tool/workflow side effects unless the user explicitly asks.
 
+## Agent Activity Signals
+
+Run internals are always durable through run events, run steps, model calls, tool calls, MCP calls, workflow records, and outbound intents. For realtime UX, Duraclaw can also emit configurable `agent_activity` outbound intents while a run is processing. Nexus can translate these into channel-appropriate indicators such as “thinking”, “checking policy”, “calling tool lookup”, or “running workflow”.
+
+Activity emission is controlled by `DURACLAW_AGENT_ACTIVITY_ENABLED`, `DURACLAW_AGENT_ACTIVITY_INCLUDE`, and `DURACLAW_AGENT_ACTIVITY_OMIT`. Supported activity types are `thinking`, `scope`, `context`, `workflow`, `model`, `tool`, `artifact`, and `refinement`. The omit list wins over the include list.
+
 ## Cancellation and Awaiting User
 
 Workers check run state during execution. A cancelled run stops without completing further side effects.

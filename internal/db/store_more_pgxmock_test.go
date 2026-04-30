@@ -12,6 +12,22 @@ import (
 
 func intPtr(v int) *int { return &v }
 
+type outboxPayloadMatcher struct{}
+
+func (outboxPayloadMatcher) Match(v any) bool {
+	raw, ok := v.([]byte)
+	if !ok {
+		return false
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return false
+	}
+	return payload["outbound_intent_id"] == "intent-1" &&
+		payload["run_id"] == "intent-1" &&
+		payload["durable_run_id"] == "run-1"
+}
+
 func newMockStore(t *testing.T) (*Store, pgxmock.PgxPoolIface) {
 	t.Helper()
 	mock, err := pgxmock.NewPool()
@@ -245,7 +261,7 @@ func TestStoreOutboundIntentWithPgxMock(t *testing.T) {
 		WithArgs("c1", "u1", "s1", runID, "email", []byte(`{"subject":"hi"}`)).
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow("intent-1"))
 	mock.ExpectQuery("INSERT INTO async_outbox").
-		WithArgs(pgxmock.AnyArg()).
+		WithArgs(outboxPayloadMatcher{}).
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(int64(99)))
 	mock.ExpectExec("UPDATE outbound_intents").WithArgs("intent-1", int64(99)).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mock.ExpectCommit()
