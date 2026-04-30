@@ -97,7 +97,7 @@ Supported part types include `text`, `artifact_ref`, `location`, `structured_dat
 - Agent instance versions and activation.
 - Workflows, nodes, edges, and assignments.
 - Agent policies, policy packs, rules, assignments, evaluations, and diffs.
-- Runtime limits.
+- Runtime limits and model usage summaries.
 - Knowledge ingestion and listing.
 - Memories and preferences.
 - Reminder subscriptions and scheduler jobs.

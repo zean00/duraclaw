@@ -174,7 +174,7 @@ func (s *fakeWorkflowStore) AddEvent(_ context.Context, _ string, typ string, _ 
 	return nil
 }
 
-func (s *fakeWorkflowStore) EnforceModelUsageQuota(context.Context, string, string) error {
+func (s *fakeWorkflowStore) EnforceModelUsageQuota(context.Context, string, string, string) error {
 	return nil
 }
 

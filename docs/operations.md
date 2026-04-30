@@ -75,12 +75,14 @@ Retention cleanup can remove old artifacts, events, outbox rows, async write job
 - Configure `NEXUS_OUTBOUND_BULK_URL` when Nexus supports bulk outbound delivery for broadcasts or reminder fanout.
 - Configure media storage for generated artifacts.
 - Configure OTLP or scrape `/metrics`.
-- Set runtime limits for customers or agent instances.
+- Set runtime limits for customers, agent instances, or users.
 - Run database backups and retention jobs.
 
-Runtime limits can be set at customer scope or overridden at agent-instance scope. Supported quota fields include run concurrency/queue limits, workflow/background run limits, async-write limits, and model usage budgets:
+Runtime limits can be set at customer scope or overridden at agent-instance scope. User-scoped limits are also available for model usage budgets. Supported quota fields include run concurrency/queue limits, workflow/background run limits, async-write limits, and model usage budgets:
 
 - `max_daily_tokens`, `max_weekly_tokens`, `max_monthly_tokens`
 - `max_daily_model_cost_micros`, `max_weekly_model_cost_micros`, `max_monthly_model_cost_micros`
 
 Model cost quotas use micro-USD integer units. For example, `1000000` means USD 1.00.
+
+Usage summaries are available through `GET /admin/usage/model?customer_id={customer_id}&period=daily|weekly|monthly`, with optional `agent_instance_id` and `user_id` filters.

@@ -245,6 +245,13 @@ The GitHub Actions workflow runs the full suite with a `pgvector/pgvector:pg17` 
 - `GET /admin/observability/events?customer_id={customer_id}`
 - `GET /admin/outbound-intents?customer_id={customer_id}`
 - `GET /admin/background-runs?customer_id={customer_id}`
+- `PUT /admin/runtime-limits/customer/{customer_id}`
+- `GET /admin/runtime-limits/customer/{customer_id}`
+- `PUT /admin/runtime-limits/customer/{customer_id}/agent-instances/{agent_instance_id}`
+- `GET /admin/runtime-limits/customer/{customer_id}/agent-instances/{agent_instance_id}`
+- `PUT /admin/runtime-limits/customer/{customer_id}/users/{user_id}`
+- `GET /admin/runtime-limits/customer/{customer_id}/users/{user_id}`
+- `GET /admin/usage/model?customer_id={customer_id}&period=daily|weekly|monthly`
 - `POST /admin/recommendations/items`
 - `GET /admin/recommendations/items?customer_id={customer_id}`
 - `PATCH /admin/recommendations/items/{item_id}`
@@ -437,7 +444,7 @@ The persistence layer also includes:
 - Durable observability events are written for model, tool, MCP, processor, and MCP notification lifecycle transitions.
 - Model usage is persisted in model-call summaries and exposed through token counters when providers report usage.
 - Agent instance version `tool_config`, `mcp_config`, `workflow_config`, and `policy_config` are validated and applied during run execution, including model-loop and per-turn tool-call limits.
-- Database-managed runtime limits hard-fail run, workflow, background-job, model-token, and model-cost usage when configured quotas are exceeded.
+- Database-managed runtime limits hard-fail run, workflow, background-job, model-token, and model-cost usage when configured quotas are exceeded. Model token/cost quotas can be scoped to customer, agent instance, or user, and usage summaries are exposed through admin APIs.
 - Async write jobs provide a bounded non-critical sidecar pipeline with degrade/drop metrics for oversized debug and observability payloads.
 - Checkpoints carry trace metadata when Nexus supplies `traceparent` or `X-Trace-ID`; background runs expose status APIs and progress storage.
 - MCP supports SSE request negotiation, global `DURACLAW_MCP_CONFIG`, notification ingestion, and opt-in long-lived stdio JSON-RPC clients.

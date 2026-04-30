@@ -183,14 +183,52 @@ func TestStoreModelUsageQuotaWithPgxMock(t *testing.T) {
 		}).AddRow("c1", nil, nil, nil, nil, nil, nil, nil, &dailyTokens, nil, nil, &dailyCost, nil, nil, []byte(`{}`), now))
 	mock.ExpectQuery("SELECT COALESCE\\(sum\\(total_tokens\\),0\\)").WithArgs("c1", pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"sum"}).AddRow(int64(10)))
-	if err := store.EnforceModelUsageQuota(ctx, "c1", "a1"); !IsQuotaExceeded(err) {
+	if err := store.EnforceModelUsageQuota(ctx, "c1", "a1", "u1"); !IsQuotaExceeded(err) {
 		t.Fatalf("expected token quota exceeded, got %v", err)
 	}
 
 	mock.ExpectExec("INSERT INTO model_usage_ledger").WithArgs("c1", "a1", "run-1", "call-1", "openrouter", "model", 1, 2, 3, int64(4)).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	if err := store.RecordModelUsage(ctx, ModelUsage{CustomerID: "c1", AgentInstanceID: "a1", RunID: "run-1", ModelCallID: "call-1", Provider: "openrouter", Model: "model", InputTokens: 1, OutputTokens: 2, CostMicros: 4}); err != nil {
+	if err := store.RecordModelUsage(ctx, ModelUsage{CustomerID: "c1", UserID: "u1", AgentInstanceID: "a1", RunID: "run-1", ModelCallID: "call-1", Provider: "openrouter", Model: "model", InputTokens: 1, OutputTokens: 2, CostMicros: 4}); err != nil {
 		t.Fatalf("record usage: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStoreUserModelUsageQuotaAndSummaryWithPgxMock(t *testing.T) {
+	store, mock := newMockStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	dailyTokens := 5
+	activeRuns := 1
+
+	if _, err := store.UpsertUserRuntimeLimits(ctx, RuntimeLimits{CustomerID: "c1", UserID: "u1", MaxActiveRuns: &activeRuns}); !IsValidationError(err) {
+		t.Fatalf("expected validation error, got %v", err)
+	}
+
+	mock.ExpectQuery("SELECT customer_id").WithArgs("c1").WillReturnError(pgx.ErrNoRows)
+	mock.ExpectQuery("SELECT customer_id").WithArgs("c1", "a1").WillReturnError(pgx.ErrNoRows)
+	mock.ExpectQuery("SELECT customer_id").WithArgs("c1", "u1").
+		WillReturnRows(pgxmock.NewRows([]string{
+			"customer_id", "user_id", "max_daily_tokens", "max_weekly_tokens", "max_monthly_tokens", "max_daily_model_cost_micros", "max_weekly_model_cost_micros", "max_monthly_model_cost_micros", "metadata", "updated_at",
+		}).AddRow("c1", "u1", &dailyTokens, nil, nil, nil, nil, nil, []byte(`{}`), now))
+	mock.ExpectQuery("SELECT COALESCE\\(sum\\(total_tokens\\),0\\)").WithArgs("c1", "u1", pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows([]string{"sum"}).AddRow(int64(5)))
+	if err := store.EnforceModelUsageQuota(ctx, "c1", "a1", "u1"); !IsQuotaExceeded(err) {
+		t.Fatalf("expected user token quota exceeded, got %v", err)
+	}
+
+	mock.ExpectQuery("SELECT COALESCE\\(sum\\(input_tokens\\),0\\)").
+		WithArgs("c1", pgxmock.AnyArg(), "a1", "u1").
+		WillReturnRows(pgxmock.NewRows([]string{"input_tokens", "output_tokens", "total_tokens", "cost_micros"}).AddRow(int64(1), int64(2), int64(3), int64(4)))
+	summary, err := store.ModelUsageSummary(ctx, "c1", "a1", "u1", "daily")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.UserID != "u1" || summary.AgentInstanceID != "a1" || summary.TotalTokens != 3 || summary.CostMicros != 4 {
+		t.Fatalf("summary=%#v", summary)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

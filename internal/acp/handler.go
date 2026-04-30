@@ -662,6 +662,51 @@ func (h *Handler) getAgentInstanceRuntimeLimits(w http.ResponseWriter, r *http.R
 	writeJSON(w, http.StatusOK, map[string]any{"limits": limits, "effective": effective})
 }
 
+func (h *Handler) upsertUserRuntimeLimits(w http.ResponseWriter, r *http.Request) {
+	var payload db.RuntimeLimits
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	payload.CustomerID = r.PathValue("customer_id")
+	payload.UserID = r.PathValue("user_id")
+	limits, err := h.store.UpsertUserRuntimeLimits(r.Context(), payload)
+	if err != nil {
+		writeError(w, statusForError(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, limits)
+}
+
+func (h *Handler) getUserRuntimeLimits(w http.ResponseWriter, r *http.Request) {
+	limits, err := h.store.UserRuntimeLimits(r.Context(), r.PathValue("customer_id"), r.PathValue("user_id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"limits": limits})
+}
+
+func (h *Handler) getModelUsageSummary(w http.ResponseWriter, r *http.Request) {
+	customerID := strings.TrimSpace(r.URL.Query().Get("customer_id"))
+	if customerID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id is required"))
+		return
+	}
+	summary, err := h.store.ModelUsageSummary(
+		r.Context(),
+		customerID,
+		r.URL.Query().Get("agent_instance_id"),
+		r.URL.Query().Get("user_id"),
+		r.URL.Query().Get("period"),
+	)
+	if err != nil {
+		writeError(w, statusForError(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, summary)
+}
+
 func (h *Handler) ingestKnowledgeText(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
 		CustomerID string         `json:"customer_id"`

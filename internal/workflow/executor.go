@@ -40,7 +40,7 @@ type Store interface {
 	WorkflowEdgeActivations(ctx context.Context, workflowRunID string) ([]db.WorkflowEdgeActivation, error)
 	StartWorkflowNodeRun(ctx context.Context, workflowRunID, nodeKey string, input any) (string, error)
 	CompleteWorkflowNodeRun(ctx context.Context, nodeRunID, state string, output any, errText *string) error
-	EnforceModelUsageQuota(ctx context.Context, customerID, agentInstanceID string) error
+	EnforceModelUsageQuota(ctx context.Context, customerID, agentInstanceID, userID string) error
 	StartModelCall(ctx context.Context, runID, provider, model string, request any) (string, error)
 	CompleteModelCall(ctx context.Context, callID, runID string, response any, errText *string) error
 	RecordModelUsage(ctx context.Context, usage db.ModelUsage) error
@@ -608,7 +608,7 @@ func (e *Executor) executeLLMCondition(ctx context.Context, req GraphRequest, no
 	messages := []providers.Message{{Role: "user", Content: prompt + "\nContext: " + mustJSONString(previous)}}
 	var lastErr error
 	for _, candidate := range candidates {
-		if err := e.store.EnforceModelUsageQuota(ctx, req.CustomerID, req.AgentInstanceID); err != nil {
+		if err := e.store.EnforceModelUsageQuota(ctx, req.CustomerID, req.AgentInstanceID, req.UserID); err != nil {
 			return nil, "", err
 		}
 		callID, err := e.store.StartModelCall(ctx, req.RunID, candidate.Provider, candidate.Model, map[string]any{"node_key": node.NodeKey, "type": "llm_condition"})
@@ -632,7 +632,7 @@ func (e *Executor) executeLLMCondition(ctx context.Context, req GraphRequest, no
 						return nil, "", err
 					}
 					if err := e.store.RecordModelUsage(ctx, db.ModelUsage{
-						CustomerID: req.CustomerID, AgentInstanceID: req.AgentInstanceID, RunID: req.RunID, ModelCallID: callID,
+						CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, RunID: req.RunID, ModelCallID: callID,
 						Provider: candidate.Provider, Model: candidate.Model,
 						InputTokens: resp.Usage.InputTokens, OutputTokens: resp.Usage.OutputTokens, TotalTokens: resp.Usage.TotalTokens, CostMicros: int64(resp.Usage.CostMicros),
 					}); err != nil {
@@ -665,7 +665,7 @@ func (e *Executor) executeModelCall(ctx context.Context, req GraphRequest, node 
 	messages := []providers.Message{{Role: "user", Content: promptText + "\nContext: " + mustJSONString(previous)}}
 	var lastErr error
 	for _, candidate := range candidates {
-		if err := e.store.EnforceModelUsageQuota(ctx, req.CustomerID, req.AgentInstanceID); err != nil {
+		if err := e.store.EnforceModelUsageQuota(ctx, req.CustomerID, req.AgentInstanceID, req.UserID); err != nil {
 			return nil, "", err
 		}
 		callID, err := e.store.StartModelCall(ctx, req.RunID, candidate.Provider, candidate.Model, map[string]any{"node_key": node.NodeKey, "type": "model_call"})
@@ -693,7 +693,7 @@ func (e *Executor) executeModelCall(ctx context.Context, req GraphRequest, node 
 						return nil, "", err
 					}
 					if err := e.store.RecordModelUsage(ctx, db.ModelUsage{
-						CustomerID: req.CustomerID, AgentInstanceID: req.AgentInstanceID, RunID: req.RunID, ModelCallID: callID,
+						CustomerID: req.CustomerID, UserID: req.UserID, AgentInstanceID: req.AgentInstanceID, RunID: req.RunID, ModelCallID: callID,
 						Provider: candidate.Provider, Model: candidate.Model,
 						InputTokens: resp.Usage.InputTokens, OutputTokens: resp.Usage.OutputTokens, TotalTokens: resp.Usage.TotalTokens, CostMicros: int64(resp.Usage.CostMicros),
 					}); err != nil {

@@ -291,6 +291,8 @@ func TestStoreHasRuntimeQuotaQueries(t *testing.T) {
 	for _, want := range []string{
 		"UpsertCustomerRuntimeLimits",
 		"UpsertAgentInstanceRuntimeLimits",
+		"UpsertUserRuntimeLimits",
+		"UserRuntimeLimits",
 		"EnforceRunQuota",
 		"EnforceRunStartQuota",
 		"EnforceWorkflowQuota",

@@ -198,6 +198,26 @@ func TestSixteenthMigrationContainsMCPToolAccess(t *testing.T) {
 	}
 }
 
+func TestSeventeenthMigrationContainsUserQuotasAndUsage(t *testing.T) {
+	raw, err := migrationFS.ReadFile("migrations/0017_user_quotas_usage.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw)
+	for _, want := range []string{
+		"CREATE TABLE IF NOT EXISTS user_runtime_limits",
+		"max_daily_tokens integer",
+		"ALTER TABLE model_usage_ledger",
+		"ADD COLUMN IF NOT EXISTS user_id",
+		"UPDATE model_usage_ledger l",
+		"model_usage_ledger_customer_user_period_idx",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("migration missing %q", want)
+		}
+	}
+}
+
 func TestEighthMigrationContainsSummariesAndBackgroundSchema(t *testing.T) {
 	raw, err := migrationFS.ReadFile("migrations/0008_summaries_and_background.sql")
 	if err != nil {

@@ -13,6 +13,7 @@ import (
 type RuntimeLimits struct {
 	CustomerID                 string          `json:"customer_id"`
 	AgentInstanceID            string          `json:"agent_instance_id,omitempty"`
+	UserID                     string          `json:"user_id,omitempty"`
 	MaxActiveRuns              *int            `json:"max_active_runs,omitempty"`
 	MaxQueuedRuns              *int            `json:"max_queued_runs,omitempty"`
 	MaxWorkflowRuns            *int            `json:"max_workflow_runs,omitempty"`
@@ -187,6 +188,59 @@ func (s *Store) AgentInstanceRuntimeLimits(ctx context.Context, customerID, agen
 		FROM agent_instance_runtime_limits
 		WHERE customer_id=$1 AND agent_instance_id=$2`, customerID, agentInstanceID).
 		Scan(&out.CustomerID, &out.AgentInstanceID, &out.MaxActiveRuns, &out.MaxQueuedRuns, &out.MaxWorkflowRuns, &out.MaxBackgroundRuns, &out.AsyncBufferSize, &out.MaxAsyncPayloadBytes, &out.AsyncDegradeThresholdBytes, &out.MaxDailyTokens, &out.MaxWeeklyTokens, &out.MaxMonthlyTokens, &out.MaxDailyModelCostMicros, &out.MaxWeeklyModelCostMicros, &out.MaxMonthlyModelCostMicros, &out.Metadata, &out.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (s *Store) UpsertUserRuntimeLimits(ctx context.Context, limits RuntimeLimits) (*RuntimeLimits, error) {
+	if limits.CustomerID == "" || limits.UserID == "" {
+		return nil, ValidationError{Message: "customer_id and user_id are required"}
+	}
+	if limits.AgentInstanceID != "" || limits.MaxActiveRuns != nil || limits.MaxQueuedRuns != nil || limits.MaxWorkflowRuns != nil ||
+		limits.MaxBackgroundRuns != nil || limits.AsyncBufferSize != nil || limits.MaxAsyncPayloadBytes != nil || limits.AsyncDegradeThresholdBytes != nil {
+		return nil, ValidationError{Message: "user runtime limits only support model token and model cost quotas"}
+	}
+	if err := validateRuntimeLimits(limits); err != nil {
+		return nil, err
+	}
+	if err := s.ensureCustomer(ctx, limits.CustomerID); err != nil {
+		return nil, err
+	}
+	if _, err := s.pool.Exec(ctx, `INSERT INTO users(customer_id,id) VALUES($1,$2) ON CONFLICT DO NOTHING`, limits.CustomerID, limits.UserID); err != nil {
+		return nil, err
+	}
+	metadata := jsonObject(limits.Metadata)
+	var out RuntimeLimits
+	err := s.pool.QueryRow(ctx, `
+		INSERT INTO user_runtime_limits(customer_id,user_id,max_daily_tokens,max_weekly_tokens,max_monthly_tokens,max_daily_model_cost_micros,max_weekly_model_cost_micros,max_monthly_model_cost_micros,metadata,updated_at)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,now())
+		ON CONFLICT (customer_id,user_id) DO UPDATE SET
+			max_daily_tokens=EXCLUDED.max_daily_tokens,
+			max_weekly_tokens=EXCLUDED.max_weekly_tokens,
+			max_monthly_tokens=EXCLUDED.max_monthly_tokens,
+			max_daily_model_cost_micros=EXCLUDED.max_daily_model_cost_micros,
+			max_weekly_model_cost_micros=EXCLUDED.max_weekly_model_cost_micros,
+			max_monthly_model_cost_micros=EXCLUDED.max_monthly_model_cost_micros,
+			metadata=EXCLUDED.metadata,
+			updated_at=now()
+		RETURNING customer_id, user_id, max_daily_tokens, max_weekly_tokens, max_monthly_tokens, max_daily_model_cost_micros, max_weekly_model_cost_micros, max_monthly_model_cost_micros, metadata, updated_at`,
+		limits.CustomerID, limits.UserID, limits.MaxDailyTokens, limits.MaxWeeklyTokens, limits.MaxMonthlyTokens, limits.MaxDailyModelCostMicros, limits.MaxWeeklyModelCostMicros, limits.MaxMonthlyModelCostMicros, metadata).
+		Scan(&out.CustomerID, &out.UserID, &out.MaxDailyTokens, &out.MaxWeeklyTokens, &out.MaxMonthlyTokens, &out.MaxDailyModelCostMicros, &out.MaxWeeklyModelCostMicros, &out.MaxMonthlyModelCostMicros, &out.Metadata, &out.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (s *Store) UserRuntimeLimits(ctx context.Context, customerID, userID string) (*RuntimeLimits, error) {
+	var out RuntimeLimits
+	err := s.pool.QueryRow(ctx, `
+		SELECT customer_id, user_id, max_daily_tokens, max_weekly_tokens, max_monthly_tokens, max_daily_model_cost_micros, max_weekly_model_cost_micros, max_monthly_model_cost_micros, metadata, updated_at
+		FROM user_runtime_limits
+		WHERE customer_id=$1 AND user_id=$2`, customerID, userID).
+		Scan(&out.CustomerID, &out.UserID, &out.MaxDailyTokens, &out.MaxWeeklyTokens, &out.MaxMonthlyTokens, &out.MaxDailyModelCostMicros, &out.MaxWeeklyModelCostMicros, &out.MaxMonthlyModelCostMicros, &out.Metadata, &out.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}

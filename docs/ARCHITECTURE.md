@@ -1328,7 +1328,7 @@ Concurrency rules:
 - Use workflow concurrency limits.
 - Use background-job concurrency limits.
 
-Implementation status: database-managed customer and agent-instance runtime limits can hard-fail run, workflow, background-job creation, model-token usage, and model-cost usage when configured quotas are exceeded. Token and cost budgets can be configured for daily, weekly, and monthly periods; model cost is tracked in micro-USD integer units. Background runs are marked distinctly, can store progress, and are exposed through admin/status APIs while reusing the durable run worker. Readiness reports queue depth for runs, outbox, async writes, and due scheduler jobs. Async write sidecars have bounded retry attempts and terminal async write rows are covered by retention cleanup.
+Implementation status: database-managed customer and agent-instance runtime limits can hard-fail run, workflow, background-job creation, model-token usage, and model-cost usage when configured quotas are exceeded. User-scoped model token/cost quotas and usage summaries are also supported. Token and cost budgets can be configured for daily, weekly, and monthly periods; model cost is tracked in micro-USD integer units. Background runs are marked distinctly, can store progress, and are exposed through admin/status APIs while reusing the durable run worker. Readiness reports queue depth for runs, outbox, async writes, and due scheduler jobs. Async write sidecars have bounded retry attempts and terminal async write rows are covered by retention cleanup.
 
 PostgreSQL patterns:
 

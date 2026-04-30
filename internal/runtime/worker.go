@@ -587,7 +587,7 @@ func (w *Worker) chat(ctx context.Context, run *db.Run, messages []providers.Mes
 	var lastErr error
 	for _, candidate := range candidates {
 		span.SetAttributes(attribute.String("duraclaw.model_provider", candidate.Provider), attribute.String("duraclaw.model", candidate.Model))
-		if err := w.store.EnforceModelUsageQuota(ctx, run.CustomerID, run.AgentInstanceID); err != nil {
+		if err := w.store.EnforceModelUsageQuota(ctx, run.CustomerID, run.AgentInstanceID, run.UserID); err != nil {
 			if db.IsQuotaExceeded(err) {
 				_ = w.store.AddEvent(ctx, run.ID, "quota_exceeded", map[string]any{"error": err.Error(), "kind": "model_usage"})
 				_ = w.store.AddObservabilityEvent(ctx, run.CustomerID, run.ID, "quota_exceeded", map[string]any{"error": err.Error(), "agent_instance_id": run.AgentInstanceID, "kind": "model_usage"})
@@ -629,7 +629,7 @@ func (w *Worker) chat(ctx context.Context, run *db.Run, messages []providers.Mes
 					return nil, completeErr
 				}
 				if err := w.store.RecordModelUsage(ctx, db.ModelUsage{
-					CustomerID: run.CustomerID, AgentInstanceID: run.AgentInstanceID, RunID: run.ID, ModelCallID: callID,
+					CustomerID: run.CustomerID, UserID: run.UserID, AgentInstanceID: run.AgentInstanceID, RunID: run.ID, ModelCallID: callID,
 					Provider: candidate.Provider, Model: candidate.Model,
 					InputTokens: resp.Usage.InputTokens, OutputTokens: resp.Usage.OutputTokens, TotalTokens: resp.Usage.TotalTokens, CostMicros: int64(resp.Usage.CostMicros),
 				}); err != nil {

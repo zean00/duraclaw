@@ -978,6 +978,42 @@ func TestRuntimeLimitRoutesUseStore(t *testing.T) {
 	}
 }
 
+func TestUserRuntimeLimitAndUsageRoutesUseStore(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	now := time.Now().UTC()
+	dailyTokens := 20
+	mock.ExpectExec("INSERT INTO customers").WithArgs("c1").WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("INSERT INTO users").WithArgs("c1", "u1").WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectQuery("INSERT INTO user_runtime_limits").
+		WithArgs("c1", "u1", &dailyTokens, pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), []byte(`{}`)).
+		WillReturnRows(pgxmock.NewRows([]string{
+			"customer_id", "user_id", "max_daily_tokens", "max_weekly_tokens", "max_monthly_tokens", "max_daily_model_cost_micros", "max_weekly_model_cost_micros", "max_monthly_model_cost_micros", "metadata", "updated_at",
+		}).AddRow("c1", "u1", &dailyTokens, nil, nil, nil, nil, nil, []byte(`{}`), now))
+	req := httptest.NewRequest(http.MethodPut, "/admin/runtime-limits/customer/c1/users/u1", strings.NewReader(`{"max_daily_tokens":20}`))
+	rec := httptest.NewRecorder()
+	NewHandler(db.NewStore(mock)).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"user_id":"u1"`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	mock.ExpectQuery("SELECT COALESCE\\(sum\\(input_tokens\\),0\\)").
+		WithArgs("c1", pgxmock.AnyArg(), "u1").
+		WillReturnRows(pgxmock.NewRows([]string{"input_tokens", "output_tokens", "total_tokens", "cost_micros"}).AddRow(int64(1), int64(2), int64(3), int64(4)))
+	req = httptest.NewRequest(http.MethodGet, "/admin/usage/model?customer_id=c1&user_id=u1&period=daily", nil)
+	rec = httptest.NewRecorder()
+	NewHandler(db.NewStore(mock)).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"total_tokens":3`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestListOutboundIntentsUsesStore(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
