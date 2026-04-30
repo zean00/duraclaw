@@ -4,6 +4,7 @@ Duraclaw has three durable primitives for work that happens outside a normal imm
 
 - Reminder subscriptions: user-facing cron-like reminder subscriptions, including `@once`.
 - Scheduler jobs: lower-level one-time or recurring run triggers for research jobs, checks, workflows, and other background work.
+- Shared scheduler jobs: customer-level polling jobs with user subscriptions and dynamic external eligibility, such as location-dependent prayer reminders.
 - Background runs: durable runs created for long-running or asynchronous work, with user-scoped listing and cancellation.
 
 Nexus remains responsible for channel delivery. Duraclaw persists reminders/jobs/runs and emits outbound intents for Nexus to deliver.
@@ -95,6 +96,70 @@ Patch body supports these user-owned fields:
 - `input`
 - `metadata`
 - `enabled`
+
+## Shared Scheduler Jobs
+
+Shared scheduler jobs are customer-level jobs that evaluate a subscriber set on each schedule tick. They are useful when many users subscribe to one logical reminder, but actual eligibility depends on external data such as location-specific prayer times.
+
+Admin job routes:
+
+- `POST /admin/shared-scheduler/jobs`
+- `GET /admin/shared-scheduler/jobs?customer_id={customer_id}&limit=100`
+- `PATCH /admin/shared-scheduler/jobs/{job_id}`
+- `DELETE /admin/shared-scheduler/jobs/{job_id}?customer_id={customer_id}`
+
+User subscription routes:
+
+- `POST /acp/shared-scheduler/subscriptions`
+- `GET /acp/shared-scheduler/subscriptions?customer_id={customer_id}&user_id={user_id}&shared_job_id={job_id}`
+- `PATCH /acp/shared-scheduler/subscriptions/{subscription_id}`
+- `DELETE /acp/shared-scheduler/subscriptions/{subscription_id}?customer_id={customer_id}&user_id={user_id}`
+
+Example shared prayer job:
+
+```json
+{
+  "customer_id": "customer-1",
+  "job_key": "prayer_reminder",
+  "title": "Prayer reminder",
+  "job_type": "eligibility_poll",
+  "schedule": "*/1 * * * *",
+  "timezone": "Asia/Jakarta",
+  "fanout_action": "outbound_intent",
+  "message_template": "It is time for {{prayer_name}} prayer.",
+  "external_service": {
+    "url": "https://example.com/prayer/due",
+    "method": "POST",
+    "headers": {"Authorization": "Bearer secret"},
+    "include_subscribers": true,
+    "response_mapping": {
+      "target_path": "result.users",
+      "target_shape": "list",
+      "id_path": "user_id"
+    }
+  }
+}
+```
+
+The scheduler posts job context to `external_service`. It only includes active subscriber records when `include_subscribers` is explicitly `true`; keep this disabled for large subscriber sets and have the external service return eligible Duraclaw `user_id`s instead. The response mapping can read user IDs from a list path such as `users` or `result.users`, from object keys, or from object values. A missing mapped user-list path falls back to all active subscribers; a present-but-empty mapped list selects no recipients. If no external service is configured, the job also fans out to all active subscribers.
+
+`fanout_action` controls execution cost. `outbound_intent` creates one direct message intent per selected subscriber. `durable_run` creates one durable agent run per selected `agent_instance_id`, not one run per subscriber; the run input contains the selected subscriber list so the agent can generate a profile-consistent shared reminder. When that durable run completes, the shared scheduler claims the completed run result and creates one outbound intent per selected subscriber. The reminder system remains responsible for subscriber outbox fanout.
+
+Example subscription:
+
+```json
+{
+  "customer_id": "customer-1",
+  "user_id": "user-1",
+  "shared_job_id": "job-1",
+  "session_id": "session-1",
+  "agent_instance_id": "agent-1",
+  "subscriber_metadata": {
+    "location": {"latitude": -6.2, "longitude": 106.8, "label": "Jakarta"},
+    "timezone": "Asia/Jakarta"
+  }
+}
+```
 
 ## Background Runs
 

@@ -297,6 +297,10 @@ The GitHub Actions workflow runs the full suite with a `pgvector/pgvector:pg17` 
 - `GET /acp/scheduler/jobs?customer_id={customer_id}&user_id={user_id}`
 - `PATCH /acp/scheduler/jobs/{job_id}`
 - `DELETE /acp/scheduler/jobs/{job_id}?customer_id={customer_id}&user_id={user_id}`
+- `POST /acp/shared-scheduler/subscriptions`
+- `GET /acp/shared-scheduler/subscriptions?customer_id={customer_id}&user_id={user_id}`
+- `PATCH /acp/shared-scheduler/subscriptions/{subscription_id}`
+- `DELETE /acp/shared-scheduler/subscriptions/{subscription_id}?customer_id={customer_id}&user_id={user_id}`
 - `GET /acp/background-runs?customer_id={customer_id}&user_id={user_id}`
 - `POST /acp/background-runs/{run_id}/cancel`
 - `GET /acp/sessions/{session_id}/runs/latest`
@@ -327,6 +331,11 @@ Scheduler jobs are lower-level durable run triggers for one-time or recurring wo
 - `PATCH /acp/scheduler/jobs/{job_id}` updates user-owned job fields: `schedule`, `next_run_at`, `input`, `metadata`, and `enabled`.
 - `DELETE /acp/scheduler/jobs/{job_id}?customer_id={customer_id}&user_id={user_id}` deletes a user-owned job.
 
+Shared scheduler jobs are customer-level polling jobs with active user subscriptions. They support external eligibility APIs for cases such as location-specific prayer reminders. External calls omit subscriber records unless `include_subscribers` is explicitly true. The external response mapping can read eligible `user_id`s from paths such as `users`, `accounts`, or `result.users`; missing user-list paths fall back to all subscribers, while empty mapped lists select no recipients. Fanout can create outbound intents per subscriber or durable runs per selected agent instance; completed durable-run results are then pushed to subscriber outboxes by the shared scheduler.
+
+- Admin: `POST /admin/shared-scheduler/jobs`, `GET /admin/shared-scheduler/jobs`, `PATCH /admin/shared-scheduler/jobs/{job_id}`, `DELETE /admin/shared-scheduler/jobs/{job_id}`.
+- User subscriptions: `POST /acp/shared-scheduler/subscriptions`, `GET /acp/shared-scheduler/subscriptions`, `PATCH /acp/shared-scheduler/subscriptions/{subscription_id}`, `DELETE /acp/shared-scheduler/subscriptions/{subscription_id}`.
+
 Background runs are durable runs created for long-running or asynchronous work. User-scoped management supports listing and cancellation:
 
 - `GET /acp/background-runs?customer_id={customer_id}&user_id={user_id}&agent_instance_id={agent_instance_id}&limit=100`
@@ -336,6 +345,7 @@ Admin routes provide customer-wide management for the same primitives:
 
 - `POST /admin/reminders/subscriptions`, `GET /admin/reminders/subscriptions`, `PATCH /admin/reminders/subscriptions/{subscription_id}`
 - `POST /admin/scheduler/jobs`, `GET /admin/scheduler/jobs`, `PATCH /admin/scheduler/jobs/{job_id}`
+- `POST /admin/shared-scheduler/jobs`, `GET /admin/shared-scheduler/jobs`, `PATCH /admin/shared-scheduler/jobs/{job_id}`, `DELETE /admin/shared-scheduler/jobs/{job_id}`
 - `GET /admin/background-runs`
 
 Workflow graph execution v1 is a durable DAG runner. It persists node states and edge activations, runs dependency-ready nodes concurrently with a default limit of 4, treats merge nodes as `all_active` joins, and supports retry/timeout policies on nodes.

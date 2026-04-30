@@ -1140,6 +1140,10 @@ func (h *Handler) createSchedulerJob(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
+		if next.IsZero() {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("next_run_at is required for @once schedules"))
+			return
+		}
 		payload.NextRunAt = next
 	} else if _, err := scheduler.Next(payload.Schedule, payload.NextRunAt.Add(-time.Second)); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -1256,6 +1260,10 @@ func (h *Handler) updateUserSchedulerJob(w http.ResponseWriter, r *http.Request)
 		}
 		if payload.NextRunAt.IsZero() {
 			next, _ := scheduler.Next(schedule, time.Now().UTC())
+			if next.IsZero() {
+				writeError(w, http.StatusBadRequest, fmt.Errorf("next_run_at is required for @once schedules"))
+				return
+			}
 			payload.NextRunAt = next
 		}
 	}
@@ -1288,6 +1296,250 @@ func (h *Handler) deleteUserSchedulerJob(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"job_id": r.PathValue("job_id"), "deleted": true})
+}
+
+func (h *Handler) createSharedSchedulerJob(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		CustomerID       string         `json:"customer_id"`
+		JobKey           string         `json:"job_key"`
+		Title            string         `json:"title"`
+		JobType          string         `json:"job_type"`
+		Schedule         string         `json:"schedule"`
+		Timezone         string         `json:"timezone"`
+		NextRunAt        time.Time      `json:"next_run_at"`
+		ExternalService  map[string]any `json:"external_service"`
+		FanoutAction     string         `json:"fanout_action"`
+		MessageTemplate  string         `json:"message_template"`
+		RunInputTemplate map[string]any `json:"run_input_template"`
+		Metadata         map[string]any `json:"metadata"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if payload.CustomerID == "" || payload.JobKey == "" || payload.Schedule == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id, job_key, and schedule are required"))
+		return
+	}
+	if !validSharedSchedulerFanoutAction(payload.FanoutAction) {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("fanout_action must be outbound_intent or durable_run"))
+		return
+	}
+	if payload.NextRunAt.IsZero() {
+		next, err := scheduler.Next(payload.Schedule, time.Now().UTC())
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if next.IsZero() {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("next_run_at is required for @once schedules"))
+			return
+		}
+		payload.NextRunAt = next
+	} else if _, err := scheduler.Next(payload.Schedule, payload.NextRunAt.Add(-time.Second)); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	job, err := h.store.CreateSharedSchedulerJob(r.Context(), db.SharedSchedulerJobSpec{
+		CustomerID: payload.CustomerID, JobKey: payload.JobKey, Title: payload.Title, JobType: payload.JobType, Schedule: payload.Schedule, Timezone: payload.Timezone,
+		NextRunAt: payload.NextRunAt, ExternalService: payload.ExternalService, FanoutAction: payload.FanoutAction, MessageTemplate: payload.MessageTemplate, RunInputTemplate: payload.RunInputTemplate, Metadata: payload.Metadata,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, job)
+}
+
+func (h *Handler) listSharedSchedulerJobs(w http.ResponseWriter, r *http.Request) {
+	customerID := r.URL.Query().Get("customer_id")
+	if customerID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id is required"))
+		return
+	}
+	jobs, err := h.store.ListSharedSchedulerJobs(r.Context(), customerID, queryLimit(r, 100))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"shared_scheduler_jobs": jobs})
+}
+
+func (h *Handler) updateSharedSchedulerJob(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		CustomerID       string         `json:"customer_id"`
+		Title            *string        `json:"title"`
+		JobType          *string        `json:"job_type"`
+		Schedule         *string        `json:"schedule"`
+		Timezone         *string        `json:"timezone"`
+		NextRunAt        time.Time      `json:"next_run_at"`
+		ExternalService  map[string]any `json:"external_service"`
+		FanoutAction     *string        `json:"fanout_action"`
+		MessageTemplate  *string        `json:"message_template"`
+		RunInputTemplate map[string]any `json:"run_input_template"`
+		Metadata         map[string]any `json:"metadata"`
+		Enabled          *bool          `json:"enabled"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if payload.CustomerID == "" || r.PathValue("job_id") == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("job_id and customer_id are required"))
+		return
+	}
+	if payload.FanoutAction != nil && !validSharedSchedulerFanoutAction(*payload.FanoutAction) {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("fanout_action must be outbound_intent or durable_run"))
+		return
+	}
+	if payload.Schedule != nil {
+		schedule := strings.TrimSpace(*payload.Schedule)
+		if schedule == "" {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("schedule cannot be empty"))
+			return
+		}
+		payload.Schedule = &schedule
+		if _, err := scheduler.Next(schedule, time.Now().UTC()); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if payload.NextRunAt.IsZero() {
+			next, _ := scheduler.Next(schedule, time.Now().UTC())
+			if next.IsZero() {
+				writeError(w, http.StatusBadRequest, fmt.Errorf("next_run_at is required for @once schedules"))
+				return
+			}
+			payload.NextRunAt = next
+		}
+	}
+	var nextRunAt *time.Time
+	if !payload.NextRunAt.IsZero() {
+		nextRunAt = &payload.NextRunAt
+	}
+	job, err := h.store.UpdateSharedSchedulerJob(r.Context(), r.PathValue("job_id"), payload.CustomerID, db.SharedSchedulerJobUpdate{
+		Title: payload.Title, JobType: payload.JobType, Schedule: payload.Schedule, Timezone: payload.Timezone, NextRunAt: nextRunAt,
+		ExternalService: payload.ExternalService, FanoutAction: payload.FanoutAction, MessageTemplate: payload.MessageTemplate, RunInputTemplate: payload.RunInputTemplate, Metadata: payload.Metadata, Enabled: payload.Enabled,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (h *Handler) deleteSharedSchedulerJob(w http.ResponseWriter, r *http.Request) {
+	customerID := r.URL.Query().Get("customer_id")
+	if customerID == "" || r.PathValue("job_id") == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("job_id and customer_id are required"))
+		return
+	}
+	if err := h.store.DeleteSharedSchedulerJob(r.Context(), r.PathValue("job_id"), customerID); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"job_id": r.PathValue("job_id"), "deleted": true})
+}
+
+func (h *Handler) createSharedSchedulerSubscription(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		CustomerID         string         `json:"customer_id"`
+		UserID             string         `json:"user_id"`
+		SharedJobID        string         `json:"shared_job_id"`
+		SessionID          string         `json:"session_id"`
+		AgentInstanceID    string         `json:"agent_instance_id"`
+		Enabled            *bool          `json:"enabled"`
+		SubscriberMetadata map[string]any `json:"subscriber_metadata"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if payload.CustomerID == "" || payload.UserID == "" || payload.SharedJobID == "" || payload.SessionID == "" || payload.AgentInstanceID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id, user_id, shared_job_id, session_id, and agent_instance_id are required"))
+		return
+	}
+	if !requireACPIdentityMatch(w, r, payload.CustomerID, payload.UserID) {
+		return
+	}
+	sub, err := h.store.CreateSharedSchedulerSubscription(r.Context(), db.SharedSchedulerSubscriptionSpec{
+		CustomerID: payload.CustomerID, UserID: payload.UserID, SharedJobID: payload.SharedJobID, SessionID: payload.SessionID, AgentInstanceID: payload.AgentInstanceID,
+		Enabled: payload.Enabled, SubscriberMetadata: payload.SubscriberMetadata,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, sub)
+}
+
+func (h *Handler) listUserSharedSchedulerSubscriptions(w http.ResponseWriter, r *http.Request) {
+	customerID := r.URL.Query().Get("customer_id")
+	userID := r.URL.Query().Get("user_id")
+	if customerID == "" || userID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id and user_id are required"))
+		return
+	}
+	if !requireACPIdentityMatch(w, r, customerID, userID) {
+		return
+	}
+	subs, err := h.store.ListSharedSchedulerSubscriptions(r.Context(), customerID, userID, r.URL.Query().Get("shared_job_id"), queryLimit(r, 100))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"shared_scheduler_subscriptions": subs})
+}
+
+func (h *Handler) updateSharedSchedulerSubscription(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		CustomerID         string         `json:"customer_id"`
+		UserID             string         `json:"user_id"`
+		SessionID          *string        `json:"session_id"`
+		AgentInstanceID    *string        `json:"agent_instance_id"`
+		SubscriberMetadata map[string]any `json:"subscriber_metadata"`
+		Enabled            *bool          `json:"enabled"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if payload.CustomerID == "" || payload.UserID == "" || r.PathValue("subscription_id") == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("subscription_id, customer_id, and user_id are required"))
+		return
+	}
+	if !requireACPIdentityMatch(w, r, payload.CustomerID, payload.UserID) {
+		return
+	}
+	sub, err := h.store.UpdateSharedSchedulerSubscription(r.Context(), r.PathValue("subscription_id"), payload.CustomerID, payload.UserID, db.SharedSchedulerSubscriptionUpdate{
+		SessionID: payload.SessionID, AgentInstanceID: payload.AgentInstanceID, SubscriberMetadata: payload.SubscriberMetadata, Enabled: payload.Enabled,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sub)
+}
+
+func (h *Handler) deleteSharedSchedulerSubscription(w http.ResponseWriter, r *http.Request) {
+	customerID := r.URL.Query().Get("customer_id")
+	userID := r.URL.Query().Get("user_id")
+	if customerID == "" || userID == "" || r.PathValue("subscription_id") == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("subscription_id, customer_id, and user_id are required"))
+		return
+	}
+	if !requireACPIdentityMatch(w, r, customerID, userID) {
+		return
+	}
+	if err := h.store.DeleteSharedSchedulerSubscription(r.Context(), r.PathValue("subscription_id"), customerID, userID); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"subscription_id": r.PathValue("subscription_id"), "deleted": true})
+}
+
+func validSharedSchedulerFanoutAction(action string) bool {
+	action = strings.TrimSpace(action)
+	return action == "" || action == "outbound_intent" || action == "durable_run"
 }
 
 func (h *Handler) listObservabilityEvents(w http.ResponseWriter, r *http.Request) {

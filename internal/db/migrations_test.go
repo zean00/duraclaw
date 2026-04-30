@@ -350,3 +350,25 @@ func TestFourteenthMigrationContainsRecommendations(t *testing.T) {
 		}
 	}
 }
+
+func TestEighteenthMigrationContainsSharedScheduler(t *testing.T) {
+	raw, err := migrationFS.ReadFile("migrations/0018_shared_scheduler.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw)
+	for _, want := range []string{
+		"CREATE TABLE IF NOT EXISTS shared_scheduler_jobs",
+		"CREATE TABLE IF NOT EXISTS shared_scheduler_subscriptions",
+		"CREATE TABLE IF NOT EXISTS shared_scheduler_fires",
+		"CREATE TABLE IF NOT EXISTS shared_scheduler_deliveries",
+		"shared_scheduler_jobs_claim_idx",
+		"shared_scheduler_deliveries_run_idx",
+		"CHECK (fanout_action IN ('outbound_intent','durable_run'))",
+		"UNIQUE (shared_job_id, scheduled_fire_at, user_id, action)",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("migration missing %q", want)
+		}
+	}
+}
