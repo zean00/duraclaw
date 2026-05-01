@@ -1,6 +1,6 @@
 # ACP and Admin API
 
-Duraclaw exposes ACP over HTTP for Nexus and admin HTTP routes for configuration and operations.
+Duraclaw exposes ACP over HTTP for [Nexus](https://github.com/zean00/nexus) and admin HTTP routes for configuration and operations.
 
 ## Required ACP Headers
 

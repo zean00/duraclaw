@@ -1,6 +1,6 @@
 # Duraclaw
 
-Duraclaw is an ACP-native durable agent runtime. It runs long-lived, resumable assistant work for many customers while Nexus owns channel adapters and delivery. The core agent loop is copied and adapted from PicoClaw; Duraclaw extends it with ACP-native durability, PostgreSQL persistence, workflows, policy, scheduling, outbound delivery, and multi-tenant runtime controls.
+Duraclaw is an ACP-native durable agent runtime. It runs long-lived, resumable assistant work for many customers while [Nexus](https://github.com/zean00/nexus) owns channel adapters and delivery. The core agent loop is copied and adapted from PicoClaw; Duraclaw extends it with ACP-native durability, PostgreSQL persistence, workflows, policy, scheduling, outbound delivery, and multi-tenant runtime controls.
 
 Duraclaw is responsible for:
 
@@ -11,7 +11,7 @@ Duraclaw is responsible for:
 - Reminders, cron fanout, background jobs, broadcasts, and outbound intents for Nexus.
 - Policy enforcement, observability, retention, and runtime quotas.
 
-Duraclaw does not contain direct Telegram, WhatsApp, email, or webchat adapters. Nexus translates channels into ACP HTTP calls and delivers outbound messages.
+Duraclaw does not contain direct Telegram, WhatsApp, email, or webchat adapters. [Nexus](https://github.com/zean00/nexus) translates channels into ACP HTTP calls and delivers outbound messages.
 
 ## System Boundary
 

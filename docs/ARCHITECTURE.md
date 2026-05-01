@@ -1,6 +1,6 @@
 # Duraclaw Architecture
 
-Duraclaw is an ACP-native personal assistant runtime designed to run durable, resumable agent work for many customers. It does not connect directly to chat channels. Nexus owns channel integrations and calls Duraclaw through ACP over HTTP.
+Duraclaw is an ACP-native personal assistant runtime designed to run durable, resumable agent work for many customers. It does not connect directly to chat channels. [Nexus](https://github.com/zean00/nexus) owns channel integrations and calls Duraclaw through ACP over HTTP.
 
 The core design goal is to make customer context, memory, tools, MCP calls, long-running work, reminders, and broadcast messages durable and auditable without requiring an external workflow engine such as Temporal.
 
