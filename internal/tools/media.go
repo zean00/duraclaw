@@ -54,7 +54,7 @@ func (s FileMediaBlobStore) StoreGeneratedMedia(ctx context.Context, artifactID,
 	checksum := "sha256:" + hex.EncodeToString(sum[:])
 	name := safeArtifactFilename(artifactID) + mediaExtension(mediaType)
 	path := filepath.Join(s.Directory, name)
-	if err := os.WriteFile(path, data, 0o640); err != nil {
+	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return "", 0, "", err
 	}
 	ref := strings.TrimRight(s.RefPrefix, "/")

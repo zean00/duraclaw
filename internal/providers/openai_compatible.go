@@ -150,7 +150,9 @@ func (p OpenAICompatibleProvider) chatRequest(ctx context.Context, messages []Me
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		var errPayload map[string]any
 		_ = json.NewDecoder(resp.Body).Decode(&errPayload)
-		resp.Body.Close()
+		if err := resp.Body.Close(); err != nil {
+			return nil, err
+		}
 		return nil, fmt.Errorf("openai-compatible provider status %d: %v", resp.StatusCode, errPayload)
 	}
 	return resp, nil
@@ -475,7 +477,9 @@ func (p OpenAICompatibleProvider) do(req *http.Request) (*http.Response, error) 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		var errPayload map[string]any
 		_ = json.NewDecoder(resp.Body).Decode(&errPayload)
-		resp.Body.Close()
+		if err := resp.Body.Close(); err != nil {
+			return nil, err
+		}
 		return nil, fmt.Errorf("openai-compatible provider status %d: %v", resp.StatusCode, errPayload)
 	}
 	return resp, nil
