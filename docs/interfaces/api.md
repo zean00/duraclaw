@@ -120,6 +120,28 @@ Agent instance config import/export:
 - `POST /admin/agent-instances/{agent_instance_id}/versions/import?format=json|yaml`
 - `GET /admin/agent-instances/{agent_instance_id}/versions/{version_id}/export?format=json|yaml`
 
+Admin knowledge routes:
+
+- `POST /admin/knowledge/text`
+- `GET /admin/knowledge/documents?customer_id={customer_id}&scope=customer|shared|all&limit=100`
+- `GET /admin/knowledge/documents/{document_id}/chunks?limit=100`
+- `DELETE /admin/knowledge/documents/{document_id}?customer_id={customer_id}`
+
+Knowledge ingestion request:
+
+```json
+{
+  "customer_id": "customer-1",
+  "scope": "shared",
+  "title": "Prayer time policy",
+  "source_ref": "manual:prayer-policy-v1",
+  "text": "Long knowledge text to chunk and retrieve later.",
+  "metadata": {"category": "religious_service"}
+}
+```
+
+Use `scope: "customer"` for customer-specific knowledge and `scope: "shared"` for knowledge retrievable by all customers. Listing accepts `scope=customer`, `scope=shared`, or `scope=all`; retrieval uses both current customer knowledge and shared knowledge.
+
 Admin recommendation routes:
 
 - `POST /admin/recommendations/items`
@@ -128,6 +150,28 @@ Admin recommendation routes:
 - `DELETE /admin/recommendations/items/{item_id}?customer_id={customer_id}`
 - `GET /admin/recommendations/decisions?customer_id={customer_id}`
 - `GET /admin/recommendations/jobs?customer_id={customer_id}`
+
+Recommendation item request:
+
+```json
+{
+  "customer_id": "customer-1",
+  "kind": "activity",
+  "title": "Family weekend class",
+  "description": "A kid-friendly weekend activity.",
+  "tags": ["family", "weekend"],
+  "url": "https://example.com/activity",
+  "priority": 10,
+  "sponsored": true,
+  "sponsor_name": "Example Partner",
+  "status": "active",
+  "valid_from": "2026-05-01T00:00:00Z",
+  "valid_until": "2026-06-01T00:00:00Z",
+  "metadata": {"city": "Jakarta"}
+}
+```
+
+Patch accepts the same fields as optional updates plus required `customer_id`. Decision and job routes are read-only audit/operations views for recommendation selection and timeout fallback processing.
 
 Manual session compaction:
 

@@ -92,6 +92,8 @@ Recommendation catalog items and audit logs are customer-scoped through:
 - `GET /admin/recommendations/decisions?customer_id={customer_id}`
 - `GET /admin/recommendations/jobs?customer_id={customer_id}`
 
+Catalog item fields include `kind`, `title`, `description`, `tags`, `url`, `priority`, `sponsored`, `sponsor_name`, `status`, `valid_from`, `valid_until`, and `metadata`. `decisions` records what the sidecar selected or skipped for a run. `jobs` exposes durable timeout fallback jobs created when inline recommendation selection did not finish before `timeout_ms`.
+
 ## Create a Version With a Profile
 
 ```bash

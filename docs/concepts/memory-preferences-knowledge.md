@@ -75,6 +75,15 @@ Knowledge is admin-managed content for retrieval:
 
 Knowledge chunks support text search and pgvector embeddings with dimension 768.
 
+Admin APIs manage both customer and shared knowledge:
+
+- `POST /admin/knowledge/text`
+- `GET /admin/knowledge/documents?customer_id={customer_id}&scope=customer|shared|all`
+- `GET /admin/knowledge/documents/{document_id}/chunks`
+- `DELETE /admin/knowledge/documents/{document_id}?customer_id={customer_id}`
+
+Set `scope` to `shared` when ingesting text that should be available across customers. Set `scope` to `customer` or omit it for customer-specific content. Runtime retrieval includes both the current customer's knowledge and shared knowledge.
+
 ## Idle Extraction
 
 The session monitor uses the configured provider as a JSON extractor to derive:
