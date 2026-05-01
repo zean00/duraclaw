@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -56,6 +57,23 @@ func TestRegistryConvertsNilParametersToObjectSchema(t *testing.T) {
 	defs := r.ToProviderDefs()
 	if len(defs) != 1 || defs[0].Function.Parameters["type"] != "object" {
 		t.Fatalf("defs=%#v", defs)
+	}
+}
+
+func TestReminderToolGuidanceDistinguishesFromRemember(t *testing.T) {
+	remember := RememberTool{}
+	reminder := CreateReminderTool{}
+	if !strings.Contains(remember.Description(), "use create_reminder instead") {
+		t.Fatalf("remember description should reject reminder-like requests: %q", remember.Description())
+	}
+	if !strings.Contains(reminder.Description(), "ingatkan saya") || !strings.Contains(reminder.Description(), "Do not use remember") {
+		t.Fatalf("create_reminder description should cover reminder phrasing: %q", reminder.Description())
+	}
+	params := reminder.Parameters()
+	props := params["properties"].(map[string]any)
+	title := props["title"].(map[string]any)
+	if !strings.Contains(title["description"].(string), "bawa tas hitam") {
+		t.Fatalf("title guidance should preserve Indonesian reminder text: %#v", title)
 	}
 }
 

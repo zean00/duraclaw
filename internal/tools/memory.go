@@ -20,14 +20,14 @@ type RememberTool struct {
 
 func (RememberTool) Name() string { return "remember" }
 func (RememberTool) Description() string {
-	return "Persist a stable user fact for future context, such as family, work, home, or other facts that rarely change."
+	return "Persist a stable user fact for future context, such as family, work, home, or facts that rarely change. Do not use for reminders, alarms, scheduled tasks, or requests like 'ingatkan saya'; use create_reminder instead."
 }
 func (RememberTool) Retryable() bool { return false }
 func (RememberTool) Parameters() map[string]any {
 	return map[string]any{
 		"properties": map[string]any{
-			"type":    map[string]any{"type": "string"},
-			"content": map[string]any{"type": "string"},
+			"type":    map[string]any{"type": "string", "description": "Stable memory type, usually fact."},
+			"content": map[string]any{"type": "string", "description": "Stable fact to remember permanently. Not a reminder request or scheduled task."},
 		},
 		"required":             []any{"content"},
 		"additionalProperties": false,

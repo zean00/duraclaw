@@ -22,7 +22,7 @@ type CreateReminderTool struct {
 func (CreateReminderTool) Name() string { return "create_reminder" }
 
 func (CreateReminderTool) Description() string {
-	return "Create a user reminder subscription and return a reminder reference artifact that can be used to pause, resume, update, or delete it."
+	return "Create a scheduled reminder/alarm for the current user and return a reminder reference artifact. Use this for 'remind me', 'ingatkan saya', 'besok pagi jam 7', alarms, cron-like notifications, and future scheduled tasks. Do not use remember for these."
 }
 
 func (CreateReminderTool) Retryable() bool { return false }
@@ -31,11 +31,11 @@ func (CreateReminderTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"title":       map[string]any{"type": "string"},
-			"schedule":    map[string]any{"type": "string", "description": "Cron expression or @once."},
-			"timezone":    map[string]any{"type": "string"},
-			"payload":     map[string]any{"type": "object"},
-			"next_run_at": map[string]any{"type": "string", "description": "RFC3339 due time. Required for @once; optional for cron schedules."},
+			"title":       map[string]any{"type": "string", "description": "Human-readable reminder text, for example 'bawa tas hitam ke sekolah anak'."},
+			"schedule":    map[string]any{"type": "string", "description": "Cron expression or @once. Use @once for a single future reminder."},
+			"timezone":    map[string]any{"type": "string", "description": "User timezone when known, for example Asia/Jakarta."},
+			"payload":     map[string]any{"type": "object", "description": "Optional run input for the future reminder. Omit when title is enough; the scheduler will use the title as reminder text."},
+			"next_run_at": map[string]any{"type": "string", "description": "RFC3339 due time. Required for @once; optional for cron schedules. Example: tomorrow 7 AM converted to an absolute timestamp."},
 			"metadata":    map[string]any{"type": "object"},
 		},
 		"required":             []any{"schedule"},
