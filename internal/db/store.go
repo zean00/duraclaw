@@ -166,12 +166,13 @@ type SchedulerJobUpdate struct {
 }
 
 type OutboxItem struct {
-	ID          int64           `json:"id"`
-	Topic       string          `json:"topic"`
-	Payload     json.RawMessage `json:"payload"`
-	AvailableAt time.Time       `json:"available_at"`
-	ClaimedAt   *time.Time      `json:"claimed_at,omitempty"`
-	ClaimOwner  *string         `json:"claim_owner,omitempty"`
+	ID             int64           `json:"id"`
+	Topic          string          `json:"topic"`
+	Payload        json.RawMessage `json:"payload"`
+	AvailableAt    time.Time       `json:"available_at"`
+	ClaimedAt      *time.Time      `json:"claimed_at,omitempty"`
+	ClaimOwner     *string         `json:"claim_owner,omitempty"`
+	ClaimExpiresAt *time.Time      `json:"claim_expires_at,omitempty"`
 }
 
 type ToolCallRecord struct {
@@ -1294,16 +1295,16 @@ func (s *Store) ClaimOutbox(ctx context.Context, owner string, limit int) ([]Out
 			FROM async_outbox
 			WHERE completed_at IS NULL
 			AND available_at <= now()
-			AND claimed_at IS NULL
+			AND (claim_expires_at IS NULL OR claim_expires_at < now())
 			ORDER BY id
 			FOR UPDATE SKIP LOCKED
 			LIMIT $1
 		)
 		UPDATE async_outbox o
-		SET claimed_at=now(), claim_owner=$2
+		SET claimed_at=now(), claim_owner=$2, claim_expires_at=now()+interval '5 minutes'
 		FROM candidate
 		WHERE o.id=candidate.id
-		RETURNING o.id, o.topic, o.payload, o.available_at, o.claimed_at, o.claim_owner`, limit, owner)
+		RETURNING o.id, o.topic, o.payload, o.available_at, o.claimed_at, o.claim_owner, o.claim_expires_at`, limit, owner)
 	if err != nil {
 		return nil, err
 	}
@@ -1311,7 +1312,7 @@ func (s *Store) ClaimOutbox(ctx context.Context, owner string, limit int) ([]Out
 	var items []OutboxItem
 	for rows.Next() {
 		var item OutboxItem
-		if err := rows.Scan(&item.ID, &item.Topic, &item.Payload, &item.AvailableAt, &item.ClaimedAt, &item.ClaimOwner); err != nil {
+		if err := rows.Scan(&item.ID, &item.Topic, &item.Payload, &item.AvailableAt, &item.ClaimedAt, &item.ClaimOwner, &item.ClaimExpiresAt); err != nil {
 			return nil, err
 		}
 		items = append(items, item)
@@ -1319,18 +1320,44 @@ func (s *Store) ClaimOutbox(ctx context.Context, owner string, limit int) ([]Out
 	return items, rows.Err()
 }
 
-func (s *Store) ReleaseOutbox(ctx context.Context, id int64, delay time.Duration) error {
-	availableAt := time.Now().UTC().Add(delay)
-	_, err := s.pool.Exec(ctx, `
+func (s *Store) ExtendOutboxClaim(ctx context.Context, id int64, owner string, leaseFor time.Duration) (bool, error) {
+	if leaseFor <= 0 {
+		leaseFor = 5 * time.Minute
+	}
+	tag, err := s.pool.Exec(ctx, `
 		UPDATE async_outbox
-		SET claimed_at=NULL, claim_owner=NULL, available_at=$2
-		WHERE id=$1 AND completed_at IS NULL`, id, availableAt)
-	return err
+		SET claim_expires_at=now()+$3::interval
+		WHERE id=$1 AND claim_owner=$2 AND completed_at IS NULL`, id, owner, fmt.Sprintf("%f seconds", leaseFor.Seconds()))
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
 }
 
-func (s *Store) CompleteOutbox(ctx context.Context, id int64) error {
-	_, err := s.pool.Exec(ctx, `UPDATE async_outbox SET completed_at=now() WHERE id=$1`, id)
-	return err
+func (s *Store) ReleaseOutbox(ctx context.Context, id int64, owner string, delay time.Duration) error {
+	availableAt := time.Now().UTC().Add(delay)
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE async_outbox
+		SET claimed_at=NULL, claim_owner=NULL, claim_expires_at=NULL, available_at=$3
+		WHERE id=$1 AND claim_owner=$2 AND completed_at IS NULL`, id, owner, availableAt)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("outbox item %d is not claimed by %q", id, owner)
+	}
+	return nil
+}
+
+func (s *Store) CompleteOutbox(ctx context.Context, id int64, owner string) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE async_outbox SET completed_at=now() WHERE id=$1 AND claim_owner=$2`, id, owner)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("outbox item %d is not claimed by %q", id, owner)
+	}
+	return nil
 }
 
 func (s *Store) AddObservabilityEvent(ctx context.Context, customerID, runID, eventType string, payload any) error {

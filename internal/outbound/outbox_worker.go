@@ -11,8 +11,9 @@ import (
 
 type OutboxStore interface {
 	ClaimOutbox(ctx context.Context, owner string, limit int) ([]db.OutboxItem, error)
-	ReleaseOutbox(ctx context.Context, id int64, delay time.Duration) error
-	CompleteOutbox(ctx context.Context, id int64) error
+	ExtendOutboxClaim(ctx context.Context, id int64, owner string, leaseFor time.Duration) (bool, error)
+	ReleaseOutbox(ctx context.Context, id int64, owner string, delay time.Duration) error
+	CompleteOutbox(ctx context.Context, id int64, owner string) error
 }
 
 type Sink interface {
@@ -31,6 +32,7 @@ type OutboxWorker struct {
 	owner      string
 	limit      int
 	retryDelay time.Duration
+	leaseFor   time.Duration
 	counters   *observability.Counters
 }
 
@@ -38,7 +40,7 @@ func NewOutboxWorker(store OutboxStore, sink Sink, owner string) *OutboxWorker {
 	if owner == "" {
 		owner = "duraclaw-outbox"
 	}
-	return &OutboxWorker{store: store, sink: sink, owner: owner, limit: 50, retryDelay: 30 * time.Second}
+	return &OutboxWorker{store: store, sink: sink, owner: owner, limit: 50, retryDelay: 30 * time.Second, leaseFor: 5 * time.Minute}
 }
 
 func (w *OutboxWorker) WithCounters(counters *observability.Counters) *OutboxWorker {
@@ -82,15 +84,18 @@ func (w *OutboxWorker) runBatch(ctx context.Context, sink BatchSink, items []db.
 			}
 			continue
 		}
-		if err := sink.HandleBatch(ctx, group.topic, group.items); err != nil {
+		stopHeartbeat := w.startHeartbeat(ctx, group.items)
+		err := sink.HandleBatch(ctx, group.topic, group.items)
+		stopHeartbeat()
+		if err != nil {
 			for _, item := range group.items {
-				_ = w.store.ReleaseOutbox(context.Background(), item.ID, w.retryDelay)
+				_ = w.store.ReleaseOutbox(context.Background(), item.ID, w.owner, w.retryDelay)
 			}
 			w.inc("outbox_failed")
 			return completed, err
 		}
 		for _, item := range group.items {
-			if err := w.store.CompleteOutbox(ctx, item.ID); err != nil {
+			if err := w.store.CompleteOutbox(ctx, item.ID, w.owner); err != nil {
 				return completed, err
 			}
 			completed++
@@ -103,18 +108,49 @@ func (w *OutboxWorker) runBatch(ctx context.Context, sink BatchSink, items []db.
 func (w *OutboxWorker) runSingleItems(ctx context.Context, items []db.OutboxItem) (int, error) {
 	completed := 0
 	for _, item := range items {
-		if err := w.sink.Handle(ctx, item); err != nil {
-			_ = w.store.ReleaseOutbox(context.Background(), item.ID, w.retryDelay)
+		stopHeartbeat := w.startHeartbeat(ctx, []db.OutboxItem{item})
+		err := w.sink.Handle(ctx, item)
+		stopHeartbeat()
+		if err != nil {
+			_ = w.store.ReleaseOutbox(context.Background(), item.ID, w.owner, w.retryDelay)
 			w.inc("outbox_failed")
 			return completed, err
 		}
-		if err := w.store.CompleteOutbox(ctx, item.ID); err != nil {
+		if err := w.store.CompleteOutbox(ctx, item.ID, w.owner); err != nil {
 			return completed, err
 		}
 		completed++
 		w.inc("outbox_completed")
 	}
 	return completed, nil
+}
+
+func (w *OutboxWorker) startHeartbeat(ctx context.Context, items []db.OutboxItem) func() {
+	if len(items) == 0 {
+		return func() {}
+	}
+	interval := w.leaseFor / 3
+	if interval <= 0 {
+		interval = time.Minute
+	}
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				for _, item := range items {
+					_, _ = w.store.ExtendOutboxClaim(ctx, item.ID, w.owner, w.leaseFor)
+				}
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return func() { close(done) }
 }
 
 func batchSinkSupportsAnyTopic(sink BatchSink, items []db.OutboxItem) bool {

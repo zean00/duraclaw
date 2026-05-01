@@ -45,6 +45,12 @@ The worker persists:
 
 Run creation uses `(customer_id, session_id, idempotency_key)` to prevent duplicate work. Scheduler and reminder jobs use deterministic idempotency keys based on the job/subscription and scheduled fire time.
 
+## Multi-Instance Execution
+
+Multiple Duraclaw instances can process the same database. A run is claimed by atomically selecting a queued row with `FOR UPDATE SKIP LOCKED` and updating its lease owner/expiry. The claim query also refuses to pick a run when another run for the same `(customer_id, session_id)` is active, so one session has at most one active pipeline across all instances.
+
+If an instance crashes while a run is `leased`, `running`, or `running_workflow`, a later worker resets the expired lease back to `queued` and another instance can resume. `awaiting_user` is intentionally not recovered as a crash; it is waiting for user input.
+
 ## Rapid Follow-Up Refinement
 
 Duraclaw serializes runs per session and also handles rapid follow-up messages without sending stale replies. When a run starts processing, it opens a two-second interrupt window. If Nexus submits another message for the same session during that window, `POST /acp/runs` persists it as a deferred message and returns:

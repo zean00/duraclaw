@@ -237,6 +237,24 @@ func TestTwentiethMigrationContainsBuiltInToolAccess(t *testing.T) {
 	}
 }
 
+func TestTwentyFirstMigrationContainsOutboxClaimLeases(t *testing.T) {
+	raw, err := migrationFS.ReadFile("migrations/0021_outbox_claim_leases.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw)
+	for _, want := range []string{
+		"ALTER TABLE async_outbox ADD COLUMN IF NOT EXISTS claim_expires_at",
+		"SET claim_expires_at=claimed_at + interval '5 minutes'",
+		"async_outbox_claim_lease_idx",
+		"completed_at, available_at, claim_expires_at",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("migration missing %q", want)
+		}
+	}
+}
+
 func TestEighthMigrationContainsSummariesAndBackgroundSchema(t *testing.T) {
 	raw, err := migrationFS.ReadFile("migrations/0008_summaries_and_background.sql")
 	if err != nil {

@@ -217,7 +217,10 @@ func TestStoreOutboxRetryPostgres(t *testing.T) {
 	if len(items) == 0 || items[0].ID != id || items[0].ClaimOwner == nil || *items[0].ClaimOwner != "owner" {
 		t.Fatalf("items=%#v id=%d", items, id)
 	}
-	if err := store.ReleaseOutbox(ctx, id, -time.Second); err != nil {
+	if ok, err := store.ExtendOutboxClaim(ctx, id, "owner", time.Minute); err != nil || !ok {
+		t.Fatalf("extend outbox ok=%v err=%v", ok, err)
+	}
+	if err := store.ReleaseOutbox(ctx, id, "owner", -time.Second); err != nil {
 		t.Fatal(err)
 	}
 	items, err = store.ClaimOutbox(ctx, "owner-2", 10)

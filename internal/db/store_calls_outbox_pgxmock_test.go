@@ -96,18 +96,23 @@ func TestStoreOutboxAndObservabilityWithPgxMock(t *testing.T) {
 		t.Fatalf("id=%d err=%v", id, err)
 	}
 	mock.ExpectQuery("UPDATE async_outbox").WithArgs(50, owner).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "topic", "payload", "available_at", "claimed_at", "claim_owner"}).
-			AddRow(int64(9), "topic", []byte(`{}`), now, &now, &owner))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "topic", "payload", "available_at", "claimed_at", "claim_owner", "claim_expires_at"}).
+			AddRow(int64(9), "topic", []byte(`{}`), now, &now, &owner, &now))
 	items, err := store.ClaimOutbox(ctx, owner, 0)
 	if err != nil || len(items) != 1 {
 		t.Fatalf("items=%#v err=%v", items, err)
 	}
-	mock.ExpectExec("UPDATE async_outbox").WithArgs(int64(9), pgxmock.AnyArg()).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	if err := store.ReleaseOutbox(ctx, 9, time.Minute); err != nil {
+	mock.ExpectExec("UPDATE async_outbox").WithArgs(int64(9), owner, "300.000000 seconds").WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	ok, err := store.ExtendOutboxClaim(ctx, 9, owner, 5*time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("extended=%v err=%v", ok, err)
+	}
+	mock.ExpectExec("UPDATE async_outbox").WithArgs(int64(9), owner, pgxmock.AnyArg()).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	if err := store.ReleaseOutbox(ctx, 9, owner, time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	mock.ExpectExec("UPDATE async_outbox").WithArgs(int64(9)).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	if err := store.CompleteOutbox(ctx, 9); err != nil {
+	mock.ExpectExec("UPDATE async_outbox").WithArgs(int64(9), owner).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	if err := store.CompleteOutbox(ctx, 9, owner); err != nil {
 		t.Fatal(err)
 	}
 

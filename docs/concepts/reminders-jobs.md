@@ -28,6 +28,8 @@ X-Idempotency-Key
 
 Reminder subscriptions are durable cron-like subscriptions. `schedule` accepts cron expressions or `@once`. If `next_run_at` is omitted, Duraclaw computes the next fire time from `schedule`.
 
+Reminder workers are multi-instance safe. Due subscriptions are claimed with PostgreSQL row locks and expiring leases. Each fire creates a durable run with a deterministic idempotency key derived from the subscription and scheduled fire time, so a retry after worker crash reuses the same run instead of creating a duplicate.
+
 Routes:
 
 - `POST /acp/reminders`
@@ -101,6 +103,8 @@ Patch body supports these user-owned fields:
 
 Shared scheduler jobs are customer-level jobs that evaluate a subscriber set on each schedule tick. They are useful when many users subscribe to one logical reminder, but actual eligibility depends on external data such as location-specific prayer times.
 
+Shared scheduler workers are also multi-instance safe. The shared job row is claimed with an expiring lease; per-fire records are unique by `(shared_job_id, scheduled_fire_at)`, and fanout deliveries are unique by `(shared_job_id, scheduled_fire_at, user_id, action)`. If a worker crashes mid-fanout, later ticks can retry after lease/stale-processing expiry, and already-created delivery rows are skipped by the database uniqueness constraints.
+
 Admin job routes:
 
 - `POST /admin/shared-scheduler/jobs`
@@ -144,6 +148,8 @@ Example shared prayer job:
 The scheduler posts job context to `external_service`. It only includes active subscriber records when `include_subscribers` is explicitly `true`; keep this disabled for large subscriber sets and have the external service return eligible Duraclaw `user_id`s instead. The response mapping can read user IDs from a list path such as `users` or `result.users`, from object keys, or from object values. A missing mapped user-list path falls back to all active subscribers; a present-but-empty mapped list selects no recipients. If no external service is configured, the job also fans out to all active subscribers.
 
 `fanout_action` controls execution cost. `outbound_intent` creates one direct message intent per selected subscriber. `durable_run` creates one durable agent run per selected `agent_instance_id`, not one run per subscriber; the run input contains the selected subscriber list so the agent can generate a profile-consistent shared reminder. When that durable run completes, the shared scheduler claims the completed run result and creates one outbound intent per selected subscriber. The reminder system remains responsible for subscriber outbox fanout.
+
+For `durable_run`, the durable run itself does not send subscriber outbox messages directly. The shared scheduler claims the completed run delivery and creates one outbound intent per selected subscriber. Completed delivery fanout uses row locks plus stale `processing` recovery so another instance can finish fanout if a scheduler process crashes after claiming the completed run.
 
 Example subscription:
 

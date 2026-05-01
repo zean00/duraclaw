@@ -367,7 +367,7 @@ func (s *Store) ClaimCompletedSharedSchedulerRunDeliveries(ctx context.Context, 
 			FROM shared_scheduler_deliveries d
 			JOIN runs r ON r.id=d.run_id
 			WHERE d.action='durable_run'
-			AND d.status='pending'
+			AND (d.status='pending' OR (d.status='processing' AND d.updated_at < now() - interval '5 minutes'))
 			AND r.state='completed'
 			ORDER BY d.created_at
 			FOR UPDATE SKIP LOCKED

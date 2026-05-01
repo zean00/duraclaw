@@ -46,16 +46,29 @@ Run trace output ties together run steps, model calls, tool calls, MCP calls, ar
 
 ## Workers and Leases
 
-Duraclaw uses PostgreSQL leases and `FOR UPDATE SKIP LOCKED` for:
+Duraclaw is safe to run as multiple instances against one shared PostgreSQL database. PostgreSQL is the coordination layer; do not add per-process queues or in-memory locks around durable work.
+
+Duraclaw uses PostgreSQL row locks, leases, and `FOR UPDATE SKIP LOCKED` for:
 
 - Run claiming.
 - Scheduler jobs.
 - Reminder subscriptions.
+- Shared scheduler jobs.
+- Shared scheduler durable-run delivery fanout.
 - Async writes.
 - Outbound outbox rows.
 - Idle session monitoring.
 
-If a worker exits, expired leases are recovered by later ticks.
+Runs are additionally serialized per `(customer_id, session_id)`: a queued run is not claimable while another run in that session is `leased`, `running`, `running_workflow`, or `awaiting_user`. Different sessions can run concurrently across instances.
+
+If a worker exits, expired run, scheduler, reminder, shared-scheduler, async-write, recommendation, and session-monitor leases are recovered by later ticks. Outbound outbox claims also have a database lease that the outbox worker renews while a sink call is active; rows are only reclaimed after that lease expires. Shared-scheduler durable-run fanout uses stale-claim recovery for rows left in processing state after a crash.
+
+Operational caveats:
+
+- All instances must use the same database and migrations.
+- Use stable, distinct worker owner names (`HOSTNAME` is used by default) for observability.
+- Recovery is not instant; it happens after the configured lease or stale-claim window expires.
+- External side-effecting tools and MCP servers should be idempotent when possible because a crash after an external side effect but before local completion can cause a recovered run to retry.
 
 ## Retention
 

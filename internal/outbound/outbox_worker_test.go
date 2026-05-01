@@ -13,29 +13,43 @@ type fakeOutboxStore struct {
 	items     []db.OutboxItem
 	completed []int64
 	released  []int64
+	extended  []int64
 }
 
 func (s *fakeOutboxStore) ClaimOutbox(context.Context, string, int) ([]db.OutboxItem, error) {
 	return s.items, nil
 }
 
-func (s *fakeOutboxStore) CompleteOutbox(_ context.Context, id int64) error {
+func (s *fakeOutboxStore) ExtendOutboxClaim(_ context.Context, id int64, _ string, _ time.Duration) (bool, error) {
+	s.extended = append(s.extended, id)
+	return true, nil
+}
+
+func (s *fakeOutboxStore) CompleteOutbox(_ context.Context, id int64, _ string) error {
 	s.completed = append(s.completed, id)
 	return nil
 }
 
-func (s *fakeOutboxStore) ReleaseOutbox(_ context.Context, id int64, _ time.Duration) error {
+func (s *fakeOutboxStore) ReleaseOutbox(_ context.Context, id int64, _ string, _ time.Duration) error {
 	s.released = append(s.released, id)
 	return nil
 }
 
 type fakeSink struct {
-	err error
-	ids []int64
+	err   error
+	ids   []int64
+	delay time.Duration
 }
 
-func (s *fakeSink) Handle(_ context.Context, item db.OutboxItem) error {
+func (s *fakeSink) Handle(ctx context.Context, item db.OutboxItem) error {
 	s.ids = append(s.ids, item.ID)
+	if s.delay > 0 {
+		select {
+		case <-time.After(s.delay):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	return s.err
 }
 
@@ -94,6 +108,20 @@ func TestOutboxWorkerStopsOnSinkError(t *testing.T) {
 	count, err := NewOutboxWorker(store, sink, "owner").RunOnce(context.Background())
 	if err == nil || count != 0 || len(store.completed) != 0 || len(store.released) != 1 {
 		t.Fatalf("count=%d err=%v store=%#v", count, err, store)
+	}
+}
+
+func TestOutboxWorkerExtendsClaimDuringSlowSink(t *testing.T) {
+	store := &fakeOutboxStore{items: []db.OutboxItem{{ID: 1}}}
+	sink := &fakeSink{delay: 35 * time.Millisecond}
+	worker := NewOutboxWorker(store, sink, "owner")
+	worker.leaseFor = 15 * time.Millisecond
+	count, err := worker.RunOnce(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || len(store.extended) == 0 {
+		t.Fatalf("count=%d extended=%#v", count, store.extended)
 	}
 }
 

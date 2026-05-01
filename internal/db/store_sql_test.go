@@ -15,9 +15,25 @@ func TestStoreClaimQueriesUseSkipLocked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sql := string(raw) + string(remindersRaw)
-	if strings.Count(sql, "FOR UPDATE SKIP LOCKED") < 4 {
-		t.Fatalf("expected run, scheduler, outbox, and reminder subscription claim queries to use FOR UPDATE SKIP LOCKED")
+	sharedRaw, err := os.ReadFile("shared_scheduler.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw) + string(remindersRaw) + string(sharedRaw)
+	for _, want := range []string{
+		"ClaimDueReminderSubscriptions",
+		"ClaimDueSharedSchedulerJobs",
+		"ClaimCompletedSharedSchedulerRunDeliveries",
+		"FOR UPDATE SKIP LOCKED",
+		"lease_expires_at < now()",
+		"d.status='processing' AND d.updated_at < now() - interval '5 minutes'",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("claim SQL missing %q", want)
+		}
+	}
+	if strings.Count(sql, "FOR UPDATE SKIP LOCKED") < 6 {
+		t.Fatalf("expected run, scheduler, outbox, reminder, shared scheduler, and delivery claim queries to use FOR UPDATE SKIP LOCKED")
 	}
 }
 
@@ -159,10 +175,13 @@ func TestStoreCanReleaseOutboxForRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	sql := string(raw)
-	for _, want := range []string{"ReleaseOutbox", "claimed_at=NULL", "available_at=$2"} {
+	for _, want := range []string{"ReleaseOutbox", "ExtendOutboxClaim", "claim_expires_at=now()+$3::interval", "claimed_at=NULL", "claim_expires_at=NULL", "available_at=$3", "claim_owner=$2", "RowsAffected() == 0"} {
 		if !strings.Contains(sql, want) {
 			t.Fatalf("store missing %q", want)
 		}
+	}
+	if !strings.Contains(sql, "claim_expires_at < now()") {
+		t.Fatal("outbox claim should recover expired claims after worker crashes")
 	}
 }
 
