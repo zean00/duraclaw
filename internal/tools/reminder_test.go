@@ -78,6 +78,24 @@ func TestCreateReminderToolRejectsPastNextRunAt(t *testing.T) {
 	}
 }
 
+func TestCreateReminderToolAllowsNearFutureNextRunAt(t *testing.T) {
+	store := &fakeReminderStore{}
+	next := time.Now().UTC().Add(10 * time.Second).Format(time.RFC3339)
+	result := (CreateReminderTool{Store: store}).Execute(context.Background(), ExecutionContext{
+		CustomerID: "c1", UserID: "u1", SessionID: "s1", AgentInstanceID: "a1",
+	}, map[string]any{
+		"title":       "quick reminder",
+		"schedule":    "@once",
+		"next_run_at": next,
+	})
+	if result.IsError {
+		t.Fatalf("near-future reminders should be allowed: %#v", result)
+	}
+	if store.spec.NextRunAt.IsZero() {
+		t.Fatalf("spec=%#v", store.spec)
+	}
+}
+
 func TestCreateReminderToolKeepsPayloadEmptyForTitleFallback(t *testing.T) {
 	store := &fakeReminderStore{}
 	result := (CreateReminderTool{Store: store}).Execute(context.Background(), ExecutionContext{
