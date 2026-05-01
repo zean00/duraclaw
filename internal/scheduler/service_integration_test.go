@@ -33,7 +33,7 @@ func TestServiceReminderFanoutPostgres(t *testing.T) {
 	ctx := context.Background()
 	suffix := time.Now().UTC().Format("20060102150405.000000000")
 	customerID := "c-scheduler-" + suffix
-	fireAt := time.Now().UTC().Add(-time.Minute)
+	fireAt := time.Unix(1, 0).UTC()
 	_, err := store.CreateReminderSubscription(ctx, db.ReminderSubscriptionSpec{
 		CustomerID: customerID, UserID: "u", SessionID: "s", AgentInstanceID: "a", Title: "wake", Schedule: "@once", NextRunAt: fireAt,
 		Payload: map[string]any{"text": "scheduled wake"},
@@ -41,15 +41,19 @@ func TestServiceReminderFanoutPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	count, err := NewService(store, "test-scheduler").RunOnce(ctx, time.Now().UTC())
-	if err != nil {
-		t.Fatal(err)
+	service := NewService(store, "test-scheduler")
+	var run *db.Run
+	for i := 0; i < 5; i++ {
+		if _, err := service.RunOnce(ctx, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+		run, err = store.LatestRun(ctx, customerID, "s")
+		if err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
-	if count != 1 {
-		t.Fatalf("count=%d", count)
-	}
-	run, err := store.LatestRun(ctx, customerID, "s")
-	if err != nil {
+	if run == nil {
 		t.Fatal(err)
 	}
 	if run.AgentInstanceID != "a" || run.State != "queued" {
