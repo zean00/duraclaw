@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"duraclaw/internal/db"
@@ -40,6 +41,12 @@ func TestRememberTool(t *testing.T) {
 	if res.IsError || store.addedContent != "likes tea" {
 		t.Fatalf("res=%#v store=%#v", res, store)
 	}
+	if len(res.Artifacts) != 1 || res.Artifacts[0].Type != "memory_reference" || res.Artifacts[0].ID != "mem-1" {
+		t.Fatalf("artifacts=%#v", res.Artifacts)
+	}
+	if !strings.Contains(res.ForLLM, `"memory_reference"`) || res.Artifacts[0].Data["update_api"] != "PUT /admin/memories/mem-1" {
+		t.Fatalf("res=%#v", res)
+	}
 }
 
 func TestListMemoriesTool(t *testing.T) {
@@ -58,6 +65,12 @@ func TestSavePreferenceTool(t *testing.T) {
 	})
 	if res.IsError || store.addedPreference != "prefers ice cream" || store.addedCondition["season"] != "summer" {
 		t.Fatalf("res=%#v store=%#v", res, store)
+	}
+	if len(res.Artifacts) != 1 || res.Artifacts[0].Type != "preference_reference" || res.Artifacts[0].ID != "pref-1" {
+		t.Fatalf("artifacts=%#v", res.Artifacts)
+	}
+	if !strings.Contains(res.ForLLM, `"preference_reference"`) || res.Artifacts[0].Data["delete_api"] != "DELETE /admin/preferences/pref-1" {
+		t.Fatalf("res=%#v", res)
 	}
 }
 

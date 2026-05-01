@@ -77,6 +77,16 @@ func TestReminderToolGuidanceDistinguishesFromRemember(t *testing.T) {
 	}
 }
 
+func TestRememberRejectsReminderLikeContent(t *testing.T) {
+	res := RememberTool{Store: &fakeMemoryStore{}}.Execute(context.Background(), ExecutionContext{}, map[string]any{
+		"type":    "reminder",
+		"content": "Ingatkan aku besok jam 7 pagi",
+	})
+	if res == nil || !res.IsError || !strings.Contains(res.ForLLM, "create_reminder") {
+		t.Fatalf("expected reminder-like memory rejection, got %#v", res)
+	}
+}
+
 func TestRegistryRetryableDefaults(t *testing.T) {
 	r := NewRegistry()
 	r.Register(testTool{name: "echo"})

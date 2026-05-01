@@ -68,6 +68,16 @@ func TestCreateReminderToolRequiresNextRunAtForOnce(t *testing.T) {
 	}
 }
 
+func TestCreateReminderToolRejectsPastNextRunAt(t *testing.T) {
+	result := (CreateReminderTool{Store: &fakeReminderStore{}}).Execute(context.Background(), ExecutionContext{}, map[string]any{
+		"schedule":    "@once",
+		"next_run_at": "2024-04-28T08:00:00+07:00",
+	})
+	if !result.IsError || !strings.Contains(result.ForLLM, "must be in the future") {
+		t.Fatalf("result=%#v", result)
+	}
+}
+
 func TestCreateReminderToolKeepsPayloadEmptyForTitleFallback(t *testing.T) {
 	store := &fakeReminderStore{}
 	result := (CreateReminderTool{Store: store}).Execute(context.Background(), ExecutionContext{

@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"duraclaw/internal/db"
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -43,11 +44,29 @@ func (t RememberTool) Execute(ctx context.Context, exec ExecutionContext, args m
 		memoryType = "fact"
 	}
 	content, _ := args["content"].(string)
+	if isReminderLikeMemory(memoryType, content) {
+		return ErrorResult("remember is only for stable user facts. Use create_reminder for reminder, alarm, and scheduled notification requests.")
+	}
 	id, err := t.Store.AddMemory(ctx, exec.CustomerID, exec.UserID, exec.SessionID, memoryType, content, map[string]any{"run_id": exec.RunID})
 	if err != nil {
 		return ErrorResult(err.Error())
 	}
-	return NewResult("memory saved: " + id)
+	ref := memoryReference(exec, id, memoryType, content)
+	raw, _ := json.Marshal(map[string]any{
+		"status":           "created",
+		"memory_reference": ref,
+	})
+	return &Result{ForLLM: string(raw), Artifacts: []Reference{ref}}
+}
+
+func isReminderLikeMemory(memoryType, content string) bool {
+	text := strings.ToLower(strings.TrimSpace(memoryType + " " + content))
+	for _, token := range []string{"reminder", "pengingat", "ingatkan", "remind me", "alarm", "scheduled task", "notifikasi terjadwal"} {
+		if strings.Contains(text, token) {
+			return true
+		}
+	}
+	return false
 }
 
 type SavePreferenceTool struct {
@@ -85,7 +104,50 @@ func (t SavePreferenceTool) Execute(ctx context.Context, exec ExecutionContext, 
 	if err != nil {
 		return ErrorResult(err.Error())
 	}
-	return NewResult("preference saved: " + id)
+	ref := preferenceReference(exec, id, category, content, condition)
+	raw, _ := json.Marshal(map[string]any{
+		"status":               "created",
+		"preference_reference": ref,
+	})
+	return &Result{ForLLM: string(raw), Artifacts: []Reference{ref}}
+}
+
+func memoryReference(exec ExecutionContext, id, memoryType, content string) Reference {
+	return Reference{
+		Type: "memory_reference",
+		ID:   id,
+		Data: map[string]any{
+			"reference_type":     "memory",
+			"memory_id":          id,
+			"customer_id":        exec.CustomerID,
+			"user_id":            exec.UserID,
+			"session_id":         exec.SessionID,
+			"memory_type":        memoryType,
+			"content":            content,
+			"update_api":         "PUT /admin/memories/" + id,
+			"delete_api":         "DELETE /admin/memories/" + id,
+			"current_request_id": exec.RequestID,
+		},
+	}
+}
+
+func preferenceReference(exec ExecutionContext, id, category, content string, condition map[string]any) Reference {
+	data := map[string]any{
+		"reference_type":     "preference",
+		"preference_id":      id,
+		"customer_id":        exec.CustomerID,
+		"user_id":            exec.UserID,
+		"session_id":         exec.SessionID,
+		"category":           category,
+		"content":            content,
+		"update_api":         "PUT /admin/preferences/" + id,
+		"delete_api":         "DELETE /admin/preferences/" + id,
+		"current_request_id": exec.RequestID,
+	}
+	if len(condition) > 0 {
+		data["condition"] = condition
+	}
+	return Reference{Type: "preference_reference", ID: id, Data: data}
 }
 
 type ListMemoriesTool struct {

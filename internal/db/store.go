@@ -527,6 +527,16 @@ func (s *Store) InsertMessage(ctx context.Context, customerID, sessionID, runID,
 	return id, err
 }
 
+func (s *Store) FinalMessageContent(ctx context.Context, runID string) (json.RawMessage, error) {
+	var content json.RawMessage
+	err := s.pool.QueryRow(ctx, `
+		SELECT m.content
+		FROM runs r
+		JOIN messages m ON m.id = r.final_message_id
+		WHERE r.id = $1`, runID).Scan(&content)
+	return content, err
+}
+
 func (s *Store) RecentMessages(ctx context.Context, customerID, sessionID string, limit int) ([]Message, error) {
 	if limit <= 0 {
 		limit = 12
@@ -964,6 +974,31 @@ func (s *Store) CompleteToolCall(ctx context.Context, callID, runID string, resu
 		_ = s.AddObservabilityEvent(ctx, "", runID, "tool."+state, payload)
 	}
 	return err
+}
+
+func (s *Store) ToolArtifactsForRun(ctx context.Context, runID string) ([]map[string]any, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT result->'artifacts'
+		FROM tool_calls
+		WHERE run_id=$1 AND state='succeeded' AND jsonb_typeof(result->'artifacts')='array'
+		ORDER BY created_at ASC`, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []map[string]any{}
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var items []map[string]any
+		if err := json.Unmarshal(raw, &items); err != nil {
+			continue
+		}
+		out = append(out, items...)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) CompletedNonRetryableToolCalls(ctx context.Context, runID string) ([]ToolCallRecord, error) {

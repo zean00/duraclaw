@@ -652,6 +652,14 @@ func (w *Worker) emitFinalOutbound(ctx context.Context, run *db.Run, messageID, 
 	if w.outbound == nil {
 		return nil
 	}
+	var artifacts []map[string]any
+	if w.store != nil {
+		var err error
+		artifacts, err = w.store.ToolArtifactsForRun(ctx, run.ID)
+		if err != nil {
+			return err
+		}
+	}
 	_, _, err := w.outbound.Emit(ctx, outbound.Intent{
 		CustomerID: run.CustomerID,
 		UserID:     run.UserID,
@@ -662,6 +670,7 @@ func (w *Worker) emitFinalOutbound(ctx context.Context, run *db.Run, messageID, 
 			"message_id": messageID,
 			"text":       text,
 			"parts":      []map[string]any{{"type": "text", "text": text}},
+			"artifacts":  artifacts,
 		},
 	})
 	return err
@@ -1083,6 +1092,7 @@ func (w *Worker) providerMessages(ctx context.Context, run *db.Run, currentText 
 	if channelContext := w.channelPromptContext(ctx, run); channelContext != "" {
 		promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: channelContext})
 	}
+	promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: currentTimePromptContext(time.Now())})
 	if locationContext := locationPromptContext(run.Input); locationContext != "" {
 		promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: locationContext})
 	}
@@ -2226,7 +2236,11 @@ func (w *Worker) channelPromptContext(ctx context.Context, run *db.Run) string {
 }
 
 func (w *Worker) trustedRuntimeContext(ctx context.Context, run *db.Run) string {
-	return strings.Join(nonEmptyStrings(w.channelPromptContext(ctx, run), locationPromptContext(run.Input)), "\n\n")
+	return strings.Join(nonEmptyStrings(w.channelPromptContext(ctx, run), currentTimePromptContext(time.Now()), locationPromptContext(run.Input)), "\n\n")
+}
+
+func currentTimePromptContext(now time.Time) string {
+	return "Trusted runtime time context: current time is " + now.Format(time.RFC3339) + " (" + now.Location().String() + "). Convert relative dates such as today, tomorrow, and next week from this timestamp, and never create scheduled reminders in the past."
 }
 
 type locationContext struct {

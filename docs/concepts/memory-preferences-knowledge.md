@@ -50,6 +50,8 @@ Examples:
 
 Memory writes are policy-controlled and can be created by tools, workflows, admin APIs, or idle extraction.
 
+When the model-loop `remember` tool writes a memory, the tool result includes a `memory_reference` artifact with the memory ID plus admin update/delete route references.
+
 ## Preferences
 
 Preferences are user choices that may be conditional.
@@ -61,6 +63,8 @@ Examples:
 - “Prefers short responses during work hours.”
 
 Preferences include a `condition` JSON object. Prompt context includes only preferences that match the current context, such as season, month, or hour.
+
+When the model-loop `save_preference` tool writes a preference, the tool result includes a `preference_reference` artifact with the preference ID plus admin update/delete route references.
 
 ## Knowledge
 

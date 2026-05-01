@@ -439,8 +439,8 @@ The persistence layer also includes:
 - Latest session transfer note included in model context after reassignment.
 - Context compaction for bounded prompt history.
 - Artifact attachment/read/process policy checks for size, allowed media types, raw payload metadata fields, and representation reuse in prompt context.
-- Memory tools: `remember` and `list_memories` for stable facts.
-- Preference tools: `save_preference` and `list_preferences` for conditional preferences.
+- Memory tools: `remember` and `list_memories` for stable facts; `remember` returns a `memory_reference` artifact with the memory ID and admin update/delete API references.
+- Preference tools: `save_preference` and `list_preferences` for conditional preferences; `save_preference` returns a `preference_reference` artifact with the preference ID and admin update/delete API references.
 - Reminder tool: `create_reminder` creates a user reminder and returns a `reminder_reference` artifact containing the subscription ID and pause/resume/delete API references.
 - Non-retryable tool metadata for write-like tools, with recovery query helpers.
 - Admin text knowledge ingestion into deterministic chunks.

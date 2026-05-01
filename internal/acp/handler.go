@@ -2533,7 +2533,7 @@ func (h *Handler) runStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, fmt.Errorf("run not found"))
 		return
 	}
-	writeJSON(w, http.StatusOK, run)
+	writeJSON(w, http.StatusOK, h.acpRunResponse(r.Context(), run))
 }
 
 func (h *Handler) runTrace(w http.ResponseWriter, r *http.Request) {
@@ -2740,7 +2740,7 @@ func (h *Handler) latest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, run)
+	writeJSON(w, http.StatusOK, h.acpRunResponse(r.Context(), run))
 }
 
 func (h *Handler) byKey(w http.ResponseWriter, r *http.Request) {
@@ -2753,7 +2753,51 @@ func (h *Handler) byKey(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, run)
+	writeJSON(w, http.StatusOK, h.acpRunResponse(r.Context(), run))
+}
+
+func (h *Handler) acpRunResponse(ctx context.Context, run *db.Run) map[string]any {
+	raw, _ := json.Marshal(run)
+	var out map[string]any
+	_ = json.Unmarshal(raw, &out)
+	out["status"] = run.State
+	if run.State == "completed" {
+		if content, err := h.store.FinalMessageContent(ctx, run.ID); err == nil {
+			if text := messageContentText(content); text != "" {
+				out["output"] = text
+			}
+		}
+	}
+	return out
+}
+
+func messageContentText(content json.RawMessage) string {
+	var payload map[string]any
+	if err := json.Unmarshal(content, &payload); err != nil {
+		return ""
+	}
+	if text, _ := payload["text"].(string); strings.TrimSpace(text) != "" {
+		return strings.TrimSpace(text)
+	}
+	if text, _ := payload["content"].(string); strings.TrimSpace(text) != "" {
+		return strings.TrimSpace(text)
+	}
+	if parts, _ := payload["parts"].([]any); len(parts) > 0 {
+		var b strings.Builder
+		for _, part := range parts {
+			item, _ := part.(map[string]any)
+			text, _ := item["text"].(string)
+			if strings.TrimSpace(text) == "" {
+				continue
+			}
+			if b.Len() > 0 {
+				b.WriteString("\n")
+			}
+			b.WriteString(strings.TrimSpace(text))
+		}
+		return b.String()
+	}
+	return ""
 }
 
 func requiredContext(w http.ResponseWriter, r *http.Request, requireIdempotency bool) (db.ACPContext, bool) {

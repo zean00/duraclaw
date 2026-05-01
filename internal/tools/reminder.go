@@ -55,6 +55,9 @@ func (t CreateReminderTool) Execute(ctx context.Context, exec ExecutionContext, 
 	if err != nil {
 		return ErrorResult(err.Error())
 	}
+	if !nextRunAt.IsZero() && !nextRunAt.After(time.Now().Add(30*time.Second)) {
+		return ErrorResult("next_run_at must be in the future. Ask the user for a future reminder time or retry with a future absolute timestamp.")
+	}
 	payload := objectArg(args, "payload")
 	metadata := objectArg(args, "metadata")
 	metadata["created_by"] = "create_reminder"
