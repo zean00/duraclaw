@@ -187,8 +187,9 @@ type ToolCallRecord struct {
 }
 
 type Store struct {
-	pool           Pool
-	mcpAccessCache sync.Map
+	pool            Pool
+	mcpAccessCache  sync.Map
+	toolAccessCache sync.Map
 }
 
 func NewStore(pool Pool) *Store { return &Store{pool: pool} }
@@ -988,6 +989,15 @@ func (s *Store) CompletedNonRetryableToolCalls(ctx context.Context, runID string
 func (s *Store) ToolCallCount(ctx context.Context, runID string) (int, error) {
 	var count int
 	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM tool_calls WHERE run_id=$1`, runID).Scan(&count)
+	return count, err
+}
+
+func (s *Store) ToolExecutionCount(ctx context.Context, runID string) (int, error) {
+	var count int
+	err := s.pool.QueryRow(ctx, `
+		SELECT
+			(SELECT count(*) FROM tool_calls WHERE run_id=$1) +
+			(SELECT count(*) FROM mcp_calls WHERE run_id=$1)`, runID).Scan(&count)
 	return count, err
 }
 

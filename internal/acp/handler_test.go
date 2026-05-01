@@ -373,6 +373,57 @@ func TestAdminMCPToolsCanBeFilteredByAccessRule(t *testing.T) {
 	}
 }
 
+func TestAdminToolAccessRoutes(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	store := db.NewStore(mock)
+	now := time.Now().UTC()
+	handler := NewHandler(store).Routes()
+
+	mock.ExpectExec("INSERT INTO customers").WithArgs("c1").WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("INSERT INTO agent_instances").WithArgs("c1", "a1").WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("INSERT INTO users").WithArgs("c1", "u1").WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectQuery("INSERT INTO tool_access_rules").
+		WithArgs("c1", "a1", "u1", []byte(`["remember"]`), []byte(`["echo"]`), []byte(`{}`)).
+		WillReturnRows(pgxmock.NewRows([]string{"customer_id", "agent_instance_id", "user_id", "allowed_tools", "denied_tools", "metadata", "updated_at"}).
+			AddRow("c1", "a1", "u1", []byte(`["remember"]`), []byte(`["echo"]`), []byte(`{}`), now))
+	req := httptest.NewRequest(http.MethodPut, "/admin/tool-access/customers/c1/agent-instances/a1/users/u1", strings.NewReader(`{"allowed_tools":["remember"],"denied_tools":["echo"]}`))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"remember"`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	mock.ExpectQuery("FROM tool_access_rules").
+		WithArgs("c1", "a1", "u1").
+		WillReturnRows(pgxmock.NewRows([]string{"customer_id", "agent_instance_id", "user_id", "allowed_tools", "denied_tools", "metadata", "updated_at"}).
+			AddRow("c1", "a1", "u1", []byte(`["remember"]`), []byte(`["echo"]`), []byte(`{}`), now))
+	mock.ExpectQuery("FROM tool_access_rules").
+		WithArgs("c1", "a1", "u1").
+		WillReturnRows(pgxmock.NewRows([]string{"customer_id", "agent_instance_id", "user_id", "allowed_tools", "denied_tools", "metadata", "updated_at"}).
+			AddRow("c1", "a1", "u1", []byte(`["remember"]`), []byte(`["echo"]`), []byte(`{}`), now))
+	req = httptest.NewRequest(http.MethodGet, "/admin/tool-access/customers/c1/agent-instances/a1/users/u1", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"source":"user"`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	mock.ExpectExec("DELETE FROM tool_access_rules").WithArgs("c1", "a1", "u1").WillReturnResult(pgxmock.NewResult("DELETE", 1))
+	req = httptest.NewRequest(http.MethodDelete, "/admin/tool-access/customers/c1/agent-instances/a1/users/u1", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestMCPNotificationRequiresContext(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/admin/mcp/notifications", strings.NewReader(`{"server_name":"srv"}`))
 	rec := httptest.NewRecorder()

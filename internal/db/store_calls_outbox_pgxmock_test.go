@@ -68,6 +68,11 @@ func TestStoreArtifactAndCallHelpersWithPgxMock(t *testing.T) {
 	if err != nil || count != 3 {
 		t.Fatalf("count=%d err=%v", count, err)
 	}
+	mock.ExpectQuery("SELECT").WithArgs("run-1").WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(4))
+	executions, err := store.ToolExecutionCount(ctx, "run-1")
+	if err != nil || executions != 4 {
+		t.Fatalf("executions=%d err=%v", executions, err)
+	}
 
 	if StableArgsHash("t", map[string]any{"b": 2, "a": []any{jsonRaw(`{"z":1}`)}}) == "" {
 		t.Fatal("expected stable hash")

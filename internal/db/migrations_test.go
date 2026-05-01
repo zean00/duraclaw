@@ -218,6 +218,25 @@ func TestSeventeenthMigrationContainsUserQuotasAndUsage(t *testing.T) {
 	}
 }
 
+func TestTwentiethMigrationContainsBuiltInToolAccess(t *testing.T) {
+	raw, err := migrationFS.ReadFile("migrations/0020_builtin_tool_access.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw)
+	for _, want := range []string{
+		"CREATE TABLE IF NOT EXISTS tool_access_rules",
+		"allowed_tools jsonb NOT NULL DEFAULT '[]'::jsonb",
+		"denied_tools jsonb NOT NULL DEFAULT '[]'::jsonb",
+		"PRIMARY KEY (customer_id, agent_instance_id, user_id)",
+		"tool_access_rules_customer_agent_idx",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("migration missing %q", want)
+		}
+	}
+}
+
 func TestEighthMigrationContainsSummariesAndBackgroundSchema(t *testing.T) {
 	raw, err := migrationFS.ReadFile("migrations/0008_summaries_and_background.sql")
 	if err != nil {

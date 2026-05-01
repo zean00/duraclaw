@@ -108,6 +108,7 @@ Supported part types include `text`, `artifact_ref`, `location`, `structured_dat
 - Observability events.
 - Outbound intents, broadcasts, and delivery status.
 - Background runs.
+- Built-in tool access rules by customer, agent instance, and user.
 - MCP server discovery and notifications.
 - MCP tool access rules by customer, agent instance, user, and server.
 - Retention cleanup.
@@ -126,6 +127,29 @@ Admin recommendation routes:
 - `DELETE /admin/recommendations/items/{item_id}?customer_id={customer_id}`
 - `GET /admin/recommendations/decisions?customer_id={customer_id}`
 - `GET /admin/recommendations/jobs?customer_id={customer_id}`
+
+Built-in tool access routes:
+
+- `PUT /admin/tool-access/customers/{customer_id}/agent-instances/{agent_instance_id}`
+- `GET /admin/tool-access/customers/{customer_id}/agent-instances/{agent_instance_id}`
+- `DELETE /admin/tool-access/customers/{customer_id}/agent-instances/{agent_instance_id}`
+- `PUT /admin/tool-access/customers/{customer_id}/agent-instances/{agent_instance_id}/users/{user_id}`
+- `GET /admin/tool-access/customers/{customer_id}/agent-instances/{agent_instance_id}/users/{user_id}`
+- `DELETE /admin/tool-access/customers/{customer_id}/agent-instances/{agent_instance_id}/users/{user_id}`
+
+Payload:
+
+```json
+{
+  "allowed_tools": ["remember", "list_memories", "duraclaw.run_workflow"],
+  "denied_tools": ["echo", "duraclaw.generate_video"],
+  "metadata": {}
+}
+```
+
+If no rule exists, built-in tools follow the agent instance version `tool_config`. A customer/agent rule narrows the baseline for that agent instance. A user rule replaces the customer/agent rule for that user. `denied_tools` wins over `allowed_tools`; when `allowed_tools` is empty, every built-in tool is allowed except denied tools.
+
+`tool_config.max_tool_calls_per_run` applies to both built-in tools and directly exposed MCP function tools.
 
 ## Outbound Status
 

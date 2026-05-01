@@ -275,7 +275,7 @@ func TestStoreCanLoadCompletedNonRetryableToolCalls(t *testing.T) {
 		t.Fatal(err)
 	}
 	sql := string(raw)
-	for _, want := range []string{"CompletedNonRetryableToolCalls", "retryable=false", "completed_at IS NOT NULL", "args_hash", "ToolCallCount", "SELECT count(*) FROM tool_calls WHERE run_id=$1"} {
+	for _, want := range []string{"CompletedNonRetryableToolCalls", "retryable=false", "completed_at IS NOT NULL", "args_hash", "ToolCallCount", "ToolExecutionCount", "SELECT count(*) FROM tool_calls WHERE run_id=$1", "SELECT count(*) FROM mcp_calls WHERE run_id=$1"} {
 		if !strings.Contains(sql, want) {
 			t.Fatalf("store missing %q", want)
 		}

@@ -30,7 +30,9 @@ func TestWorkerPassesCountersToAllWorkflowExecutors(t *testing.T) {
 		t.Fatal(err)
 	}
 	src := string(raw)
-	if strings.Count(src, "workflow.NewExecutor(w.store)") != strings.Count(src, "WithCounters(w.counters)") {
+	workflowCounters := strings.Count(src, "WithMCP(mcpManager).\n\t\tWithCounters(w.counters)") +
+		strings.Count(src, "WithMCP(mcpManager).\n\t\t\tWithCounters(w.counters)")
+	if strings.Count(src, "workflow.NewExecutor(w.store)") != workflowCounters {
 		t.Fatalf("every workflow executor path should receive counters")
 	}
 }
@@ -78,7 +80,7 @@ func TestWorkerAppliesVersionRuntimeConfig(t *testing.T) {
 		"mcpToolManifest",
 		"maxIterationsForRun",
 		"maxToolCallsForRun",
-		"ToolCallCount",
+		"ToolExecutionCount",
 		"plannedToolExecutions",
 		"recordModelUsage",
 		"WithAsyncWriter",

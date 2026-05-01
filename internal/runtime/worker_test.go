@@ -5,11 +5,16 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"duraclaw/internal/db"
+	"duraclaw/internal/mcp"
 	"duraclaw/internal/outbound"
 	"duraclaw/internal/providers"
 	"duraclaw/internal/tools"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/pashagolub/pgxmock/v4"
 )
 
 func TestExtractTextFromContentParts(t *testing.T) {
@@ -248,6 +253,97 @@ func TestInternalToolDefinitionsAndPlanning(t *testing.T) {
 	if got := w.plannedToolExecutions(registry, completed, calls); got != 2 {
 		t.Fatalf("planned=%d", got)
 	}
+}
+
+func TestMCPProviderToolNameIsSafeAndStable(t *testing.T) {
+	got := mcpProviderToolName("Prayer Tools", "search-times.v1")
+	if !strings.HasPrefix(got, "mcp__prayer_tools__search_times_v1__") {
+		t.Fatalf("name=%q", got)
+	}
+	if len(got) > 64 {
+		t.Fatalf("name too long: %d", len(got))
+	}
+	if got != mcpProviderToolName("Prayer Tools", "search-times.v1") {
+		t.Fatal("name should be stable")
+	}
+}
+
+func TestMCPToolDefinitionsRespectAccessRules(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(mock.Close)
+	store := db.NewStore(mock)
+	manager := mcp.NewManager()
+	manager.Register("srv", fakeMCPClient{tools: []mcp.ToolInfo{
+		{Name: "search", Description: "Search records", InputSchema: map[string]any{"properties": map[string]any{"q": map[string]any{"type": "string"}}}},
+		{Name: "delete", Description: "Delete records"},
+	}})
+	w := NewWorkerWithProviders(store, nil, providers.ModelConfig{Primary: "mock/duraclaw"}, "test")
+	w.SetMCPManager(manager)
+	run := &db.Run{ID: "run-1", CustomerID: "c1", AgentInstanceID: "a1", UserID: "u1"}
+
+	mock.ExpectQuery("SELECT customer_id").WithArgs("c1", "a1", "u1", "srv").WillReturnError(pgx.ErrNoRows)
+	mock.ExpectQuery("SELECT customer_id").WithArgs("c1", "a1", "", "srv").
+		WillReturnRows(pgxmock.NewRows([]string{"customer_id", "agent_instance_id", "user_id", "server_name", "allowed_tools", "denied_tools", "metadata", "updated_at"}).
+			AddRow("c1", "a1", "", "srv", []byte(`["search"]`), []byte(`[]`), []byte(`{}`), time.Now()))
+	mock.ExpectQuery("FROM tool_access_rules").WithArgs("c1", "a1", "u1").WillReturnError(pgx.ErrNoRows)
+	mock.ExpectQuery("FROM tool_access_rules").WithArgs("c1", "a1", "").WillReturnError(pgx.ErrNoRows)
+
+	defs, err := w.toolDefinitions(context.Background(), run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for _, def := range defs {
+		names[def.Function.Name] = true
+		if strings.Contains(def.Function.Description, "srv.search") && def.Function.Parameters["type"] != "object" {
+			t.Fatalf("schema not normalized: %#v", def.Function.Parameters)
+		}
+	}
+	if !names[mcpProviderToolName("srv", "search")] {
+		t.Fatalf("allowed MCP tool not exposed: %#v", names)
+	}
+	if names[mcpProviderToolName("srv", "delete")] {
+		t.Fatalf("denied-by-allowlist MCP tool exposed: %#v", names)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestToolAllowedForRunAppliesUserToolAccessWithoutVersionToolConfig(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(mock.Close)
+	store := db.NewStore(mock)
+	w := NewWorkerWithProviders(store, nil, providers.ModelConfig{Primary: "mock/duraclaw"}, "test")
+	run := &db.Run{ID: "run-1", CustomerID: "c1", AgentInstanceID: "a1", UserID: "u1"}
+
+	mock.ExpectQuery("FROM tool_access_rules").WithArgs("c1", "a1", "u1").
+		WillReturnRows(pgxmock.NewRows([]string{"customer_id", "agent_instance_id", "user_id", "allowed_tools", "denied_tools", "metadata", "updated_at"}).
+			AddRow("c1", "a1", "u1", []byte(`["remember"]`), []byte(`["echo"]`), []byte(`{}`), time.Now()))
+	if err := w.toolAllowedForRun(context.Background(), run, "echo"); err == nil || !strings.Contains(err.Error(), "not allowed") {
+		t.Fatalf("expected access denial, got %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type fakeMCPClient struct {
+	tools []mcp.ToolInfo
+}
+
+func (c fakeMCPClient) CallTool(context.Context, mcp.ExecutionContext, string, string, map[string]any) (map[string]any, error) {
+	return map[string]any{"ok": true}, nil
+}
+
+func (c fakeMCPClient) ListTools(context.Context, mcp.ExecutionContext, string) ([]mcp.ToolInfo, error) {
+	return c.tools, nil
 }
 
 type nonRetryableTool struct {

@@ -1643,6 +1643,85 @@ func (h *Handler) cancelUserBackgroundRun(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]any{"id": r.PathValue("run_id"), "state": "cancelled"})
 }
 
+func (h *Handler) upsertCustomerToolAccess(w http.ResponseWriter, r *http.Request) {
+	h.upsertToolAccess(w, r, "")
+}
+
+func (h *Handler) upsertUserToolAccess(w http.ResponseWriter, r *http.Request) {
+	h.upsertToolAccess(w, r, r.PathValue("user_id"))
+}
+
+func (h *Handler) getCustomerToolAccess(w http.ResponseWriter, r *http.Request) {
+	h.getToolAccess(w, r, "")
+}
+
+func (h *Handler) getUserToolAccess(w http.ResponseWriter, r *http.Request) {
+	h.getToolAccess(w, r, r.PathValue("user_id"))
+}
+
+func (h *Handler) deleteCustomerToolAccess(w http.ResponseWriter, r *http.Request) {
+	h.deleteToolAccess(w, r, "")
+}
+
+func (h *Handler) deleteUserToolAccess(w http.ResponseWriter, r *http.Request) {
+	h.deleteToolAccess(w, r, r.PathValue("user_id"))
+}
+
+func (h *Handler) upsertToolAccess(w http.ResponseWriter, r *http.Request, userID string) {
+	if h.store == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("store is not configured"))
+		return
+	}
+	var payload struct {
+		AllowedTools []string       `json:"allowed_tools"`
+		DeniedTools  []string       `json:"denied_tools"`
+		Metadata     map[string]any `json:"metadata"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	rule, err := h.store.UpsertToolAccessRule(r.Context(), db.ToolAccessRule{
+		CustomerID: r.PathValue("customer_id"), AgentInstanceID: r.PathValue("agent_instance_id"), UserID: userID,
+		AllowedTools: payload.AllowedTools, DeniedTools: payload.DeniedTools, Metadata: rawJSON(payload.Metadata),
+	})
+	if err != nil {
+		writeError(w, statusForError(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rule)
+}
+
+func (h *Handler) getToolAccess(w http.ResponseWriter, r *http.Request, userID string) {
+	if h.store == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("store is not configured"))
+		return
+	}
+	rule, err := h.store.ToolAccessRule(r.Context(), r.PathValue("customer_id"), r.PathValue("agent_instance_id"), userID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	effective, err := h.store.EffectiveToolAccess(r.Context(), r.PathValue("customer_id"), r.PathValue("agent_instance_id"), userID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"rule": rule, "effective": effective})
+}
+
+func (h *Handler) deleteToolAccess(w http.ResponseWriter, r *http.Request, userID string) {
+	if h.store == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("store is not configured"))
+		return
+	}
+	if err := h.store.DeleteToolAccessRule(r.Context(), r.PathValue("customer_id"), r.PathValue("agent_instance_id"), userID); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": true})
+}
+
 func (h *Handler) listMCPServers(w http.ResponseWriter, r *http.Request) {
 	if h.mcpManager == nil {
 		writeJSON(w, http.StatusOK, map[string]any{"servers": []mcp.ServerStatus{}})

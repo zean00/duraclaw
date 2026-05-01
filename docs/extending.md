@@ -34,6 +34,8 @@ A tool should define:
 
 Write-like tools should be non-retryable unless they have an idempotency key or are otherwise safe to repeat.
 
+Built-in tool exposure is controlled in two layers. Agent instance version `tool_config` can set `allowed_tools` and `disabled_tools` for versioned behavior. Admin tool access rules can then narrow tools per customer/agent instance or per user through `/admin/tool-access/...`; user rules replace the customer/agent baseline, and denied tools win over allowed tools.
+
 ## Add an MCP Server
 
 Prefer MCP for external tool surfaces. Configure globally with `DURACLAW_MCP_CONFIG` or per agent instance version with `mcp_config`.

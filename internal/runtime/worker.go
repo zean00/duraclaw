@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"sort"
 	"strconv"
 	"strings"
@@ -1087,13 +1088,6 @@ func (w *Worker) providerMessages(ctx context.Context, run *db.Run, currentText 
 	if knowledgeContext != "" {
 		promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: knowledgeContext})
 	}
-	mcpManifest, err := w.mcpToolManifest(ctx, run)
-	if err != nil {
-		return nil, err
-	}
-	if mcpManifest != "" {
-		promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: mcpManifest})
-	}
 	transferNote, err := w.sessionTransferNote(ctx, run)
 	if err != nil {
 		return nil, err
@@ -1934,23 +1928,30 @@ func (w *Worker) toolRegistryForRun(ctx context.Context, run *db.Run) (*tools.Re
 
 func (w *Worker) toolAllowedForRun(ctx context.Context, run *db.Run, name string) error {
 	version, err := w.store.AgentInstanceVersion(ctx, run.AgentInstanceVersionID)
-	if err != nil || version == nil || len(version.ToolConfig) == 0 {
+	if err != nil {
 		return err
 	}
-	var cfg struct {
-		AllowedTools  []string `json:"allowed_tools"`
-		DisabledTools []string `json:"disabled_tools"`
+	if version != nil && len(version.ToolConfig) > 0 {
+		var cfg struct {
+			AllowedTools  []string `json:"allowed_tools"`
+			DisabledTools []string `json:"disabled_tools"`
+		}
+		if err := json.Unmarshal(version.ToolConfig, &cfg); err != nil {
+			return err
+		}
+		allowed := stringSet(cfg.AllowedTools)
+		disabled := stringSet(cfg.DisabledTools)
+		if disabled[name] {
+			return fmt.Errorf("tool %q disabled by agent instance version", name)
+		}
+		if len(allowed) > 0 && !allowed[name] {
+			return fmt.Errorf("tool %q not allowed by agent instance version", name)
+		}
 	}
-	if err := json.Unmarshal(version.ToolConfig, &cfg); err != nil {
-		return err
-	}
-	allowed := stringSet(cfg.AllowedTools)
-	disabled := stringSet(cfg.DisabledTools)
-	if disabled[name] {
-		return fmt.Errorf("tool %q disabled by agent instance version", name)
-	}
-	if len(allowed) > 0 && !allowed[name] {
-		return fmt.Errorf("tool %q not allowed by agent instance version", name)
+	if w.store != nil && strings.TrimSpace(run.CustomerID) != "" && strings.TrimSpace(run.AgentInstanceID) != "" {
+		if err := w.store.CheckToolAccess(ctx, run.CustomerID, run.AgentInstanceID, run.UserID, name); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -2404,9 +2405,18 @@ func (w *Worker) toolDefinitions(ctx context.Context, run *db.Run) ([]providers.
 	if toolRegistry != nil {
 		defs = append(defs, toolRegistry.ToProviderDefs()...)
 	}
+	mcpBindings, mcpDefs, err := w.mcpToolBindings(ctx, run)
+	if err != nil {
+		return nil, err
+	}
+	defs = append(defs, mcpDefs...)
 	internal := internalToolDefinitions()
 	filtered := make([]providers.ToolDefinition, 0, len(defs)+len(internal))
 	for _, def := range append(defs, internal...) {
+		if _, ok := mcpBindings[def.Function.Name]; ok {
+			filtered = append(filtered, def)
+			continue
+		}
 		if err := w.toolAllowedForRun(ctx, run, def.Function.Name); err == nil {
 			filtered = append(filtered, def)
 		}
@@ -2419,6 +2429,120 @@ type toolExecutionResult struct {
 	Content    string
 }
 
+type mcpToolBinding struct {
+	FunctionName string
+	ServerName   string
+	ToolName     string
+	Tool         mcp.ToolInfo
+}
+
+func (w *Worker) mcpToolBindings(ctx context.Context, run *db.Run) (map[string]mcpToolBinding, []providers.ToolDefinition, error) {
+	if w == nil || w.store == nil || run == nil || strings.TrimSpace(run.CustomerID) == "" || strings.TrimSpace(run.AgentInstanceID) == "" {
+		return nil, nil, nil
+	}
+	manager, err := w.mcpManagerForRun(ctx, run)
+	if err != nil || manager == nil {
+		return nil, nil, err
+	}
+	traceCtx := w.runTraceContext(ctx, run.ID)
+	channelCtx := w.runChannelContext(ctx, run.ID)
+	bindings := map[string]mcpToolBinding{}
+	defs := []providers.ToolDefinition{}
+	for _, status := range manager.Statuses() {
+		discoveryCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		tools, err := manager.ListTools(discoveryCtx, mcp.ExecutionContext{
+			CustomerID: run.CustomerID, UserID: run.UserID, AgentInstanceID: run.AgentInstanceID, SessionID: run.SessionID, RunID: run.ID, RequestID: run.RequestID,
+			ChannelType: channelCtx.ChannelType, ChannelUserID: channelCtx.ChannelUserID, ChannelConvID: channelCtx.ChannelConversationID,
+			TraceID: traceCtx.TraceID, TraceParent: traceCtx.TraceParent,
+		}, status.Name)
+		cancel()
+		if err != nil {
+			continue
+		}
+		access, err := w.store.EffectiveMCPToolAccess(ctx, run.CustomerID, run.AgentInstanceID, run.UserID, status.Name)
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, tool := range tools {
+			tool.Name = strings.TrimSpace(tool.Name)
+			if tool.Name == "" || !db.MCPToolAllowed(access, tool.Name) {
+				continue
+			}
+			functionName := mcpProviderToolName(status.Name, tool.Name)
+			binding := mcpToolBinding{FunctionName: functionName, ServerName: status.Name, ToolName: tool.Name, Tool: tool}
+			bindings[functionName] = binding
+			defs = append(defs, mcpToolDefinition(binding))
+		}
+	}
+	sort.Slice(defs, func(i, j int) bool { return defs[i].Function.Name < defs[j].Function.Name })
+	return bindings, defs, nil
+}
+
+func mcpProviderToolName(serverName, toolName string) string {
+	base := "mcp__" + providerToolNamePart(serverName) + "__" + providerToolNamePart(toolName)
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte(strings.TrimSpace(serverName) + "\x00" + strings.TrimSpace(toolName)))
+	suffix := fmt.Sprintf("__%08x", hash.Sum32())
+	if len(base)+len(suffix) > 64 {
+		base = strings.TrimRight(base[:64-len(suffix)], "_")
+	}
+	return base + suffix
+}
+
+func providerToolNamePart(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var b strings.Builder
+	lastUnderscore := false
+	for _, r := range value {
+		ok := r >= 'a' && r <= 'z' || r >= '0' && r <= '9'
+		if ok {
+			b.WriteRune(r)
+			lastUnderscore = false
+			continue
+		}
+		if !lastUnderscore {
+			b.WriteByte('_')
+			lastUnderscore = true
+		}
+	}
+	out := strings.Trim(b.String(), "_")
+	if out == "" {
+		return "tool"
+	}
+	return out
+}
+
+func mcpToolDefinition(binding mcpToolBinding) providers.ToolDefinition {
+	description := strings.TrimSpace(binding.Tool.Description)
+	if description == "" {
+		description = "Call MCP tool " + binding.ServerName + "." + binding.ToolName + "."
+	} else {
+		description = "MCP " + binding.ServerName + "." + binding.ToolName + ": " + description
+	}
+	return providers.ToolDefinition{
+		Type: "function",
+		Function: providers.ToolFunctionDefinition{
+			Name:        binding.FunctionName,
+			Description: description,
+			Parameters:  normalizeMCPInputSchema(binding.Tool.InputSchema),
+		},
+	}
+}
+
+func normalizeMCPInputSchema(schema map[string]any) map[string]any {
+	if len(schema) == 0 {
+		return map[string]any{"type": "object", "additionalProperties": true}
+	}
+	if _, ok := schema["type"]; !ok {
+		cp := map[string]any{"type": "object"}
+		for k, v := range schema {
+			cp[k] = v
+		}
+		return cp
+	}
+	return schema
+}
+
 func (w *Worker) executeToolCalls(ctx context.Context, run *db.Run, stepID string, calls []providers.ToolCall) ([]toolExecutionResult, error) {
 	ctx, span := observability.StartSpan(ctx, "tool_loop", attribute.String("duraclaw.run_id", run.ID), attribute.Int("duraclaw.tool_calls", len(calls)))
 	defer span.End()
@@ -2426,6 +2550,10 @@ func (w *Worker) executeToolCalls(ctx context.Context, run *db.Run, stepID strin
 		w.tools = tools.NewRegistry()
 	}
 	toolRegistry, err := w.toolRegistryForRun(ctx, run)
+	if err != nil {
+		return nil, err
+	}
+	mcpBindings, _, err := w.mcpToolBindings(ctx, run)
 	if err != nil {
 		return nil, err
 	}
@@ -2438,7 +2566,7 @@ func (w *Worker) executeToolCalls(ctx context.Context, run *db.Run, stepID strin
 		return nil, err
 	}
 	if maxToolCalls > 0 {
-		existing, err := w.store.ToolCallCount(ctx, run.ID)
+		existing, err := w.store.ToolExecutionCount(ctx, run.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -2450,10 +2578,30 @@ func (w *Worker) executeToolCalls(ctx context.Context, run *db.Run, stepID strin
 	results := make([]toolExecutionResult, 0, len(calls))
 	channelCtx := w.runChannelContext(ctx, run.ID)
 	for _, call := range calls {
+		w.emitAgentActivity(ctx, run, "tool", "started", map[string]any{"tool_name": call.Function.Name, "tool_call_id": call.ID})
+		if binding, ok := mcpBindings[call.Function.Name]; ok {
+			if _, err := w.policyEngine().Enforce(ctx, "pre_tool", w.policyContext(run, stepID, binding.ServerName+"."+binding.ToolName, "")); err != nil {
+				w.emitAgentActivity(ctx, run, "tool", "failed", map[string]any{"tool_name": call.Function.Name, "tool_call_id": call.ID, "error": err.Error()})
+				return nil, err
+			}
+			result, err := w.executeMCPTool(ctx, run, binding, call.Function.Arguments)
+			if err != nil {
+				w.emitAgentActivity(ctx, run, "tool", "failed", map[string]any{"tool_name": call.Function.Name, "tool_call_id": call.ID, "error": err.Error()})
+				return nil, err
+			}
+			content := mcpToolResultText(binding, result)
+			if _, err := w.policyEngine().Enforce(ctx, "post_tool", w.policyContext(run, stepID, binding.ServerName+"."+binding.ToolName, content)); err != nil {
+				w.emitAgentActivity(ctx, run, "tool", "failed", map[string]any{"tool_name": call.Function.Name, "tool_call_id": call.ID, "error": err.Error()})
+				return nil, err
+			}
+			w.emitAgentActivity(ctx, run, "tool", "completed", map[string]any{"tool_name": call.Function.Name, "tool_call_id": call.ID, "mcp_server": binding.ServerName, "mcp_tool": binding.ToolName})
+			results = append(results, toolExecutionResult{ToolCallID: call.ID, Content: content})
+			continue
+		}
 		if err := w.toolAllowedForRun(ctx, run, call.Function.Name); err != nil {
+			w.emitAgentActivity(ctx, run, "tool", "failed", map[string]any{"tool_name": call.Function.Name, "tool_call_id": call.ID, "error": err.Error()})
 			return nil, err
 		}
-		w.emitAgentActivity(ctx, run, "tool", "started", map[string]any{"tool_name": call.Function.Name, "tool_call_id": call.ID})
 		if w.isInternalTool(call.Function.Name) {
 			result, err := w.executeInternalTool(ctx, run, stepID, call)
 			if err != nil {
@@ -2517,6 +2665,28 @@ func (w *Worker) executeToolCalls(ctx context.Context, run *db.Run, stepID strin
 		results = append(results, toolExecutionResult{ToolCallID: call.ID, Content: call.Function.Name + ": " + result.ForLLM})
 	}
 	return results, nil
+}
+
+func (w *Worker) executeMCPTool(ctx context.Context, run *db.Run, binding mcpToolBinding, args map[string]any) (map[string]any, error) {
+	mcpManager, err := w.mcpManagerForRun(ctx, run)
+	if err != nil {
+		return nil, err
+	}
+	traceCtx := w.runTraceContext(ctx, run.ID)
+	channelCtx := w.runChannelContext(ctx, run.ID)
+	return mcp.NewExecutor(mcpManager, w.store).WithCounters(w.counters).CallTool(ctx, mcp.ExecutionContext{
+		CustomerID: run.CustomerID, UserID: run.UserID, AgentInstanceID: run.AgentInstanceID, SessionID: run.SessionID, RunID: run.ID, RequestID: run.RequestID,
+		ChannelType: channelCtx.ChannelType, ChannelUserID: channelCtx.ChannelUserID, ChannelConvID: channelCtx.ChannelConversationID,
+		TraceID: traceCtx.TraceID, TraceParent: traceCtx.TraceParent,
+	}, binding.ServerName, binding.ToolName, args)
+}
+
+func mcpToolResultText(binding mcpToolBinding, result map[string]any) string {
+	raw, err := json.Marshal(result)
+	if err != nil {
+		return binding.ServerName + "." + binding.ToolName + ": " + fmt.Sprint(result)
+	}
+	return binding.ServerName + "." + binding.ToolName + ": " + string(raw)
 }
 
 func (w *Worker) plannedToolExecutions(toolRegistry *tools.Registry, completed map[string]db.ToolCallRecord, calls []providers.ToolCall) int {
