@@ -978,9 +978,16 @@ func (s *Store) CompleteToolCall(ctx context.Context, callID, runID string, resu
 
 func (s *Store) ToolArtifactsForRun(ctx context.Context, runID string) ([]map[string]any, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT result->'artifacts'
-		FROM tool_calls
-		WHERE run_id=$1 AND state='succeeded' AND jsonb_typeof(result->'artifacts')='array'
+		SELECT artifacts
+		FROM (
+			SELECT created_at, result->'artifacts' AS artifacts
+			FROM tool_calls
+			WHERE run_id=$1 AND state='succeeded' AND jsonb_typeof(result->'artifacts')='array'
+			UNION ALL
+			SELECT created_at, response_summary->'artifacts' AS artifacts
+			FROM mcp_calls
+			WHERE run_id=$1 AND state='succeeded' AND jsonb_typeof(response_summary->'artifacts')='array'
+		) refs
 		ORDER BY created_at ASC`, runID)
 	if err != nil {
 		return nil, err
