@@ -2151,6 +2151,15 @@ func (h *Handler) ensureSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c.SessionID = r.PathValue("session_id")
+	var payload struct {
+		SendGreeting     bool     `json:"send_greeting"`
+		GreetingChannels []string `json:"greeting_channels"`
+		Nickname         string   `json:"nickname"`
+	}
+	if err := decodeOptionalJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	if err := h.store.EnsureSession(r.Context(), c); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -2159,7 +2168,70 @@ func (h *Handler) ensureSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"session_id": c.SessionID, "state": "ready"})
+	resp := map[string]any{"session_id": c.SessionID, "state": "ready"}
+	if payload.SendGreeting && channelAllowedForGreeting(c.ChannelType, payload.GreetingChannels) {
+		run, err := h.store.CreateSystemRun(r.Context(), sessionGreetingContext(c), sessionGreetingInput(payload.Nickname, c.ChannelType))
+		if err != nil {
+			writeError(w, statusForError(err), err)
+			return
+		}
+		resp["greeting_run_id"] = run.ID
+		resp["greeting_state"] = run.State
+	} else if payload.SendGreeting {
+		resp["greeting_skipped"] = "channel_not_allowed"
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func decodeOptionalJSON(w http.ResponseWriter, r *http.Request, v any) error {
+	if r.Body == nil {
+		return nil
+	}
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxJSONBodyBytes))
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(string(raw)) == "" {
+		return nil
+	}
+	return json.Unmarshal(raw, v)
+}
+
+func channelAllowedForGreeting(channelType string, allowed []string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	channelType = strings.ToLower(strings.TrimSpace(channelType))
+	for _, value := range allowed {
+		if strings.ToLower(strings.TrimSpace(value)) == channelType {
+			return true
+		}
+	}
+	return false
+}
+
+func sessionGreetingContext(c db.ACPContext) db.ACPContext {
+	c.RequestID = "session-greeting-" + strings.TrimSpace(c.RequestID)
+	c.IdempotencyKey = "session-greeting:" + c.SessionID
+	return c
+}
+
+func sessionGreetingInput(nickname, channelType string) map[string]any {
+	nickname = strings.TrimSpace(nickname)
+	channelType = strings.TrimSpace(channelType)
+	text := "Generate a short proactive greeting for this newly opened session. Use the agent personality and available user profile context. Be personal but not intrusive."
+	if nickname != "" {
+		text += " Address the user by nickname: " + nickname + "."
+	}
+	if channelType != "" {
+		text += " Adapt the greeting for channel: " + channelType + "."
+	}
+	return map[string]any{
+		"text":         text,
+		"system_event": "session_greeting",
+		"nickname":     nickname,
+		"channel_type": channelType,
+	}
 }
 
 func (h *Handler) reassignSession(w http.ResponseWriter, r *http.Request) {

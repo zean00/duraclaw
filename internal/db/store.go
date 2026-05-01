@@ -237,6 +237,14 @@ func (s *Store) EnsureSession(ctx context.Context, c ACPContext) error {
 }
 
 func (s *Store) CreateRun(ctx context.Context, c ACPContext, input any) (*Run, error) {
+	return s.createRun(ctx, c, input, true)
+}
+
+func (s *Store) CreateSystemRun(ctx context.Context, c ACPContext, input any) (*Run, error) {
+	return s.createRun(ctx, c, input, false)
+}
+
+func (s *Store) createRun(ctx context.Context, c ACPContext, input any, insertUserMessage bool) (*Run, error) {
 	if err := s.EnsureSession(ctx, c); err != nil {
 		return nil, err
 	}
@@ -280,7 +288,9 @@ func (s *Store) CreateRun(ctx context.Context, c ACPContext, input any) (*Run, e
 		return nil, err
 	}
 	if inserted {
-		_, _ = s.InsertMessage(ctx, r.CustomerID, r.SessionID, r.ID, "user", input)
+		if insertUserMessage {
+			_, _ = s.InsertMessage(ctx, r.CustomerID, r.SessionID, r.ID, "user", input)
+		}
 		_ = s.AddEvent(ctx, r.ID, "run.queued", map[string]any{"state": r.State})
 	}
 	return &r, nil

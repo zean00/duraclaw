@@ -12,7 +12,7 @@ func TestCreateRunQueuesEventOnlyOnInsert(t *testing.T) {
 		t.Fatal(err)
 	}
 	src := string(raw)
-	if !strings.Contains(src, "if inserted {\n\t\t_, _ = s.InsertMessage") {
+	if !strings.Contains(src, "if inserted {\n\t\tif insertUserMessage {\n\t\t\t_, _ = s.InsertMessage") {
 		t.Fatalf("CreateRun should guard side effects with inserted flag")
 	}
 }

@@ -308,6 +308,7 @@ The GitHub Actions workflow runs the full suite with a `pgvector/pgvector:pg17` 
 - `GET /acp/sessions/{session_id}/runs/by-idempotency-key/{key}`
 
 Write requests require customer execution context headers. Existing-run write requests also require `X-Run-ID` matching the route run id.
+`PUT /acp/sessions/{session_id}` can optionally enqueue a durable greeting run with body `{"send_greeting":true,"greeting_channels":["webchat"],"nickname":"Sahal"}`. When `greeting_channels` is set, Duraclaw only sends the proactive greeting for matching `X-Channel-Type` values. Greeting runs are system-initiated and do not store the internal greeting instruction as a user message.
 Run status, event, trace, artifact, and representation reads require `X-Customer-ID` for tenant scoping.
 Outbound intent status callbacks also require `X-Customer-ID` and accept `sent_to_nexus`, `delivered`, `failed`, or `cancelled` (`sent` is accepted as a compatibility alias for `sent_to_nexus`).
 Retention cleanup accepts `artifact_days`, `event_days`, `outbox_days`, `async_write_days`, `observability_days`, and `broadcast_days`.

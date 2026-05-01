@@ -48,6 +48,18 @@ Session and runs:
 - `GET /acp/sessions/{session_id}/runs/latest`
 - `GET /acp/sessions/{session_id}/runs/by-idempotency-key/{key}`
 
+Explicit session creation can optionally enqueue a durable greeting run:
+
+```json
+{
+  "send_greeting": true,
+  "greeting_channels": ["webchat"],
+  "nickname": "Sahal"
+}
+```
+
+`greeting_channels` is optional. When present, Duraclaw only creates the greeting run if `X-Channel-Type` matches one of the listed channels. This lets deployments enable proactive greetings for lower-cost channels such as webchat while skipping channels such as WhatsApp. The greeting is generated asynchronously by the normal worker, using the agent profile/personality, channel context, and refreshed user profile data. Greeting runs are system-initiated and do not insert the internal greeting instruction into session `messages`.
+
 Artifacts:
 
 - `POST /acp/runs/{run_id}/artifacts`

@@ -1173,6 +1173,27 @@ func TestReassignSessionValidatesRouteAndBody(t *testing.T) {
 	}
 }
 
+func TestSessionGreetingHelpers(t *testing.T) {
+	src := readHandlerSources(t, "handler.go")
+	if !strings.Contains(src, "CreateSystemRun") {
+		t.Fatal("session greeting must use CreateSystemRun so the internal prompt is not stored as a user message")
+	}
+	if !channelAllowedForGreeting("webchat", []string{"webchat"}) {
+		t.Fatal("expected webchat to be allowed")
+	}
+	if channelAllowedForGreeting("whatsapp", []string{"webchat"}) {
+		t.Fatal("expected whatsapp to be skipped")
+	}
+	c := sessionGreetingContext(db.ACPContext{SessionID: "s1", RequestID: "req-1"})
+	if c.IdempotencyKey != "session-greeting:s1" || !strings.Contains(c.RequestID, "req-1") {
+		t.Fatalf("context=%#v", c)
+	}
+	input := sessionGreetingInput("Sahal", "webchat")
+	if !strings.Contains(input["text"].(string), "Sahal") || input["system_event"] != "session_greeting" {
+		t.Fatalf("input=%#v", input)
+	}
+}
+
 func TestCompactSessionRouteValidatesAndReturnsSummaryShape(t *testing.T) {
 	src := readHandlerSources(t, "routes.go", "handler.go")
 	for _, want := range []string{

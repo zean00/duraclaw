@@ -81,6 +81,23 @@ func TestEnsureSessionDoesNotImplicitlyReassignAgentInstance(t *testing.T) {
 	}
 }
 
+func TestStoreHasSystemRunCreationWithoutUserMessage(t *testing.T) {
+	raw, err := os.ReadFile("store.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(raw)
+	for _, want := range []string{
+		"CreateSystemRun",
+		"createRun(ctx, c, input, false)",
+		"if insertUserMessage",
+	} {
+		if !strings.Contains(src, want) {
+			t.Fatalf("store missing system run hook %q", want)
+		}
+	}
+}
+
 func TestStoreHasSessionTransferQueries(t *testing.T) {
 	raw, err := os.ReadFile("sessions.go")
 	if err != nil {
