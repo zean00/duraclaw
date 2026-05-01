@@ -23,6 +23,7 @@ type fakeStore struct {
 	completed  []string
 	released   []int64
 	events     []string
+	runEvents  []string
 }
 
 func (s *fakeStore) EnqueueAsyncWrite(_ context.Context, spec db.AsyncWriteSpec) (int64, error) {
@@ -54,6 +55,11 @@ func (s *fakeStore) ReleaseAsyncWriteJob(_ context.Context, id int64, _ time.Dur
 
 func (s *fakeStore) AddObservabilityEvent(_ context.Context, _ string, _ string, eventType string, _ any) error {
 	s.events = append(s.events, eventType)
+	return nil
+}
+
+func (s *fakeStore) AddEvent(_ context.Context, _ string, typ string, _ any) error {
+	s.runEvents = append(s.runEvents, typ)
 	return nil
 }
 
@@ -174,6 +180,19 @@ func TestWriterAppliesClaimedObservabilityJob(t *testing.T) {
 	}
 	if len(store.events) != 1 || store.events[0] != "async.event" || len(store.completed) != 1 || store.completed[0] != "completed" {
 		t.Fatalf("events=%#v completed=%#v", store.events, store.completed)
+	}
+}
+
+func TestWriterAppliesClaimedRunEventJob(t *testing.T) {
+	runID := "run-1"
+	payload, _ := json.Marshal(map[string]any{"event_type": "model.delta", "payload": map[string]any{"content": "hello"}})
+	store := &fakeStore{claimed: []db.AsyncWriteJob{{ID: 1, CustomerID: "c", RunID: &runID, JobType: "run_event", Payload: payload}}}
+	writer := NewWriter(store, "test", 1)
+	if _, err := writer.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.runEvents) != 1 || store.runEvents[0] != "model.delta" || len(store.completed) != 1 || store.completed[0] != "completed" {
+		t.Fatalf("runEvents=%#v completed=%#v", store.runEvents, store.completed)
 	}
 }
 

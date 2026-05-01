@@ -34,6 +34,8 @@ Full conversation history lives in `messages`. It is the audit/source record and
 
 Prompt-fed session context lives in `session_summaries`. The idle session monitor updates summaries after a session has been idle long enough or when the transcript exceeds the compaction threshold.
 
+Admins can force compaction for a specific session with `POST /admin/sessions/{session_id}/compact`. The endpoint runs the same LLM summarization path used by the idle monitor, persists the generated summary, and returns it in the response.
+
 This allows one long persisted session while keeping model context bounded.
 
 ## Memories

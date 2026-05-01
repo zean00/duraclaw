@@ -108,6 +108,7 @@ Supported part types include `text`, `artifact_ref`, `location`, `structured_dat
 - Observability events.
 - Outbound intents, broadcasts, and delivery status.
 - Background runs.
+- Manual session compaction.
 - Built-in tool access rules by customer, agent instance, and user.
 - MCP server discovery and notifications.
 - MCP tool access rules by customer, agent instance, user, and server.
@@ -127,6 +128,38 @@ Admin recommendation routes:
 - `DELETE /admin/recommendations/items/{item_id}?customer_id={customer_id}`
 - `GET /admin/recommendations/decisions?customer_id={customer_id}`
 - `GET /admin/recommendations/jobs?customer_id={customer_id}`
+
+Manual session compaction:
+
+- `POST /admin/sessions/{session_id}/compact`
+
+Request:
+
+```json
+{
+  "customer_id": "customer-1",
+  "force": true,
+  "message_limit": 80
+}
+```
+
+Response includes the generated durable summary:
+
+```json
+{
+  "customer_id": "customer-1",
+  "session_id": "session-1",
+  "summary": "Durable summary text...",
+  "compacted": true,
+  "message_count": 42,
+  "transcript_chars": 12000,
+  "provider": "openrouter",
+  "model": "openai/gpt-4.1-mini",
+  "metadata": {"strategy": "manual_llm_compaction", "forced": true}
+}
+```
+
+When `force` is false, the endpoint only compacts if the transcript reaches `DURACLAW_SESSION_COMPACTION_THRESHOLD_CHARS`; otherwise it returns `compacted: false` with an empty summary.
 
 Built-in tool access routes:
 

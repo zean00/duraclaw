@@ -44,6 +44,8 @@ Useful routes:
 
 Run trace output ties together run steps, model calls, tool calls, MCP calls, artifact processor calls, and policy evaluations.
 
+High-volume, non-critical telemetry is buffered through `async_write_jobs` when the async writer is enabled. This includes streaming model delta run events, agent activity run events, scope-judge audit events, prompt-injection block telemetry, checkpoint sidecar observability payloads, and optional OTLP sidecars. Critical durability records remain synchronous: run state, checkpoints, model/tool/MCP call intent and completion records, policy denials, quota failures, awaiting-user transitions, outbox writes, and final responses.
+
 ## Workers and Leases
 
 Duraclaw is safe to run as multiple instances against one shared PostgreSQL database. PostgreSQL is the coordination layer; do not add per-process queues or in-memory locks around durable work.

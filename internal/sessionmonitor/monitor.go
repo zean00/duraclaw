@@ -41,6 +41,25 @@ type Service struct {
 	compactionThreshold int
 }
 
+type CompactRequest struct {
+	CustomerID   string `json:"customer_id"`
+	SessionID    string `json:"session_id"`
+	Force        bool   `json:"force"`
+	MessageLimit int    `json:"message_limit,omitempty"`
+}
+
+type CompactResult struct {
+	CustomerID    string         `json:"customer_id"`
+	SessionID     string         `json:"session_id"`
+	Summary       string         `json:"summary"`
+	Compacted     bool           `json:"compacted"`
+	MessageCount  int            `json:"message_count"`
+	TranscriptLen int            `json:"transcript_chars"`
+	Provider      string         `json:"provider,omitempty"`
+	Model         string         `json:"model,omitempty"`
+	Metadata      map[string]any `json:"metadata"`
+}
+
 func NewService(store Store, registry *providers.Registry, modelConfig providers.ModelConfig, owner string) *Service {
 	if owner == "" {
 		owner = "duraclaw-session-monitor"
@@ -106,6 +125,59 @@ func (s *Service) RunOnce(ctx context.Context, now time.Time) (int, error) {
 	return processed, nil
 }
 
+func (s *Service) CompactSession(ctx context.Context, req CompactRequest) (*CompactResult, error) {
+	req.CustomerID = strings.TrimSpace(req.CustomerID)
+	req.SessionID = strings.TrimSpace(req.SessionID)
+	if req.CustomerID == "" || req.SessionID == "" {
+		return nil, fmt.Errorf("customer_id and session_id are required")
+	}
+	limit := req.MessageLimit
+	if limit <= 0 {
+		limit = s.messageLimit
+	}
+	messages, err := s.store.RecentMessages(ctx, req.CustomerID, req.SessionID, limit)
+	if err != nil {
+		return nil, err
+	}
+	transcript := transcript(messages)
+	result := &CompactResult{
+		CustomerID:    req.CustomerID,
+		SessionID:     req.SessionID,
+		MessageCount:  len(messages),
+		TranscriptLen: len(transcript),
+		Metadata: map[string]any{
+			"strategy":      "manual_llm_compaction",
+			"message_count": len(messages),
+			"requested_at":  time.Now().UTC().Format(time.RFC3339),
+			"forced":        req.Force,
+		},
+	}
+	if strings.TrimSpace(transcript) == "" {
+		return result, nil
+	}
+	if !req.Force && len(transcript) < s.compactionThreshold {
+		return result, nil
+	}
+	summary, provider, model, err := s.extractSummaryWithMetadata(ctx, transcript)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(summary) == "" {
+		return result, nil
+	}
+	result.Summary = summary
+	result.Compacted = true
+	result.Provider = provider
+	result.Model = model
+	result.Metadata["provider"] = provider
+	result.Metadata["model"] = model
+	if err := s.store.UpsertSessionSummary(ctx, req.CustomerID, req.SessionID, "", summary, result.Metadata); err != nil {
+		return nil, err
+	}
+	_ = s.store.AddObservabilityEvent(ctx, req.CustomerID, "", "session_context_compacted", map[string]any{"session_id": req.SessionID, "messages": len(messages), "summary_chars": len(summary), "manual": true})
+	return result, nil
+}
+
 func (s *Service) processSession(ctx context.Context, now time.Time, session db.MonitoredSession) error {
 	_ = s.store.AddObservabilityEvent(ctx, session.CustomerID, "", "session_monitor_claimed", map[string]any{"session_id": session.SessionID})
 	monitoredThrough := session.UpdatedAt
@@ -162,14 +234,19 @@ func monitoredWindow(messages []db.Message, after *time.Time, through time.Time)
 }
 
 func (s *Service) extractSummary(ctx context.Context, transcript string) (string, error) {
+	summary, _, _, err := s.extractSummaryWithMetadata(ctx, transcript)
+	return summary, err
+}
+
+func (s *Service) extractSummaryWithMetadata(ctx context.Context, transcript string) (string, string, string, error) {
 	resp, err := s.providers.ChatWithFallback(ctx, s.modelConfig, []providers.Message{
 		{Role: "system", Content: "Summarize this assistant session for future prompt context. Keep durable facts, open threads, and user preferences concise."},
 		{Role: "user", Content: transcript},
 	}, nil, map[string]any{"purpose": "session_compaction"})
 	if err != nil {
-		return "", err
+		return "", "", "", err
 	}
-	return strings.TrimSpace(resp.Response.Content), nil
+	return strings.TrimSpace(resp.Response.Content), resp.Provider, resp.Model, nil
 }
 
 type extractionResult struct {

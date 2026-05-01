@@ -93,6 +93,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /admin/broadcasts", h.requireAdmin(h.listBroadcasts))
 	mux.HandleFunc("GET /admin/broadcasts/{broadcast_id}/targets", h.requireAdmin(h.listBroadcastTargets))
 	mux.HandleFunc("POST /admin/broadcasts/{broadcast_id}/cancel", h.requireAdmin(h.cancelBroadcast))
+	mux.HandleFunc("POST /admin/sessions/{session_id}/compact", h.requireAdmin(h.compactSession))
 	mux.HandleFunc("POST /admin/retention/run", h.requireAdmin(h.runRetention))
 	mux.HandleFunc("GET /acp/agents", h.requireACP(h.agents))
 	mux.HandleFunc("PUT /acp/sessions/{session_id}", h.requireACP(h.ensureSession))

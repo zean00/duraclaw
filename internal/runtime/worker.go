@@ -359,7 +359,7 @@ func (w *Worker) process(ctx context.Context, run *db.Run) (err error) {
 	if !scope.InjectionRisk {
 		recommendations = w.startRecommendationSidecar(ctx, run, scope, text)
 	} else {
-		_ = w.store.AddEvent(ctx, run.ID, "prompt_injection.recommendation_blocked", map[string]any{"reason": scope.InjectionReason})
+		w.enqueueAsyncRunEvent(ctx, run, "prompt_injection.recommendation_blocked", map[string]any{"reason": scope.InjectionReason})
 	}
 	messages, err := w.providerMessages(ctx, run, text)
 	if err != nil {
@@ -372,7 +372,7 @@ func (w *Worker) process(ctx context.Context, run *db.Run) (err error) {
 			return err
 		}
 	} else {
-		_ = w.store.AddEvent(ctx, run.ID, "prompt_injection.tools_blocked", map[string]any{"reason": scope.InjectionReason})
+		w.enqueueAsyncRunEvent(ctx, run, "prompt_injection.tools_blocked", map[string]any{"reason": scope.InjectionReason})
 	}
 	resp, err := w.agentLoopPhase(ctx, run, text, messages, toolDefs)
 	if err != nil {
@@ -627,6 +627,26 @@ func (w *Worker) enqueueAsyncObservability(ctx context.Context, run *db.Run, eve
 	})
 }
 
+func (w *Worker) enqueueAsyncRunEvent(ctx context.Context, run *db.Run, eventType string, payload any) {
+	if w == nil || w.store == nil || run == nil {
+		return
+	}
+	if w.asyncWriter == nil {
+		_ = w.store.AddEvent(ctx, run.ID, eventType, payload)
+		return
+	}
+	w.asyncWriter.Enqueue(ctx, db.AsyncWriteSpec{
+		CustomerID:      run.CustomerID,
+		AgentInstanceID: run.AgentInstanceID,
+		RunID:           run.ID,
+		JobType:         "run_event",
+		Payload: map[string]any{
+			"event_type": eventType,
+			"payload":    payload,
+		},
+	})
+}
+
 func (w *Worker) emitFinalOutbound(ctx context.Context, run *db.Run, messageID, text string) error {
 	if w.outbound == nil {
 		return nil
@@ -721,9 +741,7 @@ func (w *Worker) emitAgentActivity(ctx context.Context, run *db.Run, activityTyp
 		payload[key] = value
 	}
 	payload["text"] = activityText(activityType, state, payload)
-	if w.store != nil {
-		_ = w.store.AddEvent(ctx, run.ID, "agent_activity."+activityType+"."+state, payload)
-	}
+	w.enqueueAsyncRunEvent(ctx, run, "agent_activity."+activityType+"."+state, payload)
 	if w.outbound == nil {
 		return
 	}
@@ -952,7 +970,7 @@ func (w *Worker) chatStream(ctx context.Context, run *db.Run, provider providers
 		}
 	}
 	if droppedDeltaBytes > 0 {
-		_ = w.store.AddEvent(ctx, run.ID, "model.delta_dropped", map[string]any{"bytes": droppedDeltaBytes, "model": model, "reason": "stream_delta_event_limit"})
+		w.enqueueAsyncRunEvent(ctx, run, "model.delta_dropped", map[string]any{"bytes": droppedDeltaBytes, "model": model, "reason": "stream_delta_event_limit"})
 	}
 	if len(partials) > 0 {
 		calls = append(calls, finishStreamToolCalls(partials)...)
@@ -1352,7 +1370,7 @@ func (w *Worker) judgeScope(ctx context.Context, run *db.Run, content string) (s
 	risk := detectPromptInjectionRisk(content)
 	judgement = mergePromptInjectionRisk(judgement, risk)
 	judgement = normalizeInitialScopeJudgement(judgement, threshold)
-	_ = w.store.AddEvent(ctx, run.ID, "scope.judged", map[string]any{"provider": result.Provider, "model": result.Model, "intent": judgement.Intent, "pass": "initial", "injection_risk": judgement.InjectionRisk, "injection_reason": judgement.InjectionReason})
+	w.enqueueAsyncRunEvent(ctx, run, "scope.judged", map[string]any{"provider": result.Provider, "model": result.Model, "intent": judgement.Intent, "pass": "initial", "injection_risk": judgement.InjectionRisk, "injection_reason": judgement.InjectionReason})
 	if strings.EqualFold(strings.TrimSpace(judgement.Intent), "implicit") {
 		scopeContext, err := w.scopeJudgeContext(ctx, run)
 		if err != nil {
@@ -1364,7 +1382,7 @@ func (w *Worker) judgeScope(ctx context.Context, run *db.Run, content string) (s
 				return scopeJudgement{}, err
 			}
 			judgement = mergePromptInjectionRisk(mergePromptInjectionRisk(judgement, risk), detectPromptInjectionRisk(scopeContext))
-			_ = w.store.AddEvent(ctx, run.ID, "scope.judged", map[string]any{"provider": result.Provider, "model": result.Model, "intent": judgement.Intent, "pass": "context", "injection_risk": judgement.InjectionRisk, "injection_reason": judgement.InjectionReason})
+			w.enqueueAsyncRunEvent(ctx, run, "scope.judged", map[string]any{"provider": result.Provider, "model": result.Model, "intent": judgement.Intent, "pass": "context", "injection_risk": judgement.InjectionRisk, "injection_reason": judgement.InjectionReason})
 		}
 	}
 	if !judgement.InScope || judgement.Confidence < threshold {

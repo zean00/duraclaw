@@ -22,6 +22,7 @@ import (
 	"duraclaw/internal/profiles"
 	"duraclaw/internal/providers"
 	"duraclaw/internal/scheduler"
+	"duraclaw/internal/sessionmonitor"
 	"duraclaw/internal/tools"
 	"duraclaw/internal/workflow"
 
@@ -46,6 +47,7 @@ type Handler struct {
 	modelConfig      providers.ModelConfig
 	mediaBlobStore   tools.MediaBlobStore
 	profileRetriever profiles.Retriever
+	sessionMonitor   *sessionmonitor.Service
 	logger           *slog.Logger
 	interruptWindow  time.Duration
 	maxRefineDepth   int
@@ -136,6 +138,11 @@ func (h *Handler) WithMediaBlobStore(store tools.MediaBlobStore) *Handler {
 
 func (h *Handler) WithProfileRetriever(retriever profiles.Retriever) *Handler {
 	h.profileRetriever = retriever
+	return h
+}
+
+func (h *Handler) WithSessionMonitor(service *sessionmonitor.Service) *Handler {
+	h.sessionMonitor = service
 	return h
 }
 
@@ -2183,6 +2190,41 @@ func (h *Handler) reassignSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, transfer)
+}
+
+func (h *Handler) compactSession(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		CustomerID   string `json:"customer_id"`
+		Force        bool   `json:"force"`
+		MessageLimit int    `json:"message_limit"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if payload.CustomerID == "" || r.PathValue("session_id") == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id and session_id are required"))
+		return
+	}
+	if h.store == nil {
+		writeError(w, http.StatusInternalServerError, fmt.Errorf("store is unavailable"))
+		return
+	}
+	service := h.sessionMonitor
+	if service == nil {
+		service = sessionmonitor.NewService(h.store, h.providers, h.modelConfig, "duraclaw-manual-session-compaction")
+	}
+	result, err := service.CompactSession(r.Context(), sessionmonitor.CompactRequest{
+		CustomerID:   payload.CustomerID,
+		SessionID:    r.PathValue("session_id"),
+		Force:        payload.Force,
+		MessageLimit: payload.MessageLimit,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (h *Handler) startRun(w http.ResponseWriter, r *http.Request) {

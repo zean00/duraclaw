@@ -1,12 +1,62 @@
 package sessionmonitor
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
 
 	"duraclaw/internal/db"
+	"duraclaw/internal/providers"
 )
+
+type compactStore struct {
+	messages []db.Message
+	summary  string
+	metadata any
+	events   []string
+}
+
+func (s *compactStore) ClaimIdleSessions(context.Context, string, time.Duration, time.Duration, int) ([]db.MonitoredSession, error) {
+	return nil, nil
+}
+func (s *compactStore) CompleteSessionMonitor(context.Context, string, string, time.Time, any) error {
+	return nil
+}
+func (s *compactStore) ReleaseSessionMonitor(context.Context, string, string) error { return nil }
+func (s *compactStore) RecentMessages(context.Context, string, string, int) ([]db.Message, error) {
+	return s.messages, nil
+}
+func (s *compactStore) RecentUserMessages(context.Context, string, string, int) ([]db.Message, error) {
+	return s.messages, nil
+}
+func (s *compactStore) UpsertSessionSummary(_ context.Context, _, _, _, summary string, metadata any) error {
+	s.summary = summary
+	s.metadata = metadata
+	return nil
+}
+func (s *compactStore) ListMemories(context.Context, string, string, int) ([]db.Memory, error) {
+	return nil, nil
+}
+func (s *compactStore) AddMemory(context.Context, string, string, string, string, string, any) (string, error) {
+	return "", nil
+}
+func (s *compactStore) ListPreferences(context.Context, string, string, int) ([]db.Preference, error) {
+	return nil, nil
+}
+func (s *compactStore) AddPreference(context.Context, string, string, string, string, string, any, any) (string, error) {
+	return "", nil
+}
+func (s *compactStore) AddObservabilityEvent(_ context.Context, _, _, eventType string, _ any) error {
+	s.events = append(s.events, eventType)
+	return nil
+}
+func (s *compactStore) PolicyRulesForScope(context.Context, string, string, string) ([]db.PolicyRule, error) {
+	return nil, nil
+}
+func (s *compactStore) RecordPolicyEvaluation(context.Context, db.PolicyEvaluation) error {
+	return nil
+}
 
 func TestActivePatternCountsUserMessageHoursAndWeekdays(t *testing.T) {
 	messages := []db.Message{
@@ -80,5 +130,26 @@ func TestNormalizeAndExtractJSONObject(t *testing.T) {
 		if got := extractJSONObject(input); got != want {
 			t.Fatalf("extractJSONObject(%q)=%q want %q", input, got, want)
 		}
+	}
+}
+
+func TestCompactSessionForcesSummaryAndReturnsIt(t *testing.T) {
+	raw, _ := json.Marshal(map[string]any{"text": "please remember I prefer concise answers"})
+	store := &compactStore{messages: []db.Message{{ID: "m1", Role: "user", Content: raw, CreatedAt: time.Now()}}}
+	registry := providers.NewRegistry("mock")
+	registry.Register("mock", providers.MockProvider{})
+	service := NewService(store, registry, providers.ModelConfig{Primary: "mock/duraclaw"}, "test")
+	result, err := service.CompactSession(context.Background(), CompactRequest{CustomerID: "c1", SessionID: "s1", Force: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Compacted || result.Summary == "" || store.summary != result.Summary {
+		t.Fatalf("result=%#v stored=%q", result, store.summary)
+	}
+	if result.MessageCount != 1 || result.Provider != "mock" || result.Model == "" {
+		t.Fatalf("result=%#v", result)
+	}
+	if len(store.events) != 1 || store.events[0] != "session_context_compacted" {
+		t.Fatalf("events=%#v", store.events)
 	}
 }

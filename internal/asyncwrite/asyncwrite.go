@@ -16,6 +16,7 @@ type Store interface {
 	CompleteAsyncWriteJob(ctx context.Context, id int64, state string, errText *string) error
 	ReleaseAsyncWriteJob(ctx context.Context, id int64, delay time.Duration, errText string) error
 	AddObservabilityEvent(ctx context.Context, customerID, runID, eventType string, payload any) error
+	AddEvent(ctx context.Context, runID, typ string, payload any) error
 	EffectiveRuntimeLimits(ctx context.Context, customerID, agentInstanceID string) (db.EffectiveRuntimeLimits, error)
 }
 
@@ -159,6 +160,29 @@ func (w *Writer) prepare(ctx context.Context, spec db.AsyncWriteSpec) db.AsyncWr
 
 func (w *Writer) apply(ctx context.Context, job db.AsyncWriteJob) error {
 	switch job.JobType {
+	case "run_event":
+		var payload struct {
+			EventType string          `json:"event_type"`
+			Payload   json.RawMessage `json:"payload"`
+		}
+		if err := json.Unmarshal(job.Payload, &payload); err != nil {
+			return err
+		}
+		if payload.EventType == "" {
+			payload.EventType = "async.run_event"
+		}
+		var body any = map[string]any{}
+		if len(payload.Payload) > 0 {
+			body = payload.Payload
+		}
+		runID := ""
+		if job.RunID != nil {
+			runID = *job.RunID
+		}
+		if runID == "" {
+			return fmt.Errorf("run_event async write requires run_id")
+		}
+		return w.store.AddEvent(ctx, runID, payload.EventType, body)
 	case "observability_event":
 		var payload struct {
 			EventType string          `json:"event_type"`

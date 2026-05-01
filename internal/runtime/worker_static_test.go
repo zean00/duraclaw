@@ -85,6 +85,7 @@ func TestWorkerAppliesVersionRuntimeConfig(t *testing.T) {
 		"recordModelUsage",
 		"WithAsyncWriter",
 		"enqueueAsyncObservability",
+		"enqueueAsyncRunEvent",
 		"EnforceRunStartQuota",
 		"sessionSummaryContext",
 		"knowledgeContext",

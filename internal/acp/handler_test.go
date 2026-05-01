@@ -1173,6 +1173,25 @@ func TestReassignSessionValidatesRouteAndBody(t *testing.T) {
 	}
 }
 
+func TestCompactSessionRouteValidatesAndReturnsSummaryShape(t *testing.T) {
+	src := readHandlerSources(t, "routes.go", "handler.go")
+	for _, want := range []string{
+		`POST /admin/sessions/{session_id}/compact`,
+		"CompactSession",
+		"writeJSON(w, http.StatusOK, result)",
+	} {
+		if !strings.Contains(src, want) {
+			t.Fatalf("handler missing compact session hook %q", want)
+		}
+	}
+	req := httptest.NewRequest(http.MethodPost, "/admin/sessions/s1/compact", strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	NewHandler(nil).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "customer_id") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestRequiredContextAcceptsOptionalChannelHeaders(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/acp/runs", nil)
 	req.Header.Set("X-Customer-ID", "c")
