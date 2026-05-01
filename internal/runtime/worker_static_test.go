@@ -240,8 +240,10 @@ func TestRecommendationPipelineReusesScopeContextDecision(t *testing.T) {
 		"scopeJudgeContext(ctx, run)",
 		`return strings.TrimSpace(content), "direct_message", nil`,
 		"CreateRecommendationJob",
+		"RecommendationArtifactsForRun",
 		"loaded, err := w.store.GetRun(ctx, run.ID)",
 		`Type:       "recommendation"`,
+		"recommendation_reference",
 		"mergeRecommendation(ctx, run, content, result.Result)",
 	} {
 		if !strings.Contains(src, want) {

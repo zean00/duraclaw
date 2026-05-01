@@ -78,6 +78,8 @@ This prevents side effects from out-of-scope requests.
 
 When `profile_config.recommendation.enabled` is true, Duraclaw starts a recommendation sidecar after a request passes scope validation. `timeout_ms` is required and must be positive when enabled. If the sidecar finishes before timeout, the selected recommendation is merged into the final assistant response by an LLM so it stays non-intrusive. If the sidecar times out, Duraclaw queues a durable recommendation job and can later emit an outbound `recommendation` intent.
 
+Recommendation messages emit a `recommendation_reference` artifact. The artifact includes the decision ID, selected catalog item ID, title, kind, URL, sponsored flag, sponsor name, and candidate item IDs. Inline recommendations attach this artifact to the final assistant message; delayed recommendation jobs attach it to the outbound `recommendation` payload.
+
 The recommendation input reuses scope judgement context selection:
 
 - `direct` intent uses only the current user request.

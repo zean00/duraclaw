@@ -659,6 +659,11 @@ func (w *Worker) emitFinalOutbound(ctx context.Context, run *db.Run, messageID, 
 		if err != nil {
 			return err
 		}
+		recommendationArtifacts, err := w.store.RecommendationArtifactsForRun(ctx, run.ID)
+		if err != nil {
+			return err
+		}
+		artifacts = append(artifacts, recommendationArtifacts...)
 	}
 	_, _, err := w.outbound.Emit(ctx, outbound.Intent{
 		CustomerID: run.CustomerID,
@@ -1614,12 +1619,15 @@ func (w *Worker) applyRecommendationResult(ctx context.Context, run *db.Run, sco
 		})
 		return content
 	}
-	_, _ = w.store.RecordRecommendationDecision(ctx, db.RecommendationDecisionSpec{
+	decision, _ := w.store.RecordRecommendationDecision(ctx, db.RecommendationDecisionSpec{
 		CustomerID: run.CustomerID, RunID: run.ID, UserID: run.UserID, SessionID: run.SessionID,
 		ScopeIntent: scope.Intent, ContextMode: result.ContextMode, CandidateItemIDs: candidateIDs,
 		SelectedItemID: result.Result.ItemID, RecommendationText: result.Result.RecommendationText,
 		Reason: result.Result.Reason, DeliveryStatus: "inline_merged",
 	})
+	if decision != nil {
+		_ = w.store.AddEvent(ctx, run.ID, "recommendation.artifact", map[string]any{"artifacts": []map[string]any{recommendationArtifact(decision, result.Candidates)}})
+	}
 	return merged
 }
 
@@ -1766,29 +1774,39 @@ func (w *Worker) processRecommendationJob(ctx context.Context, job db.Recommenda
 		return w.store.CompleteRecommendationJob(ctx, job.ID, "no_candidate", "")
 	}
 	runID := derefString(job.RunID)
+	decision, _ := w.store.RecordRecommendationDecision(ctx, db.RecommendationDecisionSpec{
+		CustomerID: job.CustomerID, RunID: runID, UserID: job.UserID, SessionID: job.SessionID,
+		ScopeIntent: job.ScopeIntent, ContextMode: job.ContextMode, CandidateItemIDs: recommendationItemIDs(candidates),
+		SelectedItemID: rec.ItemID, RecommendationText: rec.RecommendationText, Reason: rec.Reason,
+		DeliveryStatus: "outbound_pending",
+	})
+	payload := map[string]any{
+		"type":      "recommendation",
+		"run_id":    runID,
+		"message":   rec.RecommendationText,
+		"item_id":   rec.ItemID,
+		"sponsored": recommendationItemSponsored(candidates, rec.ItemID),
+	}
+	if decision != nil {
+		decision.DeliveryStatus = "outbound_queued"
+		payload["artifacts"] = []map[string]any{recommendationArtifact(decision, candidates)}
+	}
 	_, _, err = w.outbound.Emit(ctx, outbound.Intent{
 		CustomerID: job.CustomerID,
 		UserID:     job.UserID,
 		SessionID:  job.SessionID,
 		RunID:      runID,
 		Type:       "recommendation",
-		Payload: map[string]any{
-			"type":      "recommendation",
-			"run_id":    runID,
-			"message":   rec.RecommendationText,
-			"item_id":   rec.ItemID,
-			"sponsored": recommendationItemSponsored(candidates, rec.ItemID),
-		},
+		Payload:    payload,
 	})
 	if err != nil {
 		return err
 	}
-	_, _ = w.store.RecordRecommendationDecision(ctx, db.RecommendationDecisionSpec{
-		CustomerID: job.CustomerID, RunID: runID, UserID: job.UserID, SessionID: job.SessionID,
-		ScopeIntent: job.ScopeIntent, ContextMode: job.ContextMode, CandidateItemIDs: recommendationItemIDs(candidates),
-		SelectedItemID: rec.ItemID, RecommendationText: rec.RecommendationText, Reason: rec.Reason,
-		DeliveryStatus: "outbound_queued",
-	})
+	if decision != nil {
+		if err := w.store.UpdateRecommendationDecisionStatus(ctx, decision.ID, "outbound_queued", ""); err != nil {
+			return err
+		}
+	}
 	return w.store.CompleteRecommendationJob(ctx, job.ID, "sent", "")
 }
 
@@ -1798,6 +1816,40 @@ func recommendationItemIDs(items []db.RecommendationItem) []string {
 		ids = append(ids, item.ID)
 	}
 	return ids
+}
+
+func recommendationArtifact(decision *db.RecommendationDecision, candidates []db.RecommendationItem) map[string]any {
+	data := map[string]any{
+		"reference_type":       "recommendation",
+		"decision_id":          decision.ID,
+		"recommendation_text":  decision.RecommendationText,
+		"reason":               decision.Reason,
+		"delivery_status":      decision.DeliveryStatus,
+		"candidate_item_ids":   decision.CandidateItemIDs,
+		"selected_item_id":     "",
+		"selected_item_title":  "",
+		"selected_item_kind":   "",
+		"selected_item_url":    "",
+		"selected_item_status": "",
+		"sponsored":            false,
+		"sponsor_name":         "",
+	}
+	if decision.SelectedItemID != nil {
+		data["selected_item_id"] = *decision.SelectedItemID
+		for _, item := range candidates {
+			if item.ID != *decision.SelectedItemID {
+				continue
+			}
+			data["selected_item_title"] = item.Title
+			data["selected_item_kind"] = item.Kind
+			data["selected_item_url"] = item.URL
+			data["selected_item_status"] = item.Status
+			data["sponsored"] = item.Sponsored
+			data["sponsor_name"] = item.SponsorName
+			break
+		}
+	}
+	return map[string]any{"type": "recommendation_reference", "id": decision.ID, "data": data}
 }
 
 func recommendationCandidateExists(items []db.RecommendationItem, id string) bool {

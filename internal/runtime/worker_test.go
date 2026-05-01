@@ -390,6 +390,37 @@ func TestEmitFinalOutbound(t *testing.T) {
 	}
 }
 
+func TestRecommendationArtifactIncludesSelectedItem(t *testing.T) {
+	itemID := "item-1"
+	decision := &db.RecommendationDecision{
+		ID:                 "decision-1",
+		CandidateItemIDs:   []string{"item-1", "item-2"},
+		SelectedItemID:     &itemID,
+		RecommendationText: "Try the family class.",
+		Reason:             "matches request",
+		DeliveryStatus:     "inline_merged",
+	}
+	artifact := recommendationArtifact(decision, []db.RecommendationItem{{
+		ID:          "item-1",
+		Kind:        "activity",
+		Title:       "Family class",
+		URL:         "https://example.test/family-class",
+		Status:      "active",
+		Sponsored:   true,
+		SponsorName: "Example Partner",
+	}})
+	if artifact["type"] != "recommendation_reference" || artifact["id"] != "decision-1" {
+		t.Fatalf("artifact=%#v", artifact)
+	}
+	data, ok := artifact["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("data=%#v", artifact["data"])
+	}
+	if data["selected_item_id"] != "item-1" || data["selected_item_title"] != "Family class" || data["sponsored"] != true {
+		t.Fatalf("data=%#v", data)
+	}
+}
+
 func TestAgentActivityHonorsIncludeAndOmit(t *testing.T) {
 	outboundStore := &fakeOutboundStore{}
 	w := (&Worker{}).

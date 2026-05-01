@@ -348,6 +348,81 @@ func (s *Store) ListRecommendationDecisions(ctx context.Context, customerID, run
 	return out, rows.Err()
 }
 
+func (s *Store) RecommendationArtifactsForRun(ctx context.Context, runID string) ([]map[string]any, error) {
+	if strings.TrimSpace(runID) == "" {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT d.id::text, d.candidate_item_ids, d.selected_item_id::text, d.recommendation_text, d.reason, d.delivery_status,
+		       COALESCE(i.kind, ''), COALESCE(i.title, ''), COALESCE(i.url, ''), COALESCE(i.status, ''),
+		       COALESCE(i.sponsored, false), COALESCE(i.sponsor_name, '')
+		FROM recommendation_decisions d
+		LEFT JOIN recommendation_items i ON i.id=d.selected_item_id
+		WHERE d.run_id=$1
+		  AND d.selected_item_id IS NOT NULL
+		  AND d.delivery_status='inline_merged'
+		ORDER BY d.created_at ASC`, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []map[string]any{}
+	for rows.Next() {
+		var (
+			id                 string
+			candidatesRaw      []byte
+			selectedItemID     string
+			recommendationText string
+			reason             string
+			deliveryStatus     string
+			itemKind           string
+			itemTitle          string
+			itemURL            string
+			itemStatus         string
+			sponsored          bool
+			sponsorName        string
+		)
+		if err := rows.Scan(&id, &candidatesRaw, &selectedItemID, &recommendationText, &reason, &deliveryStatus, &itemKind, &itemTitle, &itemURL, &itemStatus, &sponsored, &sponsorName); err != nil {
+			return nil, err
+		}
+		data := map[string]any{
+			"reference_type":       "recommendation",
+			"decision_id":          id,
+			"recommendation_text":  recommendationText,
+			"reason":               reason,
+			"delivery_status":      deliveryStatus,
+			"candidate_item_ids":   decodeStringSlice(candidatesRaw),
+			"selected_item_id":     selectedItemID,
+			"selected_item_title":  itemTitle,
+			"selected_item_kind":   itemKind,
+			"selected_item_url":    itemURL,
+			"selected_item_status": itemStatus,
+			"sponsored":            sponsored,
+			"sponsor_name":         sponsorName,
+		}
+		out = append(out, map[string]any{"type": "recommendation_reference", "id": id, "data": data})
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) UpdateRecommendationDecisionStatus(ctx context.Context, decisionID, status, errText string) error {
+	if strings.TrimSpace(decisionID) == "" || strings.TrimSpace(status) == "" {
+		return fmt.Errorf("decision_id and status are required")
+	}
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE recommendation_decisions
+		SET delivery_status=$2, error=$3
+		WHERE id=$1`, decisionID, status, errText)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("recommendation decision not found")
+	}
+	return nil
+}
+
 func (s *Store) CreateRecommendationJob(ctx context.Context, spec RecommendationJobSpec) (*RecommendationJob, error) {
 	if spec.CustomerID == "" || spec.UserID == "" || spec.SessionID == "" {
 		return nil, fmt.Errorf("customer_id, user_id, and session_id are required")

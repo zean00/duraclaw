@@ -185,6 +185,8 @@ Recommendation item request:
 
 Patch accepts the same fields as optional updates plus required `customer_id`. Decision and job routes are read-only audit/operations views for recommendation selection and timeout fallback processing.
 
+When a recommendation is delivered, outbound payloads include a `recommendation_reference` artifact. The artifact exposes the recommendation decision ID and selected catalog item metadata so clients can render, track, or reconcile the recommendation separately from the message text.
+
 Manual session compaction:
 
 - `POST /admin/sessions/{session_id}/compact`
