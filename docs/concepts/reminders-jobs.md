@@ -30,6 +30,8 @@ Reminder subscriptions are durable cron-like subscriptions. `schedule` accepts c
 
 Reminder workers are multi-instance safe. Due subscriptions are claimed with PostgreSQL row locks and expiring leases. Each fire creates a durable run with a deterministic idempotency key derived from the subscription and scheduled fire time, so a retry after worker crash reuses the same run instead of creating a duplicate.
 
+Agents can create reminders from the model loop through the built-in `create_reminder` tool. The tool persists a reminder subscription for the current customer/user/session and returns a typed `reminder_reference` artifact in the tool result. The reference contains the `subscription_id`, schedule metadata, and the ACP/admin management routes needed to pause, resume, update, or delete that specific reminder.
+
 Routes:
 
 - `POST /acp/reminders`

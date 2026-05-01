@@ -125,6 +125,7 @@ func NewWorkerWithProviders(store *db.Store, registry *providers.Registry, model
 		toolRegistry.Register(tools.ListMemoriesTool{Store: store})
 		toolRegistry.Register(tools.SavePreferenceTool{Store: store})
 		toolRegistry.Register(tools.ListPreferencesTool{Store: store})
+		toolRegistry.Register(tools.CreateReminderTool{Store: store})
 		registerMediaGenerationTools(toolRegistry, registry, store, modelConfig, nil)
 	}
 	return &Worker{store: store, providers: registry, modelConfig: modelConfig, processors: artifacts.NewRegistry(artifacts.MockProcessor{}), tools: toolRegistry, policy: policy.NewEngine(store), owner: owner, leaseFor: 2 * time.Minute, maxIterations: defaultMaxIterations, interruptWindow: interruptWindow, maxRefineDepth: maxRefinementDepth, embedder: embeddings.NewHashProvider(768)}
@@ -2208,7 +2209,7 @@ func (w *Worker) policyContext(run *db.Run, stepID, subject, content string) pol
 	if ids, err := w.policyPackIDsForRun(context.Background(), run); err == nil && len(ids) > 0 {
 		pc.PolicyPackIDs = ids
 	}
-	if strings.HasPrefix(subject, "duraclaw.") || subject == "echo" || subject == "remember" || subject == "list_memories" || subject == "save_preference" || subject == "list_preferences" {
+	if strings.HasPrefix(subject, "duraclaw.") || subject == "echo" || subject == "remember" || subject == "list_memories" || subject == "save_preference" || subject == "list_preferences" || subject == "create_reminder" {
 		pc.ToolName = subject
 	} else if subject != "" {
 		pc.WorkflowID = subject
@@ -2665,7 +2666,7 @@ func (w *Worker) executeToolCalls(ctx context.Context, run *db.Run, stepID strin
 			}
 			errText = &msg
 		}
-		if err := w.store.CompleteToolCall(ctx, callID, run.ID, map[string]any{"for_llm": result.ForLLM, "is_error": result.IsError}, errText); err != nil {
+		if err := w.store.CompleteToolCall(ctx, callID, run.ID, map[string]any{"for_llm": result.ForLLM, "artifacts": result.Artifacts, "is_error": result.IsError}, errText); err != nil {
 			return nil, err
 		}
 		if result.IsError {

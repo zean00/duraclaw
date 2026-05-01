@@ -441,6 +441,7 @@ The persistence layer also includes:
 - Artifact attachment/read/process policy checks for size, allowed media types, raw payload metadata fields, and representation reuse in prompt context.
 - Memory tools: `remember` and `list_memories` for stable facts.
 - Preference tools: `save_preference` and `list_preferences` for conditional preferences.
+- Reminder tool: `create_reminder` creates a user reminder and returns a `reminder_reference` artifact containing the subscription ID and pause/resume/delete API references.
 - Non-retryable tool metadata for write-like tools, with recovery query helpers.
 - Admin text knowledge ingestion into deterministic chunks.
 - Optional embedding provider seam for customer and shared knowledge chunk embeddings, with deterministic hash embeddings for tests/local use.

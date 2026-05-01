@@ -38,10 +38,17 @@ type RetryableTool interface {
 }
 
 type Result struct {
-	ForLLM  string `json:"for_llm"`
-	ForUser string `json:"for_user,omitempty"`
-	IsError bool   `json:"is_error"`
-	Err     error  `json:"-"`
+	ForLLM    string      `json:"for_llm"`
+	ForUser   string      `json:"for_user,omitempty"`
+	Artifacts []Reference `json:"artifacts,omitempty"`
+	IsError   bool        `json:"is_error"`
+	Err       error       `json:"-"`
+}
+
+type Reference struct {
+	Type string         `json:"type"`
+	ID   string         `json:"id"`
+	Data map[string]any `json:"data,omitempty"`
 }
 
 func NewResult(forLLM string) *Result { return &Result{ForLLM: forLLM} }
