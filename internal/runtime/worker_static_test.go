@@ -239,6 +239,7 @@ func TestRecommendationPipelineReusesScopeContextDecision(t *testing.T) {
 		`strings.EqualFold(strings.TrimSpace(scope.Intent), "implicit")`,
 		"scopeJudgeContext(ctx, run)",
 		`return strings.TrimSpace(content), "direct_message", nil`,
+		"recommendationSensitiveProductMix(recCtx, cfg)",
 		"CreateRecommendationJob",
 		"RecommendationArtifactsForRun",
 		"loaded, err := w.store.GetRun(ctx, run.ID)",

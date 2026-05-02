@@ -466,6 +466,50 @@ func TestRecommendationArtifactIncludesSelectedItem(t *testing.T) {
 	}
 }
 
+func TestRecommendationSensitiveProductMix(t *testing.T) {
+	cfg := recommendationProfileConfig{BlockSensitiveProductMix: true}
+	if !recommendationSensitiveProductMix("Aku sedih habis shalat, rekomendasikan hijab dong.", cfg) {
+		t.Fatal("expected sensitive product mix to be blocked")
+	}
+	if recommendationSensitiveProductMix("Aku butuh hijab simpel untuk kerja, boleh kasih rekomendasi.", cfg) {
+		t.Fatal("ordinary product recommendation should not be blocked")
+	}
+	if recommendationSensitiveProductMix("Aku sedih habis shalat.", cfg) {
+		t.Fatal("support-only sensitive message should not be treated as product mix")
+	}
+}
+
+func TestRecommendationSensitiveProductMixUsesImplicitContext(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(mock.Close)
+	store := db.NewStore(mock)
+	w := NewWorkerWithProviders(store, nil, providers.ModelConfig{Primary: "mock/duraclaw"}, "test")
+	run := &db.Run{ID: "run-1", CustomerID: "c", UserID: "u", SessionID: "s"}
+
+	mock.ExpectQuery("SELECT channel_context").WithArgs("run-1").WillReturnError(pgx.ErrNoRows)
+	mock.ExpectQuery("SELECT customer_id").WithArgs("c", "s").WillReturnError(pgx.ErrNoRows)
+	mock.ExpectQuery("SELECT id").WithArgs("c", "s", 6).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "role", "content", "created_at"}).
+			AddRow("msg-1", "user", []byte(`{"parts":[{"type":"text","text":"Aku sedih habis shalat."}]}`), time.Now()))
+
+	recCtx, mode, err := w.recommendationInputContext(context.Background(), run, scopeJudgement{Intent: "implicit"}, "boleh rekomendasikan yang cocok?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode != "implicit_context" || !strings.Contains(recCtx, "Aku sedih habis shalat") || !strings.Contains(recCtx, "boleh rekomendasikan") {
+		t.Fatalf("mode=%q context=%q", mode, recCtx)
+	}
+	if !recommendationSensitiveProductMix(recCtx, recommendationProfileConfig{BlockSensitiveProductMix: true}) {
+		t.Fatalf("expanded implicit context should be blocked: %q", recCtx)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAgentActivityHonorsIncludeAndOmit(t *testing.T) {
 	outboundStore := &fakeOutboundStore{}
 	w := (&Worker{}).

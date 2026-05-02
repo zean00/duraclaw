@@ -275,6 +275,13 @@ func validateProfileConfigValues(value any) error {
 				}
 			}
 		}
+		for _, key := range []string{"sensitive_context_terms", "product_request_terms"} {
+			if raw, ok := rec[key]; ok {
+				if err := validateStringArray("profile_config.recommendation."+key, raw); err != nil {
+					return err
+				}
+			}
+		}
 		if raw, ok := rec["max_candidates"]; ok {
 			max, ok := numericValue(raw)
 			if !ok || max < 0 {
@@ -284,6 +291,11 @@ func validateProfileConfigValues(value any) error {
 		if raw, ok := rec["allow_sponsored"]; ok {
 			if _, ok := raw.(bool); !ok {
 				return fmt.Errorf("profile_config.recommendation.allow_sponsored must be a boolean")
+			}
+		}
+		if raw, ok := rec["block_sensitive_product_mix"]; ok {
+			if _, ok := raw.(bool); !ok {
+				return fmt.Errorf("profile_config.recommendation.block_sensitive_product_mix must be a boolean")
 			}
 		}
 	}

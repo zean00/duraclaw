@@ -1327,13 +1327,16 @@ type agentProfileConfig struct {
 }
 
 type recommendationProfileConfig struct {
-	Enabled         bool   `json:"enabled"`
-	TimeoutMS       int    `json:"timeout_ms"`
-	Model           string `json:"model"`
-	MergeModel      string `json:"merge_model"`
-	MaxCandidates   int    `json:"max_candidates"`
-	AllowSponsored  bool   `json:"allow_sponsored"`
-	DisclosureStyle string `json:"disclosure_style"`
+	Enabled                  bool     `json:"enabled"`
+	TimeoutMS                int      `json:"timeout_ms"`
+	Model                    string   `json:"model"`
+	MergeModel               string   `json:"merge_model"`
+	MaxCandidates            int      `json:"max_candidates"`
+	AllowSponsored           bool     `json:"allow_sponsored"`
+	DisclosureStyle          string   `json:"disclosure_style"`
+	BlockSensitiveProductMix bool     `json:"block_sensitive_product_mix"`
+	SensitiveContextTerms    []string `json:"sensitive_context_terms"`
+	ProductRequestTerms      []string `json:"product_request_terms"`
 }
 
 func (w *Worker) agentProfile(ctx context.Context, run *db.Run) (agentProfileConfig, error) {
@@ -1600,6 +1603,11 @@ func (w *Worker) startRecommendationSidecar(ctx context.Context, run *db.Run, sc
 			ch <- recommendationSidecarResult{ContextMode: mode, Err: err}
 			return
 		}
+		if cfg.BlockSensitiveProductMix && recommendationSensitiveProductMix(recCtx, cfg) {
+			w.enqueueAsyncRunEvent(ctx, run, "recommendation.blocked", map[string]any{"reason": "sensitive_product_mix", "context_mode": mode})
+			ch <- recommendationSidecarResult{ContextMode: mode, Context: recCtx, Result: recommendationLLMResult{Reason: "sensitive_product_mix_blocked"}}
+			return
+		}
 		timeoutCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.TimeoutMS)*time.Millisecond)
 		defer cancel()
 		candidates, result, err := w.runRecommendationSelection(timeoutCtx, run, cfg, recCtx)
@@ -1610,6 +1618,32 @@ func (w *Worker) startRecommendationSidecar(ctx context.Context, run *db.Run, sc
 		ch <- out
 	}()
 	return ch
+}
+
+func recommendationSensitiveProductMix(content string, cfg recommendationProfileConfig) bool {
+	text := strings.ToLower(strings.Join(strings.Fields(content), " "))
+	if text == "" {
+		return false
+	}
+	sensitiveTerms := cfg.SensitiveContextTerms
+	if len(sensitiveTerms) == 0 {
+		sensitiveTerms = []string{"sedih", "sakit", "duka", "shalat", "salat", "quran", "al-quran", "curhat", "postpartum", "haid"}
+	}
+	productTerms := cfg.ProductRequestTerms
+	if len(productTerms) == 0 {
+		productTerms = []string{"rekomendasi", "rekomendasikan", "produk", "hijab", "katalog", "belanja", "beli", "checkout"}
+	}
+	return containsNormalizedTerm(text, sensitiveTerms) && containsNormalizedTerm(text, productTerms)
+}
+
+func containsNormalizedTerm(text string, terms []string) bool {
+	for _, term := range terms {
+		term = strings.ToLower(strings.TrimSpace(term))
+		if term != "" && strings.Contains(text, term) {
+			return true
+		}
+	}
+	return false
 }
 
 func (w *Worker) applyRecommendationResult(ctx context.Context, run *db.Run, scope scopeJudgement, content string, ch <-chan recommendationSidecarResult) string {
