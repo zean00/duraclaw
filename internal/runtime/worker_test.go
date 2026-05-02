@@ -36,14 +36,17 @@ func TestExtractTextForReminderDueRun(t *testing.T) {
 		"event_type": "reminder_due",
 		"text":       "Bawa tas hitam ke sekolah anak",
 		"reminder": map[string]any{
-			"title": "Bawa tas hitam ke sekolah anak",
+			"title": "School reminder label",
 		},
 	})
 	got := extractText(raw)
-	for _, want := range []string{"waktunya sudah tiba", "Jangan membuat", "Jangan lupa {isi pengingat}"} {
+	for _, want := range []string{"waktunya sudah tiba", "Bawa tas hitam ke sekolah anak", "Jangan membuat", "Jangan lupa {isi pengingat}"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected %q in %q", want, got)
 		}
+	}
+	if strings.Contains(got, "School reminder label") {
+		t.Fatalf("due prompt should prefer payload text over reminder title: %q", got)
 	}
 	if strings.Contains(got, "Saya akan mengingatkanmu") {
 		t.Fatalf("due prompt should not use scheduling wording: %q", got)

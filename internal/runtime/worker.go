@@ -3110,15 +3110,15 @@ func isReminderDueRun(raw json.RawMessage) bool {
 func reminderDuePromptText(raw json.RawMessage) string {
 	payload := inputMap(raw)
 	reminder, _ := payload["reminder"].(map[string]any)
-	title, _ := reminder["title"].(string)
-	if strings.TrimSpace(title) == "" {
-		title, _ = payload["text"].(string)
+	reminderText, _ := payload["text"].(string)
+	if strings.TrimSpace(reminderText) == "" {
+		reminderText, _ = reminder["title"].(string)
 	}
-	title = strings.TrimSpace(title)
-	if title == "" {
+	reminderText = strings.TrimSpace(reminderText)
+	if reminderText == "" {
 		return "Ini adalah pengingat yang waktunya sudah tiba. Tulis pesan pengingat singkat untuk pengguna. Jangan membuat atau menjadwalkan pengingat baru."
 	}
-	return fmt.Sprintf("Ini adalah pengingat yang waktunya sudah tiba: %q.\nTulis satu pesan pengingat singkat dan natural dalam Bahasa Indonesia untuk pengguna.\nJangan membuat, menjadwalkan, atau mengonfirmasi pengingat baru.\nJangan memakai kata besok, nanti, sebentar lagi, sudah dibuat, atau akan mengingatkan.\nContoh gaya: Jangan lupa {isi pengingat} hari ini.", title)
+	return fmt.Sprintf("Ini adalah pengingat yang waktunya sudah tiba: %q.\nTulis satu pesan pengingat singkat dan natural dalam Bahasa Indonesia untuk pengguna.\nJangan membuat, menjadwalkan, atau mengonfirmasi pengingat baru.\nJangan memakai kata besok, nanti, sebentar lagi, sudah dibuat, atau akan mengingatkan.\nContoh gaya: Jangan lupa {isi pengingat} hari ini.", reminderText)
 }
 
 func workflowIDFromInput(raw json.RawMessage) string {
