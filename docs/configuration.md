@@ -212,6 +212,8 @@ NEXUS_TOKEN=...
 
 If `NEXUS_OUTBOUND_BULK_URL` is configured, the outbox worker groups claimed outbound rows by topic and posts a batch payload. Without it, Duraclaw posts one outbound intent per request to `NEXUS_OUTBOUND_URL`.
 
+Delivery failures are logged by the outbox worker and released for retry. `/readyz` exposes `outbox_pending`, `outbox_unclaimed`, `outbox_claimed`, and `outbox_stale`; use these fields to detect a stopped worker, stuck sink call, or expired claim lease during local Nexus validation.
+
 ## Session Monitor
 
 | Variable | Default | Description |

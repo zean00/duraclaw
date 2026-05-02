@@ -3,6 +3,7 @@ package outbound
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -108,6 +109,30 @@ func TestOutboxWorkerStopsOnSinkError(t *testing.T) {
 	count, err := NewOutboxWorker(store, sink, "owner").RunOnce(context.Background())
 	if err == nil || count != 0 || len(store.completed) != 0 || len(store.released) != 1 {
 		t.Fatalf("count=%d err=%v store=%#v", count, err, store)
+	}
+}
+
+func TestOutboxWorkerLoopReportsSinkErrors(t *testing.T) {
+	store := &fakeOutboxStore{items: []db.OutboxItem{{ID: 1}}}
+	sink := &fakeSink{err: errors.New("boom")}
+	errCh := make(chan error, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	worker := NewOutboxWorker(store, sink, "owner").WithErrorHandler(func(err error) {
+		errCh <- err
+		cancel()
+	})
+	err := worker.Loop(ctx, time.Millisecond)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("loop err=%v", err)
+	}
+	select {
+	case err := <-errCh:
+		if err == nil || !strings.Contains(err.Error(), "boom") {
+			t.Fatalf("reported err=%v", err)
+		}
+	default:
+		t.Fatal("expected loop error handler to receive sink error")
 	}
 }
 

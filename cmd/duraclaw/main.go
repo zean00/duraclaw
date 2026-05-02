@@ -125,7 +125,9 @@ func main() {
 			}
 		}
 	}()
-	outboxWorker := outbound.NewOutboxWorker(store, buildOutboxSink(cfg), cfg.Hostname).WithCounters(counters)
+	outboxWorker := outbound.NewOutboxWorker(store, buildOutboxSink(cfg), cfg.Hostname).WithCounters(counters).WithErrorHandler(func(err error) {
+		logger.ErrorContext(ctx, "outbox delivery failed", "error", err)
+	})
 	go func() {
 		if err := outboxWorker.Loop(ctx, cfg.OutboxInterval); err != nil && err != context.Canceled {
 			logger.ErrorContext(ctx, "outbox worker stopped", "error", err)

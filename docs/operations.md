@@ -10,7 +10,7 @@ GET /readyz
 `/readyz` checks database connectivity and returns queue counts:
 
 - Queued and active runs.
-- Pending outbound rows.
+- Pending outbound rows, split into unclaimed, currently claimed, and stale claimed rows.
 - Queued async write jobs.
 - Due scheduler jobs.
 
@@ -21,6 +21,18 @@ GET /metrics
 ```
 
 The metrics endpoint exposes in-process counters and duration histograms in Prometheus text format. Optional OTLP export can send spans and metrics to an OpenTelemetry collector.
+
+## Outbox Delivery
+
+Duraclaw writes every outbound intent to `outbound_intents` and `async_outbox`. Automatic Nexus delivery requires a running Duraclaw process with the outbox worker enabled and `DURACLAW_OUTBOX_SINK=nexus` or `http`.
+
+Use `/readyz` to distinguish common local failures:
+
+- `outbox_pending > 0` and `outbox_unclaimed > 0`: no worker is draining rows, or rows are waiting for retry.
+- `outbox_claimed > 0`: a worker has claimed rows and is delivering or stuck in a sink call.
+- `outbox_stale > 0`: a previous worker likely stopped after claiming rows; another worker can reclaim them.
+
+The outbox worker logs sink failures as `outbox delivery failed` and releases rows for retry after the configured retry delay. If a process is killed while rows are claimed, they become retryable after the database claim lease expires.
 
 Important metric groups include:
 

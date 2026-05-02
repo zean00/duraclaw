@@ -20,15 +20,18 @@ func TestStoreAcceptsPgxMockPool(t *testing.T) {
 			"runs_queued",
 			"runs_active",
 			"outbox_pending",
+			"outbox_unclaimed",
+			"outbox_claimed",
+			"outbox_stale",
 			"async_write_queued",
 			"scheduler_due",
-		}).AddRow(1, 2, 3, 4, 5))
+		}).AddRow(1, 2, 3, 4, 5, 6, 7, 8))
 
 	stats, err := NewStore(mock).QueueStats(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats != (QueueStats{RunsQueued: 1, RunsActive: 2, OutboxPending: 3, AsyncWriteQueued: 4, SchedulerDue: 5}) {
+	if stats != (QueueStats{RunsQueued: 1, RunsActive: 2, OutboxPending: 3, OutboxUnclaimed: 4, OutboxClaimed: 5, OutboxStale: 6, AsyncWriteQueued: 7, SchedulerDue: 8}) {
 		t.Fatalf("stats=%#v", stats)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {

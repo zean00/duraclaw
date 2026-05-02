@@ -43,10 +43,13 @@ func TestStoreHasQueueStatsForReadiness(t *testing.T) {
 		t.Fatal(err)
 	}
 	sql := string(raw)
-	for _, want := range []string{"QueueStats", "runs WHERE state='queued'", "async_outbox WHERE completed_at IS NULL", "async_write_jobs WHERE state='queued'", "scheduler_jobs WHERE enabled=true"} {
+	for _, want := range []string{"QueueStats", "runs WHERE state='queued'", "async_outbox WHERE completed_at IS NULL", "claim_owner IS NULL", "claim_expires_at < now()", "claim_expires_at >= now()", "async_write_jobs WHERE state='queued'", "scheduler_jobs WHERE enabled=true"} {
 		if !strings.Contains(sql, want) {
 			t.Fatalf("queue stats missing %q", want)
 		}
+	}
+	if strings.Contains(sql, "claim_owner IS NULL OR claim_expires_at < now()") {
+		t.Fatal("outbox readiness buckets must be disjoint; stale claimed rows should not count as unclaimed")
 	}
 }
 

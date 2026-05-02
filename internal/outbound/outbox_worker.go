@@ -34,6 +34,7 @@ type OutboxWorker struct {
 	retryDelay time.Duration
 	leaseFor   time.Duration
 	counters   *observability.Counters
+	onError    func(error)
 }
 
 func NewOutboxWorker(store OutboxStore, sink Sink, owner string) *OutboxWorker {
@@ -45,6 +46,11 @@ func NewOutboxWorker(store OutboxStore, sink Sink, owner string) *OutboxWorker {
 
 func (w *OutboxWorker) WithCounters(counters *observability.Counters) *OutboxWorker {
 	w.counters = counters
+	return w
+}
+
+func (w *OutboxWorker) WithErrorHandler(fn func(error)) *OutboxWorker {
+	w.onError = fn
 	return w
 }
 
@@ -199,8 +205,13 @@ func (w *OutboxWorker) Loop(ctx context.Context, every time.Duration) error {
 	ticker := time.NewTicker(every)
 	defer ticker.Stop()
 	for {
-		if _, err := w.RunOnce(ctx); err != nil && ctx.Err() != nil {
-			return ctx.Err()
+		if _, err := w.RunOnce(ctx); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if w.onError != nil {
+				w.onError(err)
+			}
 		}
 		select {
 		case <-ctx.Done():

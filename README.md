@@ -104,6 +104,8 @@ NEXUS_OUTBOUND_URL=http://nexus.internal/acp/outbound
 NEXUS_TOKEN=...
 ```
 
+`/readyz` reports `outbox_pending`, `outbox_unclaimed`, `outbox_claimed`, and `outbox_stale`. If local validation creates outbound rows but Nexus does not receive them, check these fields and the `outbox delivery failed` logs to confirm the outbox worker is running with the Nexus sink and not waiting on a claim lease.
+
 Artifact processing defaults to the built-in mock processor. To use an HTTP processor for transcription, OCR, document extraction, or other media representation work:
 
 ```bash

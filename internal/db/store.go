@@ -127,6 +127,9 @@ type QueueStats struct {
 	RunsQueued       int `json:"runs_queued"`
 	RunsActive       int `json:"runs_active"`
 	OutboxPending    int `json:"outbox_pending"`
+	OutboxUnclaimed  int `json:"outbox_unclaimed"`
+	OutboxClaimed    int `json:"outbox_claimed"`
+	OutboxStale      int `json:"outbox_stale"`
 	AsyncWriteQueued int `json:"async_write_queued"`
 	SchedulerDue     int `json:"scheduler_due"`
 }
@@ -206,9 +209,12 @@ func (s *Store) QueueStats(ctx context.Context) (QueueStats, error) {
 			(SELECT count(*) FROM runs WHERE state='queued'),
 			(SELECT count(*) FROM runs WHERE state IN ('leased','running','running_workflow','awaiting_user')),
 			(SELECT count(*) FROM async_outbox WHERE completed_at IS NULL),
+			(SELECT count(*) FROM async_outbox WHERE completed_at IS NULL AND claim_owner IS NULL),
+			(SELECT count(*) FROM async_outbox WHERE completed_at IS NULL AND claim_owner IS NOT NULL AND claim_expires_at >= now()),
+			(SELECT count(*) FROM async_outbox WHERE completed_at IS NULL AND claim_owner IS NOT NULL AND claim_expires_at < now()),
 			(SELECT count(*) FROM async_write_jobs WHERE state='queued'),
 			(SELECT count(*) FROM scheduler_jobs WHERE enabled=true AND next_run_at <= now() AND (lease_expires_at IS NULL OR lease_expires_at < now()))`).
-		Scan(&stats.RunsQueued, &stats.RunsActive, &stats.OutboxPending, &stats.AsyncWriteQueued, &stats.SchedulerDue)
+		Scan(&stats.RunsQueued, &stats.RunsActive, &stats.OutboxPending, &stats.OutboxUnclaimed, &stats.OutboxClaimed, &stats.OutboxStale, &stats.AsyncWriteQueued, &stats.SchedulerDue)
 	return stats, err
 }
 
