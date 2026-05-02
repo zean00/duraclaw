@@ -368,7 +368,9 @@ func (w *Worker) process(ctx context.Context, run *db.Run) (err error) {
 		return err
 	}
 	var toolDefs []providers.ToolDefinition
-	if !scope.InjectionRisk {
+	if isReminderDueRun(run.Input) {
+		w.enqueueAsyncRunEvent(ctx, run, "reminder_due.tools_blocked", map[string]any{"reason": "due reminder notification must not create or update reminders"})
+	} else if !scope.InjectionRisk {
 		toolDefs, err = w.toolDefinitions(ctx, run)
 		if err != nil {
 			return err
@@ -3071,6 +3073,11 @@ func (w *Worker) artifactRepresentationSummaries(ctx context.Context, run *db.Ru
 }
 
 func extractText(raw json.RawMessage) string {
+	if isReminderDueRun(raw) {
+		if text := reminderDuePromptText(raw); text != "" {
+			return text
+		}
+	}
 	var payload struct {
 		Parts []db.ContentPart `json:"parts"`
 		Text  string           `json:"text"`
@@ -3092,6 +3099,26 @@ func extractText(raw json.RawMessage) string {
 		return "I received your request."
 	}
 	return b.String()
+}
+
+func isReminderDueRun(raw json.RawMessage) bool {
+	payload := inputMap(raw)
+	eventType, _ := payload["event_type"].(string)
+	return strings.EqualFold(strings.TrimSpace(eventType), "reminder_due")
+}
+
+func reminderDuePromptText(raw json.RawMessage) string {
+	payload := inputMap(raw)
+	reminder, _ := payload["reminder"].(map[string]any)
+	title, _ := reminder["title"].(string)
+	if strings.TrimSpace(title) == "" {
+		title, _ = payload["text"].(string)
+	}
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return "Ini adalah pengingat yang waktunya sudah tiba. Tulis pesan pengingat singkat untuk pengguna. Jangan membuat atau menjadwalkan pengingat baru."
+	}
+	return fmt.Sprintf("Ini adalah pengingat yang waktunya sudah tiba: %q.\nTulis satu pesan pengingat singkat dan natural dalam Bahasa Indonesia untuk pengguna.\nJangan membuat, menjadwalkan, atau mengonfirmasi pengingat baru.\nJangan memakai kata besok, nanti, sebentar lagi, sudah dibuat, atau akan mengingatkan.\nContoh gaya: Jangan lupa {isi pengingat} hari ini.", title)
 }
 
 func workflowIDFromInput(raw json.RawMessage) string {

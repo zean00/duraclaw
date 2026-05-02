@@ -31,6 +31,25 @@ func TestExtractTextFromContentParts(t *testing.T) {
 	}
 }
 
+func TestExtractTextForReminderDueRun(t *testing.T) {
+	raw, _ := json.Marshal(map[string]any{
+		"event_type": "reminder_due",
+		"text":       "Bawa tas hitam ke sekolah anak",
+		"reminder": map[string]any{
+			"title": "Bawa tas hitam ke sekolah anak",
+		},
+	})
+	got := extractText(raw)
+	for _, want := range []string{"waktunya sudah tiba", "Jangan membuat", "Jangan lupa {isi pengingat}"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %q in %q", want, got)
+		}
+	}
+	if strings.Contains(got, "Saya akan mengingatkanmu") {
+		t.Fatalf("due prompt should not use scheduling wording: %q", got)
+	}
+}
+
 func TestLocationPromptContextFromContentParts(t *testing.T) {
 	raw, _ := json.Marshal(map[string]any{
 		"parts": []map[string]any{
