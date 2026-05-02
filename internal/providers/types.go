@@ -456,6 +456,7 @@ func (m MockProvider) ChatDurable(ctx context.Context, _ CallMetadata, messages 
 type ModelConfig struct {
 	Primary   string
 	Fallbacks []string
+	Options   map[string]any
 }
 
 type ModelRef struct {

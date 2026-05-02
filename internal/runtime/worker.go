@@ -895,7 +895,7 @@ func (w *Worker) chat(ctx context.Context, run *db.Run, messages []providers.Mes
 			var resp *providers.LLMResponse
 			started := time.Now()
 			if streamer, ok := provider.(providers.StreamingProvider); ok {
-				resp, err = w.chatStream(ctx, run, streamer, messages, toolDefs, candidate.Model)
+				resp, err = w.chatStream(ctx, run, streamer, messages, toolDefs, candidate.Model, modelConfig.Options)
 			} else if durable, ok := provider.(providers.DurableProvider); ok {
 				resp, err = durable.ChatDurable(ctx, providers.CallMetadata{
 					CustomerID:      run.CustomerID,
@@ -906,9 +906,9 @@ func (w *Worker) chat(ctx context.Context, run *db.Run, messages []providers.Mes
 					RequestID:       run.RequestID,
 					Provider:        candidate.Provider,
 					Model:           candidate.Model,
-				}, messages, toolDefs, candidate.Model, nil)
+				}, messages, toolDefs, candidate.Model, modelConfig.Options)
 			} else {
-				resp, err = provider.Chat(ctx, messages, toolDefs, candidate.Model, nil)
+				resp, err = provider.Chat(ctx, messages, toolDefs, candidate.Model, modelConfig.Options)
 			}
 			if w.counters != nil {
 				w.counters.ObserveDuration("model_call_duration_seconds", time.Since(started))
@@ -941,8 +941,8 @@ func (w *Worker) chat(ctx context.Context, run *db.Run, messages []providers.Mes
 	return nil, lastErr
 }
 
-func (w *Worker) chatStream(ctx context.Context, run *db.Run, provider providers.StreamingProvider, messages []providers.Message, toolDefs []providers.ToolDefinition, model string) (*providers.LLMResponse, error) {
-	ch, err := provider.ChatStream(ctx, messages, toolDefs, model, nil)
+func (w *Worker) chatStream(ctx context.Context, run *db.Run, provider providers.StreamingProvider, messages []providers.Message, toolDefs []providers.ToolDefinition, model string, options map[string]any) (*providers.LLMResponse, error) {
+	ch, err := provider.ChatStream(ctx, messages, toolDefs, model, options)
 	if err != nil {
 		return nil, err
 	}
@@ -2035,9 +2035,10 @@ func (w *Worker) modelConfigForRun(ctx context.Context, run *db.Run) (providers.
 		return modelConfig, err
 	}
 	var payload struct {
-		Primary   string   `json:"primary"`
-		Model     string   `json:"model"`
-		Fallbacks []string `json:"fallbacks"`
+		Primary   string         `json:"primary"`
+		Model     string         `json:"model"`
+		Fallbacks []string       `json:"fallbacks"`
+		Options   map[string]any `json:"options"`
 	}
 	if err := json.Unmarshal(version.ModelConfig, &payload); err != nil {
 		return modelConfig, err
@@ -2049,6 +2050,9 @@ func (w *Worker) modelConfigForRun(ctx context.Context, run *db.Run) (providers.
 	}
 	if payload.Fallbacks != nil {
 		modelConfig.Fallbacks = payload.Fallbacks
+	}
+	if payload.Options != nil {
+		modelConfig.Options = payload.Options
 	}
 	return modelConfig, nil
 }

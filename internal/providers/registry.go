@@ -57,6 +57,20 @@ func (r *Registry) ChatWithFallback(
 		if !ok {
 			return nil, fmt.Errorf("provider %q is not registered", providerName)
 		}
-		return provider.Chat(ctx, messages, tools, model, options)
+		return provider.Chat(ctx, messages, tools, model, MergeOptions(cfg.Options, options))
 	})
+}
+
+func MergeOptions(base, override map[string]any) map[string]any {
+	if len(base) == 0 && len(override) == 0 {
+		return nil
+	}
+	merged := make(map[string]any, len(base)+len(override))
+	for key, value := range base {
+		merged[key] = value
+	}
+	for key, value := range override {
+		merged[key] = value
+	}
+	return merged
 }

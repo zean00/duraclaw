@@ -204,7 +204,10 @@ func jsonObject(v any) []byte {
 }
 
 func validateAgentInstanceVersionSpec(spec AgentInstanceVersionSpec) error {
-	if err := validateObjectConfig("model_config", spec.ModelConfig, []string{"primary", "model", "fallbacks"}); err != nil {
+	if err := validateObjectConfig("model_config", spec.ModelConfig, []string{"primary", "model", "fallbacks", "options"}); err != nil {
+		return err
+	}
+	if err := validateModelConfigValues(spec.ModelConfig); err != nil {
 		return err
 	}
 	if err := validateObjectConfig("tool_config", spec.ToolConfig, []string{"allowed_tools", "disabled_tools", "max_iterations", "max_tool_calls_per_run", "tool_aliases"}); err != nil {
@@ -232,6 +235,19 @@ func validateAgentInstanceVersionSpec(spec AgentInstanceVersionSpec) error {
 		return err
 	}
 	return validateMCPConfigValues(spec.MCPConfig)
+}
+
+func validateModelConfigValues(value any) error {
+	obj, err := decodeConfigObject("model_config", value)
+	if err != nil || obj == nil {
+		return err
+	}
+	if raw, ok := obj["options"]; ok {
+		if _, ok := raw.(map[string]any); !ok {
+			return fmt.Errorf("model_config.options must be an object")
+		}
+	}
+	return nil
 }
 
 func validateProfileConfigValues(value any) error {

@@ -56,7 +56,7 @@ func TestWorkerStreamsProviderDeltasToRunEvents(t *testing.T) {
 	src := string(raw)
 	for _, want := range []string{
 		"providers.StreamingProvider",
-		"ChatStream(ctx, messages, toolDefs, model, nil)",
+		"ChatStream(ctx, messages, toolDefs, model, options)",
 		`AddEvent(ctx, run.ID, "model.delta"`,
 		`AddEvent(ctx, run.ID, "model.tool_delta"`,
 	} {
