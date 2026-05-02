@@ -75,7 +75,7 @@ type SavePreferenceTool struct {
 
 func (SavePreferenceTool) Name() string { return "save_preference" }
 func (SavePreferenceTool) Description() string {
-	return "Persist a conditional user preference, such as preferences that apply only in a season, context, location, or situation."
+	return "Persist a user preference and return a preference reference artifact. Use this when the user asks you to remember, save, store, note, or record their preferences, choices, response style, format, habits, likes/dislikes, or conditional preferences. Do not merely say the preference was saved; call this tool so the response can include a preference_reference artifact."
 }
 func (SavePreferenceTool) Retryable() bool { return false }
 func (SavePreferenceTool) Parameters() map[string]any {

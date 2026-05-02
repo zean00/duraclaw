@@ -64,7 +64,7 @@ Examples:
 
 Preferences include a `condition` JSON object. Prompt context includes only preferences that match the current context, such as season, month, or hour.
 
-When the model-loop `save_preference` tool writes a preference, the tool result includes a `preference_reference` artifact with the preference ID plus admin update/delete route references.
+When the model-loop `save_preference` tool writes a preference, the tool result includes a `preference_reference` artifact with the preference ID plus admin update/delete route references. The runtime prompt instructs the agent not to claim a preference was saved unless the `save_preference` tool succeeds; user-visible "saved" confirmations should therefore include the tool artifact in the final outbound message.
 
 ## Knowledge
 

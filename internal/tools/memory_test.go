@@ -72,6 +72,12 @@ func TestSavePreferenceTool(t *testing.T) {
 	if !strings.Contains(res.ForLLM, `"preference_reference"`) || res.Artifacts[0].Data["delete_api"] != "DELETE /admin/preferences/pref-1" {
 		t.Fatalf("res=%#v", res)
 	}
+	desc := SavePreferenceTool{}.Description()
+	for _, want := range []string{"preference reference artifact", "call this tool", "preference_reference"} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("description missing %q: %s", want, desc)
+		}
+	}
 }
 
 func TestListPreferencesTool(t *testing.T) {

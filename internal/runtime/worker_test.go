@@ -118,6 +118,15 @@ func TestMessageTextFromStoredAssistantContent(t *testing.T) {
 	}
 }
 
+func TestPersistenceToolPromptContextRequiresToolUse(t *testing.T) {
+	got := persistenceToolPromptContext()
+	for _, want := range []string{"save_preference", "remember tool", "Do not claim", "tool call succeeded"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("persistence guidance missing %q: %s", want, got)
+		}
+	}
+}
+
 func TestWorkflowOutputTextPrefersText(t *testing.T) {
 	got := workflowOutputText(map[string]any{"text": "  hello  ", "other": true})
 	if got != "hello" {

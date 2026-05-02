@@ -1099,6 +1099,7 @@ func (w *Worker) providerMessages(ctx context.Context, run *db.Run, currentText 
 		promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: channelContext})
 	}
 	promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: currentTimePromptContext(time.Now())})
+	promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: persistenceToolPromptContext()})
 	if locationContext := locationPromptContext(run.Input); locationContext != "" {
 		promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: locationContext})
 	}
@@ -1172,6 +1173,10 @@ func (w *Worker) providerMessages(ctx context.Context, run *db.Run, currentText 
 		}
 	}
 	return messages, nil
+}
+
+func persistenceToolPromptContext() string {
+	return "Persistence tool rules: If the user asks you to remember, save, store, note, or record a stable fact, use the remember tool when available. If the user asks you to remember, save, store, note, or record a preference, choice, style, format, habit, or conditional preference, use the save_preference tool when available. Do not claim that a memory or preference was saved unless the corresponding tool call succeeded. If persistence tools are unavailable, say you cannot save it persistently."
 }
 
 func providerContentParts(raw json.RawMessage, fallbackText string) []providers.ContentPart {
