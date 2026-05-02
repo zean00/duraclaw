@@ -69,6 +69,9 @@ func TestReminderToolGuidanceDistinguishesFromRemember(t *testing.T) {
 	if !strings.Contains(reminder.Description(), "ingatkan saya") || !strings.Contains(reminder.Description(), "Do not use remember") || !strings.Contains(reminder.Description(), "Do not assume ambiguous times") {
 		t.Fatalf("create_reminder description should cover reminder phrasing: %q", reminder.Description())
 	}
+	if !strings.Contains(reminder.Description(), "generic notes") || !strings.Contains(remember.Description(), "todo lists") {
+		t.Fatalf("persistence tools should defer notes and todos to customer capture tools")
+	}
 	params := reminder.Parameters()
 	props := params["properties"].(map[string]any)
 	title := props["title"].(map[string]any)
@@ -84,6 +87,33 @@ func TestRememberRejectsReminderLikeContent(t *testing.T) {
 	})
 	if res == nil || !res.IsError || !strings.Contains(res.ForLLM, "create_reminder") {
 		t.Fatalf("expected reminder-like memory rejection, got %#v", res)
+	}
+}
+
+func TestRememberRejectsCaptureLikeContent(t *testing.T) {
+	res := RememberTool{Store: &fakeMemoryStore{}}.Execute(context.Background(), ExecutionContext{}, map[string]any{
+		"type":    "note",
+		"content": "Catat ide menu bekal sehat untuk anak",
+	})
+	if res == nil || !res.IsError || !strings.Contains(res.ForLLM, "capture tool") {
+		t.Fatalf("expected capture-like memory rejection, got %#v", res)
+	}
+}
+
+func TestRememberAllowsStableFactsContainingIdeSubstring(t *testing.T) {
+	for _, content := range []string{
+		"User works in video production",
+		"User's IDE is VS Code",
+		"User resides in Jakarta",
+	} {
+		store := &fakeMemoryStore{}
+		res := RememberTool{Store: store}.Execute(context.Background(), ExecutionContext{}, map[string]any{
+			"type":    "fact",
+			"content": content,
+		})
+		if res == nil || res.IsError || store.addedContent != content {
+			t.Fatalf("expected stable fact to be saved for %q, got res=%#v store=%#v", content, res, store)
+		}
 	}
 }
 

@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 type MemoryStore interface {
@@ -21,14 +23,14 @@ type RememberTool struct {
 
 func (RememberTool) Name() string { return "remember" }
 func (RememberTool) Description() string {
-	return "Persist a stable user fact for future context, such as family, work, home, or facts that rarely change. Do not use for reminders, alarms, scheduled tasks, or requests like 'ingatkan saya'; use create_reminder instead."
+	return "Persist a stable user fact for future context, such as family, work, home, or facts that rarely change. Do not use for reminders, alarms, scheduled tasks, or requests like 'ingatkan saya'; use create_reminder instead. Do not use for generic notes, ideas, bookmarks, todo lists, or unscheduled tasks; use a customer notes/todo tool when available."
 }
 func (RememberTool) Retryable() bool { return false }
 func (RememberTool) Parameters() map[string]any {
 	return map[string]any{
 		"properties": map[string]any{
 			"type":    map[string]any{"type": "string", "description": "Stable memory type, usually fact."},
-			"content": map[string]any{"type": "string", "description": "Stable fact to remember permanently. Not a reminder request or scheduled task."},
+			"content": map[string]any{"type": "string", "description": "Stable fact to remember permanently. Not a reminder request, scheduled task, note, idea, bookmark, or todo item."},
 		},
 		"required":             []any{"content"},
 		"additionalProperties": false,
@@ -46,6 +48,9 @@ func (t RememberTool) Execute(ctx context.Context, exec ExecutionContext, args m
 	content, _ := args["content"].(string)
 	if isReminderLikeMemory(memoryType, content) {
 		return ErrorResult("remember is only for stable user facts. Use create_reminder for reminder, alarm, and scheduled notification requests.")
+	}
+	if isCaptureLikeMemory(memoryType, content) {
+		return ErrorResult("remember is only for stable user facts. Use the customer's notes/todo/capture tool for notes, ideas, bookmarks, todo lists, and unscheduled tasks when available.")
 	}
 	id, err := t.Store.AddMemory(ctx, exec.CustomerID, exec.UserID, exec.SessionID, memoryType, content, map[string]any{"run_id": exec.RunID})
 	if err != nil {
@@ -67,6 +72,55 @@ func isReminderLikeMemory(memoryType, content string) bool {
 		}
 	}
 	return false
+}
+
+func isCaptureLikeMemory(memoryType, content string) bool {
+	text := strings.TrimSpace(memoryType + " " + content)
+	lowerText := strings.ToLower(text)
+	for _, token := range []string{"note", "notes", "catatan", "catat", "bookmark", "todo", "idea"} {
+		if containsWholeWord(lowerText, token) {
+			return true
+		}
+	}
+	if containsWholeWord(lowerText, "to-do") || strings.Contains(lowerText, "daftar tugas") {
+		return true
+	}
+	if containsWholeWord(text, "ide") {
+		return true
+	}
+	return false
+}
+
+func containsWholeWord(text, word string) bool {
+	if text == "" || word == "" {
+		return false
+	}
+	start := 0
+	for start < len(text) {
+		idx := strings.Index(text[start:], word)
+		if idx < 0 {
+			return false
+		}
+		idx += start
+		end := idx + len(word)
+		if isWordBoundary(text, idx-1) && isWordBoundary(text, end) {
+			return true
+		}
+		start = end
+	}
+	return false
+}
+
+func isWordBoundary(text string, idx int) bool {
+	if idx < 0 || idx >= len(text) {
+		return true
+	}
+	if idx > 0 && !utf8.RuneStart(text[idx]) {
+		r, _ := utf8.DecodeLastRuneInString(text[:idx+1])
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_'
+	}
+	r, _ := utf8.DecodeRuneInString(text[idx:])
+	return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_'
 }
 
 type SavePreferenceTool struct {

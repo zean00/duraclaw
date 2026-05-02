@@ -1178,7 +1178,7 @@ func (w *Worker) providerMessages(ctx context.Context, run *db.Run, currentText 
 }
 
 func persistenceToolPromptContext() string {
-	return "Persistence tool rules: If the user asks you to remember, save, store, note, or record a stable fact, use the remember tool when available. If the user asks you to remember, save, store, note, or record a preference, choice, style, format, habit, or conditional preference, use the save_preference tool when available. Do not claim that a memory or preference was saved unless the corresponding tool call succeeded. If persistence tools are unavailable, say you cannot save it persistently."
+	return "Persistence tool rules: If the user asks you to remember, save, store, note, or record a stable fact, use the remember tool when available. If the user asks you to remember, save, store, note, or record a preference, choice, style, format, habit, or conditional preference, use the save_preference tool when available. Do not use remember or create_reminder for generic notes, ideas, bookmarks, todo lists, or unscheduled tasks; use a customer notes/todo/capture tool when available. Do not claim that a memory or preference was saved unless the corresponding tool call succeeded. If persistence tools are unavailable, say you cannot save it persistently."
 }
 
 func providerContentParts(raw json.RawMessage, fallbackText string) []providers.ContentPart {
@@ -2677,7 +2677,7 @@ func (w *Worker) executeToolCalls(ctx context.Context, run *db.Run, stepID strin
 				w.emitAgentActivity(ctx, run, "tool", "failed", map[string]any{"tool_name": call.Function.Name, "tool_call_id": call.ID, "error": err.Error()})
 				return nil, err
 			}
-			result, err := w.executeMCPTool(ctx, run, binding, call.Function.Arguments)
+			result, err := w.executeMCPTool(ctx, run, binding, call.ID, call.Function.Arguments)
 			if err != nil {
 				w.emitAgentActivity(ctx, run, "tool", "failed", map[string]any{"tool_name": call.Function.Name, "tool_call_id": call.ID, "error": err.Error()})
 				return nil, err
@@ -2760,7 +2760,7 @@ func (w *Worker) executeToolCalls(ctx context.Context, run *db.Run, stepID strin
 	return results, nil
 }
 
-func (w *Worker) executeMCPTool(ctx context.Context, run *db.Run, binding mcpToolBinding, args map[string]any) (map[string]any, error) {
+func (w *Worker) executeMCPTool(ctx context.Context, run *db.Run, binding mcpToolBinding, providerToolCallID string, args map[string]any) (map[string]any, error) {
 	mcpManager, err := w.mcpManagerForRun(ctx, run)
 	if err != nil {
 		return nil, err
@@ -2768,7 +2768,7 @@ func (w *Worker) executeMCPTool(ctx context.Context, run *db.Run, binding mcpToo
 	traceCtx := w.runTraceContext(ctx, run.ID)
 	channelCtx := w.runChannelContext(ctx, run.ID)
 	return mcp.NewExecutor(mcpManager, w.store).WithCounters(w.counters).CallTool(ctx, mcp.ExecutionContext{
-		CustomerID: run.CustomerID, UserID: run.UserID, AgentInstanceID: run.AgentInstanceID, SessionID: run.SessionID, RunID: run.ID, RequestID: run.RequestID,
+		CustomerID: run.CustomerID, UserID: run.UserID, AgentInstanceID: run.AgentInstanceID, SessionID: run.SessionID, RunID: run.ID, ToolCallID: providerToolCallID, RequestID: run.RequestID,
 		ChannelType: channelCtx.ChannelType, ChannelUserID: channelCtx.ChannelUserID, ChannelConvID: channelCtx.ChannelConversationID,
 		TraceID: traceCtx.TraceID, TraceParent: traceCtx.TraceParent,
 	}, binding.ServerName, binding.ToolName, args)

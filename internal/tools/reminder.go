@@ -26,7 +26,7 @@ type CreateReminderTool struct {
 func (CreateReminderTool) Name() string { return "create_reminder" }
 
 func (CreateReminderTool) Description() string {
-	return "Create a scheduled reminder/alarm for the current user and return a reminder reference artifact. Use this for 'remind me', 'ingatkan saya', alarms, cron-like notifications, and future scheduled tasks only when the reminder has a clear future date/time or cron schedule. Do not assume ambiguous times such as 'later', 'tomorrow', or 'morning' without enough context; ask the user for clarification first. If a recent reminder_reference exists and the user adds or corrects timing/details, use update_reminder instead of creating a duplicate. Do not use remember for reminders."
+	return "Create a scheduled reminder/alarm for the current user and return a reminder reference artifact. Use this for 'remind me', 'ingatkan saya', alarms, cron-like notifications, and future scheduled tasks only when the user explicitly asks to be reminded/notified and the reminder has a clear future date/time or cron schedule. Do not use this for generic notes, ideas, bookmarks, todo lists, or unscheduled tasks; use a customer notes/todo tool when available. Do not assume ambiguous times such as 'later', 'tomorrow', or 'morning' without enough context; ask the user for clarification first. If a recent reminder_reference exists and the user adds or corrects timing/details, use update_reminder instead of creating a duplicate. Do not use remember for reminders."
 }
 
 func (CreateReminderTool) Retryable() bool { return false }
