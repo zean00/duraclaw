@@ -308,6 +308,25 @@ func TestBroadcastTargetSelectionQueries(t *testing.T) {
 	}
 }
 
+func TestGeneratedBroadcastFanoutQueriesUseSuppressedContentAndTerminalRecovery(t *testing.T) {
+	raw, err := os.ReadFile("broadcasts.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw)
+	for _, want := range []string{
+		"suppressed_response->>'content'",
+		"r.state IN ('completed','failed','cancelled','expired')",
+		"RunState",
+		"generation_failed",
+		"UPDATE broadcasts b",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("generated broadcast fanout missing %q", want)
+		}
+	}
+}
+
 func TestStoreCanLoadCompletedNonRetryableToolCalls(t *testing.T) {
 	raw, err := os.ReadFile("store.go")
 	if err != nil {

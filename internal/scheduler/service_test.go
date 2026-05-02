@@ -27,6 +27,7 @@ type fakeSchedulerStore struct {
 	deliveryOutboundCreated  int
 	broadcastDeliveries      []db.BroadcastGenerationDelivery
 	broadcastOutboundCreated int
+	broadcastFailed          int
 	sharedListLimit          int
 }
 
@@ -103,6 +104,7 @@ func (s *fakeSchedulerStore) CreateBroadcastGenerationOutbound(context.Context, 
 }
 
 func (s *fakeSchedulerStore) CompleteBroadcastGenerationDelivery(context.Context, string, string, string) error {
+	s.broadcastFailed++
 	return nil
 }
 
@@ -268,7 +270,7 @@ func TestServicePushesCompletedSharedDurableRunToSubscribers(t *testing.T) {
 
 func TestServicePushesCompletedBroadcastGenerationToTargets(t *testing.T) {
 	store := &fakeSchedulerStore{broadcastDeliveries: []db.BroadcastGenerationDelivery{{
-		TargetID: "target-1", BroadcastID: "b1", CustomerID: "c", UserID: "u", SessionID: "s", RunID: "run-1", Title: "Promo", FinalText: "Diskon hari ini",
+		TargetID: "target-1", BroadcastID: "b1", CustomerID: "c", UserID: "u", SessionID: "s", RunID: "run-1", RunState: "completed", Title: "Promo", FinalText: "Diskon hari ini",
 	}}}
 	count, err := NewService(store, "owner").RunOnce(context.Background(), time.Now().UTC())
 	if err != nil {
@@ -276,6 +278,19 @@ func TestServicePushesCompletedBroadcastGenerationToTargets(t *testing.T) {
 	}
 	if count != 1 || store.broadcastOutboundCreated != 1 {
 		t.Fatalf("count=%d outbound=%d", count, store.broadcastOutboundCreated)
+	}
+}
+
+func TestServiceMarksFailedBroadcastGenerationRuns(t *testing.T) {
+	store := &fakeSchedulerStore{broadcastDeliveries: []db.BroadcastGenerationDelivery{{
+		TargetID: "target-1", BroadcastID: "b1", CustomerID: "c", UserID: "u", SessionID: "s", RunID: "run-1", RunState: "failed", RunError: "provider failed",
+	}}}
+	count, err := NewService(store, "owner").RunOnce(context.Background(), time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 || store.broadcastOutboundCreated != 0 || store.broadcastFailed != 1 {
+		t.Fatalf("count=%d outbound=%d failed=%d", count, store.broadcastOutboundCreated, store.broadcastFailed)
 	}
 }
 

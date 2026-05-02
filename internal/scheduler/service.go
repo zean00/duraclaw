@@ -170,6 +170,14 @@ func (s *Service) runCompletedBroadcastGenerationDeliveries(ctx context.Context)
 	}
 	created := 0
 	for _, delivery := range deliveries {
+		if delivery.RunState != "completed" {
+			errText := strings.TrimSpace(delivery.RunError)
+			if errText == "" {
+				errText = "broadcast generation run ended with state " + delivery.RunState
+			}
+			_ = s.store.CompleteBroadcastGenerationDelivery(ctx, delivery.TargetID, "generation_failed", errText)
+			continue
+		}
 		if strings.TrimSpace(delivery.FinalText) == "" {
 			_ = s.store.CompleteBroadcastGenerationDelivery(ctx, delivery.TargetID, "generation_failed", "broadcast generation completed with empty message")
 			continue

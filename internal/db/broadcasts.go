@@ -530,6 +530,8 @@ type BroadcastGenerationDelivery struct {
 	UserID      string          `json:"user_id"`
 	SessionID   string          `json:"session_id"`
 	RunID       string          `json:"run_id"`
+	RunState    string          `json:"run_state"`
+	RunError    string          `json:"run_error,omitempty"`
 	Title       string          `json:"title"`
 	Payload     json.RawMessage `json:"payload"`
 	FinalText   string          `json:"final_text"`
@@ -545,7 +547,7 @@ func (s *Store) ClaimCompletedBroadcastGenerationDeliveries(ctx context.Context,
 			FROM broadcast_targets bt
 			JOIN runs r ON r.id=bt.generation_run_id
 			WHERE bt.generation_run_id IS NOT NULL
-			AND r.state='completed'
+			AND r.state IN ('completed','failed','cancelled','expired')
 			AND (bt.status='generating' OR (bt.status='processing' AND bt.updated_at < now() - interval '5 minutes'))
 			ORDER BY bt.created_at
 			FOR UPDATE SKIP LOCKED
@@ -556,9 +558,11 @@ func (s *Store) ClaimCompletedBroadcastGenerationDeliveries(ctx context.Context,
 		FROM candidate
 		WHERE bt.id=candidate.id
 		RETURNING bt.id::text, bt.broadcast_id::text, bt.customer_id, bt.user_id, bt.session_id, bt.generation_run_id::text,
+			(SELECT state FROM runs WHERE id=bt.generation_run_id),
+			COALESCE((SELECT error FROM runs WHERE id=bt.generation_run_id),''),
 			(SELECT title FROM broadcasts WHERE id=bt.broadcast_id),
 			(SELECT payload FROM broadcasts WHERE id=bt.broadcast_id),
-			COALESCE((SELECT suppressed_response FROM runs WHERE id=bt.generation_run_id),'')`, limit)
+			COALESCE((SELECT suppressed_response->>'content' FROM runs WHERE id=bt.generation_run_id),'')`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -566,7 +570,7 @@ func (s *Store) ClaimCompletedBroadcastGenerationDeliveries(ctx context.Context,
 	var out []BroadcastGenerationDelivery
 	for rows.Next() {
 		var delivery BroadcastGenerationDelivery
-		if err := rows.Scan(&delivery.TargetID, &delivery.BroadcastID, &delivery.CustomerID, &delivery.UserID, &delivery.SessionID, &delivery.RunID, &delivery.Title, &delivery.Payload, &delivery.FinalText); err != nil {
+		if err := rows.Scan(&delivery.TargetID, &delivery.BroadcastID, &delivery.CustomerID, &delivery.UserID, &delivery.SessionID, &delivery.RunID, &delivery.RunState, &delivery.RunError, &delivery.Title, &delivery.Payload, &delivery.FinalText); err != nil {
 			return nil, err
 		}
 		out = append(out, delivery)
@@ -621,11 +625,23 @@ func (s *Store) CompleteBroadcastGenerationDelivery(ctx context.Context, targetI
 	if status == "" {
 		status = "generation_failed"
 	}
-	_, err := s.pool.Exec(ctx, `
-		UPDATE broadcast_targets
-		SET status=$2, last_error=$3, updated_at=now()
-		WHERE id=$1`, targetID, status, nullableBroadcastError(errText))
-	return err
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `
+			UPDATE broadcast_targets
+			SET status=$2, last_error=$3, updated_at=now()
+			WHERE id=$1`, targetID, status, nullableBroadcastError(errText)); err != nil {
+			return err
+		}
+		if status == "generation_failed" || status == "failed" {
+			_, err := tx.Exec(ctx, `
+				UPDATE broadcasts b
+				SET status='generation_failed', updated_at=now()
+				WHERE b.id = (SELECT broadcast_id FROM broadcast_targets WHERE id=$1)
+				AND b.status NOT IN ('delivered','cancelled')`, targetID)
+			return err
+		}
+		return nil
+	})
 }
 
 func nullableBroadcastError(value string) any {
