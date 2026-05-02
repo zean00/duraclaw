@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ type fakeSchedulerStore struct {
 	sharedSubs              []db.SharedSchedulerSubscription
 	subs                    []db.ReminderSubscription
 	runCtx                  db.ACPContext
+	input                   any
 	completed               bool
 	sharedCompleted         bool
 	runCreated              bool
@@ -87,8 +89,9 @@ func (s *fakeSchedulerStore) CompleteSharedSchedulerRunDelivery(context.Context,
 	return nil
 }
 
-func (s *fakeSchedulerStore) CreateRun(_ context.Context, c db.ACPContext, _ any) (*db.Run, error) {
+func (s *fakeSchedulerStore) CreateRun(_ context.Context, c db.ACPContext, input any) (*db.Run, error) {
 	s.runCtx = c
+	s.input = input
 	s.runCreated = true
 	s.runCreatedCount++
 	return &db.Run{ID: "run-1"}, nil
@@ -147,7 +150,7 @@ func TestServiceFansOutReminderSubscriptions(t *testing.T) {
 	payload, _ := json.Marshal(map[string]any{"text": "drink water"})
 	fireAt := time.Date(2026, 4, 28, 10, 0, 0, 0, time.UTC)
 	store := &fakeSchedulerStore{subs: []db.ReminderSubscription{{
-		ID: "sub-1", CustomerID: "c", UserID: "u", AgentInstanceID: "a", SessionID: "s", Schedule: "*/5 * * * *", NextRunAt: fireAt, Payload: payload,
+		ID: "sub-1", CustomerID: "c", UserID: "u", AgentInstanceID: "a", SessionID: "s", Title: "bawa tas hitam", Schedule: "*/5 * * * *", Timezone: "Asia/Jakarta", NextRunAt: fireAt, Payload: payload,
 	}}}
 	count, err := NewService(store, "owner").RunOnce(context.Background(), fireAt)
 	if err != nil {
@@ -158,6 +161,26 @@ func TestServiceFansOutReminderSubscriptions(t *testing.T) {
 	}
 	if store.runCtx.IdempotencyKey != IdempotencyKey("sub-1", fireAt) || store.runCtx.RequestID != "reminder-sub-1" {
 		t.Fatalf("run ctx=%#v", store.runCtx)
+	}
+	input, ok := store.input.(map[string]any)
+	if !ok {
+		t.Fatalf("run input type=%T", store.input)
+	}
+	if input["event_type"] != "reminder_due" {
+		t.Fatalf("event_type=%v", input["event_type"])
+	}
+	if !strings.Contains(input["instruction"].(string), "due now") {
+		t.Fatalf("instruction=%v", input["instruction"])
+	}
+	text, _ := input["text"].(string)
+	for _, want := range []string{"Trusted reminder runtime instruction", "due now", "Do not say the reminder was created or scheduled", "Reminder message text", "drink water", "subscription_id: sub-1"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("text missing %q: %s", want, text)
+		}
+	}
+	reminder, ok := input["reminder"].(map[string]any)
+	if !ok || reminder["title"] != "bawa tas hitam" || reminder["subscription_id"] != "sub-1" || reminder["timezone"] != "Asia/Jakarta" {
+		t.Fatalf("reminder=%#v", input["reminder"])
 	}
 }
 

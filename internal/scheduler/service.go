@@ -362,6 +362,21 @@ func (s *Service) runReminderSubscriptions(ctx context.Context, now time.Time) (
 		if len(input) == 0 {
 			input = map[string]any{"text": sub.Title}
 		}
+		reminderText, _ := input["text"].(string)
+		if strings.TrimSpace(reminderText) == "" {
+			reminderText = sub.Title
+		}
+		instruction := "This reminder is due now. Send a direct reminder message to the user. Do not say the reminder was created or scheduled."
+		input["event_type"] = "reminder_due"
+		input["reminder"] = map[string]any{
+			"subscription_id": sub.ID,
+			"title":           sub.Title,
+			"scheduled_for":   fireAt.UTC().Format(time.RFC3339),
+			"schedule":        sub.Schedule,
+			"timezone":        sub.Timezone,
+		}
+		input["instruction"] = instruction
+		input["text"] = dueReminderPromptText(instruction, reminderText, sub, fireAt)
 		if _, err := s.store.CreateRun(ctx, db.ACPContext{
 			CustomerID: sub.CustomerID, UserID: sub.UserID, AgentInstanceID: sub.AgentInstanceID, SessionID: sub.SessionID,
 			RequestID: "reminder-" + sub.ID, IdempotencyKey: IdempotencyKey(sub.ID, fireAt),
@@ -378,6 +393,30 @@ func (s *Service) runReminderSubscriptions(ctx context.Context, now time.Time) (
 		created++
 	}
 	return created, nil
+}
+
+func dueReminderPromptText(instruction, reminderText string, sub db.ReminderSubscription, fireAt time.Time) string {
+	var b strings.Builder
+	b.WriteString("Trusted reminder runtime instruction:\n")
+	b.WriteString(strings.TrimSpace(instruction))
+	b.WriteString("\n\nReminder due context:\n")
+	b.WriteString("subscription_id: ")
+	b.WriteString(sub.ID)
+	b.WriteString("\n")
+	b.WriteString("title: ")
+	b.WriteString(strings.TrimSpace(sub.Title))
+	b.WriteString("\n")
+	b.WriteString("scheduled_for: ")
+	b.WriteString(fireAt.UTC().Format(time.RFC3339))
+	b.WriteString("\n")
+	b.WriteString("schedule: ")
+	b.WriteString(strings.TrimSpace(sub.Schedule))
+	b.WriteString("\n")
+	b.WriteString("timezone: ")
+	b.WriteString(strings.TrimSpace(sub.Timezone))
+	b.WriteString("\n\nReminder message text:\n")
+	b.WriteString(strings.TrimSpace(reminderText))
+	return b.String()
 }
 
 type jobPayload struct {
