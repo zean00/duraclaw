@@ -320,21 +320,28 @@ func (w *Worker) process(ctx context.Context, run *db.Run) (err error) {
 		w.emitAgentActivity(ctx, run, "thinking", "failed", details)
 	}()
 	initialText := extractText(run.Input)
-	w.emitAgentActivity(ctx, run, "scope", "started", map[string]any{"phase": "scope_judge"})
-	scope, err := w.judgeScope(ctx, run, initialText)
-	if err != nil {
-		w.emitAgentActivity(ctx, run, "scope", "failed", map[string]any{"error": err.Error()})
-		return err
-	}
-	w.emitAgentActivity(ctx, run, "scope", "completed", map[string]any{"in_scope": scope.InScope, "intent": scope.Intent, "injection_risk": scope.InjectionRisk})
-	if !scope.InScope {
-		return w.completeOutOfScopeRun(ctx, run, scope)
-	}
-	if scope.InjectionRisk && workflowIDFromInput(run.Input) != "" {
-		scope.InScope = false
-		scope.Reason = "workflow execution blocked because the request contains prompt-injection markers"
-		scope.RecommendedResponse = "I can help with the request in chat, but I cannot run a workflow from a message that includes instructions to bypass or alter my safeguards."
-		return w.completeOutOfScopeRun(ctx, run, scope)
+	broadcastGeneration := isBroadcastGenerationRun(run.Input)
+	var scope scopeJudgement
+	if broadcastGeneration {
+		scope = scopeJudgement{Intent: "direct", InScope: true, Confidence: 1, Reason: "trusted system broadcast generation"}
+		w.enqueueAsyncRunEvent(ctx, run, "scope.skipped", map[string]any{"reason": "broadcast_generation"})
+	} else {
+		w.emitAgentActivity(ctx, run, "scope", "started", map[string]any{"phase": "scope_judge"})
+		scope, err = w.judgeScope(ctx, run, initialText)
+		if err != nil {
+			w.emitAgentActivity(ctx, run, "scope", "failed", map[string]any{"error": err.Error()})
+			return err
+		}
+		w.emitAgentActivity(ctx, run, "scope", "completed", map[string]any{"in_scope": scope.InScope, "intent": scope.Intent, "injection_risk": scope.InjectionRisk})
+		if !scope.InScope {
+			return w.completeOutOfScopeRun(ctx, run, scope)
+		}
+		if scope.InjectionRisk && workflowIDFromInput(run.Input) != "" {
+			scope.InScope = false
+			scope.Reason = "workflow execution blocked because the request contains prompt-injection markers"
+			scope.RecommendedResponse = "I can help with the request in chat, but I cannot run a workflow from a message that includes instructions to bypass or alter my safeguards."
+			return w.completeOutOfScopeRun(ctx, run, scope)
+		}
 	}
 	workflowContext, err := w.runWorkflowPhase(ctx, run)
 	if err != nil {
@@ -358,7 +365,9 @@ func (w *Worker) process(ctx context.Context, run *db.Run) (err error) {
 	}
 	scope = mergePromptInjectionRisk(scope, detectPromptInjectionRisk(text))
 	var recommendations <-chan recommendationSidecarResult
-	if !scope.InjectionRisk {
+	if broadcastGeneration {
+		w.enqueueAsyncRunEvent(ctx, run, "broadcast_generation.recommendations_blocked", map[string]any{"reason": "system broadcast generation"})
+	} else if !scope.InjectionRisk {
 		recommendations = w.startRecommendationSidecar(ctx, run, scope, text)
 	} else {
 		w.enqueueAsyncRunEvent(ctx, run, "prompt_injection.recommendation_blocked", map[string]any{"reason": scope.InjectionReason})
@@ -368,7 +377,9 @@ func (w *Worker) process(ctx context.Context, run *db.Run) (err error) {
 		return err
 	}
 	var toolDefs []providers.ToolDefinition
-	if isReminderDueRun(run.Input) {
+	if broadcastGeneration {
+		w.enqueueAsyncRunEvent(ctx, run, "broadcast_generation.tools_blocked", map[string]any{"reason": "system broadcast generation must only produce message copy"})
+	} else if isReminderDueRun(run.Input) {
 		w.enqueueAsyncRunEvent(ctx, run, "reminder_due.tools_blocked", map[string]any{"reason": "due reminder notification must not create or update reminders"})
 	} else if !scope.InjectionRisk {
 		toolDefs, err = w.toolDefinitions(ctx, run)
@@ -389,6 +400,9 @@ func (w *Worker) process(ctx context.Context, run *db.Run) (err error) {
 	finalContent := resp.Content
 	if recommendations != nil {
 		finalContent = w.applyRecommendationResult(ctx, run, scope, finalContent, recommendations)
+	}
+	if broadcastGeneration {
+		return w.finalizeSuppressedSystemResponse(ctx, run, finalContent, "broadcast_generation")
 	}
 	return w.finalizeAssistantResponse(ctx, run, finalContent)
 }
@@ -839,6 +853,14 @@ func (w *Worker) finalizeAssistantResponse(ctx context.Context, run *db.Run, fin
 	}
 	_ = w.updateSessionSummary(ctx, run, finalContent)
 	return w.store.CompleteRunWithMessage(ctx, run.ID, msgID)
+}
+
+func (w *Worker) finalizeSuppressedSystemResponse(ctx context.Context, run *db.Run, finalContent string, reason string) error {
+	if strings.TrimSpace(finalContent) == "" {
+		finalContent = " "
+	}
+	_ = w.store.AddEvent(ctx, run.ID, reason+".completed", map[string]any{"suppressed_direct_outbound": true, "content_length": len(finalContent)})
+	return w.store.CompleteRunSuppressed(ctx, run.ID, finalContent, 0)
 }
 
 func (w *Worker) chat(ctx context.Context, run *db.Run, messages []providers.Message, toolDefs []providers.ToolDefinition, summary map[string]any) (*providers.LLMResponse, error) {
@@ -3105,6 +3127,12 @@ func isReminderDueRun(raw json.RawMessage) bool {
 	payload := inputMap(raw)
 	eventType, _ := payload["event_type"].(string)
 	return strings.EqualFold(strings.TrimSpace(eventType), "reminder_due")
+}
+
+func isBroadcastGenerationRun(raw json.RawMessage) bool {
+	payload := inputMap(raw)
+	eventType, _ := payload["event_type"].(string)
+	return strings.EqualFold(strings.TrimSpace(eventType), "broadcast_generation")
 }
 
 func reminderDuePromptText(raw json.RawMessage) string {

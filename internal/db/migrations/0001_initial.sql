@@ -362,6 +362,9 @@ CREATE TABLE IF NOT EXISTS broadcasts (
     customer_id text NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
     title text NOT NULL DEFAULT '',
     payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+    generation_mode text NOT NULL DEFAULT 'direct',
+    agent_instance_id text,
+    generation_request jsonb NOT NULL DEFAULT '{}'::jsonb,
     status text NOT NULL CHECK (status IN ('draft','queued','sent','failed','cancelled')) DEFAULT 'queued',
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
@@ -375,6 +378,8 @@ CREATE TABLE IF NOT EXISTS broadcast_targets (
     session_id text NOT NULL,
     status text NOT NULL CHECK (status IN ('pending','queued','sent','failed','cancelled')) DEFAULT 'pending',
     outbound_intent_id uuid REFERENCES outbound_intents(id) ON DELETE SET NULL,
+    generation_run_id uuid REFERENCES runs(id) ON DELETE SET NULL,
+    last_error text,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 );

@@ -187,6 +187,35 @@ Patch accepts the same fields as optional updates plus required `customer_id`. D
 
 When a recommendation is delivered, outbound payloads include a `recommendation_reference` artifact. The artifact exposes the recommendation decision ID and selected catalog item metadata so clients can render, track, or reconcile the recommendation separately from the message text.
 
+Admin broadcast routes:
+
+- `POST /admin/broadcasts`
+- `GET /admin/broadcasts?customer_id={customer_id}`
+- `GET /admin/broadcasts/{broadcast_id}/targets?customer_id={customer_id}`
+- `POST /admin/broadcasts/{broadcast_id}/cancel`
+
+`POST /admin/broadcasts` supports direct payload fanout and agent-generated promotion/offer/feature messages. Direct broadcasts omit `generation` and immediately queue per-target outbound `broadcast` intents. Generated broadcasts set `generation.mode` to `agent_per_instance` or `per_user`; Duraclaw creates trusted system runs through the configured `generation.agent_instance_id`, suppresses direct run outbound, and the scheduler fans out the generated message to broadcast targets when the run completes.
+
+Generated broadcast request:
+
+```json
+{
+  "customer_id": "customer-1",
+  "title": "May discount",
+  "payload": {"campaign_id": "may-discount"},
+  "target_selection": {"agent_instance_id": "agent-1", "limit": 1000},
+  "generation": {
+    "mode": "agent_per_instance",
+    "agent_instance_id": "agent-1",
+    "guidelines": "Warm, brief, Bahasa Indonesia. Mention that this is a limited offer.",
+    "context": {"discount": "20%", "valid_until": "2026-05-31", "url": "https://example.com/promo"},
+    "details": "The discount applies to family weekend activities."
+  }
+}
+```
+
+Use `agent_per_instance` for scalable profile-consistent copy generated once per agent profile. Use `per_user` only when the campaign intentionally needs one LLM generation per target user. Target statuses may include `generating`, `processing`, `queued`, `sent_to_nexus`, `delivered`, `generation_failed`, `failed`, and `cancelled`.
+
 Manual session compaction:
 
 - `POST /admin/sessions/{session_id}/compact`

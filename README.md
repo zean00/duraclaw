@@ -436,7 +436,7 @@ The persistence layer also includes:
 - Reminder subscriptions fan out into deterministic durable runs; one-shot workflow timer wake jobs are backed by scheduler jobs.
 - Knowledge documents and vector-ready chunks with pgvector search helpers.
 - Outbound intents queued through `async_outbox` for Nexus-owned delivery.
-- Broadcast creation creates per-target outbound intents for Nexus-owned delivery.
+- Broadcast creation creates per-target outbound intents for Nexus-owned delivery. `POST /admin/broadcasts` can also include `generation.mode: "agent_per_instance"` or `"per_user"` plus `generation.agent_instance_id`, `guidelines`, `context`, and `details` so Duraclaw generates promotion/offer/feature copy through that agent profile before fanout.
 - Recent session message history used by the worker when composing model context.
 - Durable session summaries and text-matched customer knowledge are included in model context.
 - Latest session transfer note included in model context after reassignment.

@@ -1987,6 +1987,7 @@ func (h *Handler) createBroadcast(w http.ResponseWriter, r *http.Request) {
 		CustomerID      string                      `json:"customer_id"`
 		Title           string                      `json:"title"`
 		Payload         map[string]any              `json:"payload"`
+		Generation      db.BroadcastGenerationSpec  `json:"generation"`
 		Targets         []db.BroadcastTargetSpec    `json:"targets"`
 		TargetSelection db.BroadcastTargetSelection `json:"target_selection"`
 	}
@@ -1996,6 +1997,18 @@ func (h *Handler) createBroadcast(w http.ResponseWriter, r *http.Request) {
 	}
 	if payload.CustomerID == "" || strings.TrimSpace(payload.Title) == "" {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id and title are required"))
+		return
+	}
+	mode := strings.TrimSpace(payload.Generation.Mode)
+	if mode == "" {
+		mode = "direct"
+	}
+	if mode != "direct" && mode != "agent_per_instance" && mode != "per_user" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("generation.mode must be direct, agent_per_instance, or per_user"))
+		return
+	}
+	if mode != "direct" && strings.TrimSpace(payload.Generation.AgentInstanceID) == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("generation.agent_instance_id is required"))
 		return
 	}
 	if len(payload.Targets) == 0 {
@@ -2012,18 +2025,25 @@ func (h *Handler) createBroadcast(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, err := policy.NewEngine(h.store).Enforce(r.Context(), "pre_broadcast", policy.Context{
 		CustomerID:       payload.CustomerID,
-		Content:          mustJSONString(map[string]any{"title": payload.Title, "payload": payload.Payload}),
-		AdditionalFields: map[string]any{"target_count": len(payload.Targets)},
+		AgentInstanceID:  payload.Generation.AgentInstanceID,
+		Content:          mustJSONString(map[string]any{"title": payload.Title, "payload": payload.Payload, "generation": payload.Generation}),
+		AdditionalFields: map[string]any{"target_count": len(payload.Targets), "generation_mode": payload.Generation.Mode},
 	}); err != nil {
 		writeError(w, http.StatusForbidden, err)
 		return
 	}
-	id, count, err := h.store.CreateBroadcast(r.Context(), payload.CustomerID, payload.Title, payload.Payload, payload.Targets)
+	id, count, runs, err := h.store.CreateBroadcastFromSpec(r.Context(), db.BroadcastSpec{
+		CustomerID: payload.CustomerID,
+		Title:      payload.Title,
+		Payload:    payload.Payload,
+		Targets:    payload.Targets,
+		Generation: payload.Generation,
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"broadcast_id": id, "targets": count})
+	writeJSON(w, http.StatusCreated, map[string]any{"broadcast_id": id, "targets": count, "generation_mode": mode, "generation_runs": runs})
 }
 
 func (h *Handler) listBroadcasts(w http.ResponseWriter, r *http.Request) {

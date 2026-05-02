@@ -27,6 +27,9 @@ type Store interface {
 	ClaimCompletedSharedSchedulerRunDeliveries(ctx context.Context, limit int) ([]db.SharedSchedulerRunDelivery, error)
 	CreateSharedSchedulerDeliveryOutbound(ctx context.Context, delivery db.SharedSchedulerRunDelivery, userID, sessionID string, payload map[string]any) (bool, error)
 	CompleteSharedSchedulerRunDelivery(ctx context.Context, deliveryID string, status string, errText string) error
+	ClaimCompletedBroadcastGenerationDeliveries(ctx context.Context, limit int) ([]db.BroadcastGenerationDelivery, error)
+	CreateBroadcastGenerationOutbound(ctx context.Context, delivery db.BroadcastGenerationDelivery) (bool, error)
+	CompleteBroadcastGenerationDelivery(ctx context.Context, targetID string, status string, errText string) error
 	CreateRun(ctx context.Context, c db.ACPContext, input any) (*db.Run, error)
 	ResumeWorkflowTimer(ctx context.Context, runID, workflowRunID, nodeKey string, response map[string]any) error
 }
@@ -50,11 +53,16 @@ func (s *Service) RunOnce(ctx context.Context, now time.Time) (int, error) {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	created, err := s.runCompletedSharedSchedulerRunDeliveries(ctx)
+	created, err := s.runCompletedBroadcastGenerationDeliveries(ctx)
 	if err != nil {
 		return created, err
 	}
-	n, err := s.runSharedSchedulerJobs(ctx, now)
+	n, err := s.runCompletedSharedSchedulerRunDeliveries(ctx)
+	if err != nil {
+		return created, err
+	}
+	created += n
+	n, err = s.runSharedSchedulerJobs(ctx, now)
 	if err != nil {
 		return created, err
 	}
@@ -153,6 +161,29 @@ type durableRunSubscriberPayload struct {
 	UserID    string         `json:"user_id"`
 	SessionID string         `json:"session_id"`
 	Context   map[string]any `json:"context"`
+}
+
+func (s *Service) runCompletedBroadcastGenerationDeliveries(ctx context.Context) (int, error) {
+	deliveries, err := s.store.ClaimCompletedBroadcastGenerationDeliveries(ctx, s.limit)
+	if err != nil {
+		return 0, err
+	}
+	created := 0
+	for _, delivery := range deliveries {
+		if strings.TrimSpace(delivery.FinalText) == "" {
+			_ = s.store.CompleteBroadcastGenerationDelivery(ctx, delivery.TargetID, "generation_failed", "broadcast generation completed with empty message")
+			continue
+		}
+		ok, err := s.store.CreateBroadcastGenerationOutbound(ctx, delivery)
+		if err != nil {
+			_ = s.store.CompleteBroadcastGenerationDelivery(ctx, delivery.TargetID, "generation_failed", err.Error())
+			return created, err
+		}
+		if ok {
+			created++
+		}
+	}
+	return created, nil
 }
 
 func (s *Service) runCompletedSharedSchedulerRunDeliveries(ctx context.Context) (int, error) {

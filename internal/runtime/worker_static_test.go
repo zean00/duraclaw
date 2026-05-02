@@ -181,7 +181,7 @@ func TestScopeRunsBeforeSideEffects(t *testing.T) {
 		t.Fatal(err)
 	}
 	src := string(raw)
-	scope := strings.Index(src, "scope, err := w.judgeScope(ctx, run, initialText)")
+	scope := strings.Index(src, "scope, err = w.judgeScope(ctx, run, initialText)")
 	workflow := strings.Index(src, "workflowContext, err := w.runWorkflowPhase(ctx, run)")
 	if scope < 0 || workflow < 0 || scope > workflow {
 		t.Fatalf("scope judge should run before workflow side effects")

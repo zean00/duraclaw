@@ -97,16 +97,16 @@ func TestStoreBroadcastMethodsWithPgxMock(t *testing.T) {
 	}
 
 	mock.ExpectQuery("SELECT id").WithArgs("c1", 100).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "customer_id", "title", "payload", "status", "created_at", "updated_at"}).
-			AddRow("b1", "c1", "title", []byte(`{}`), "queued", now, now))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "customer_id", "title", "payload", "generation_mode", "agent_instance_id", "generation_request", "status", "created_at", "updated_at"}).
+			AddRow("b1", "c1", "title", []byte(`{}`), "direct", nil, []byte(`{}`), "queued", now, now))
 	broadcasts, err := store.ListBroadcasts(ctx, "c1", 0)
 	if err != nil || len(broadcasts) != 1 {
 		t.Fatalf("broadcasts=%#v err=%v", broadcasts, err)
 	}
 
 	mock.ExpectQuery("SELECT id").WithArgs("c1", "b1", 250).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "broadcast_id", "customer_id", "user_id", "session_id", "status", "outbound_intent_id", "created_at", "updated_at"}).
-			AddRow("target-1", "b1", "c1", "u1", "s1", "queued", &intentID, now, now))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "broadcast_id", "customer_id", "user_id", "session_id", "status", "outbound_intent_id", "generation_run_id", "last_error", "created_at", "updated_at"}).
+			AddRow("target-1", "b1", "c1", "u1", "s1", "queued", &intentID, nil, nil, now, now))
 	listedTargets, err := store.ListBroadcastTargets(ctx, "c1", "b1", 0)
 	if err != nil || len(listedTargets) != 1 || listedTargets[0].OutboundIntentID == nil {
 		t.Fatalf("targets=%#v err=%v", listedTargets, err)

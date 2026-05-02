@@ -255,6 +255,25 @@ func TestTwentyFirstMigrationContainsOutboxClaimLeases(t *testing.T) {
 	}
 }
 
+func TestTwentySecondMigrationContainsGeneratedBroadcasts(t *testing.T) {
+	raw, err := migrationFS.ReadFile("migrations/0022_generated_broadcasts.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw)
+	for _, want := range []string{
+		"generation_mode",
+		"generation_request",
+		"generation_run_id",
+		"generation_failed",
+		"broadcast_targets_generation_run_idx",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("migration missing %q", want)
+		}
+	}
+}
+
 func TestEighthMigrationContainsSummariesAndBackgroundSchema(t *testing.T) {
 	raw, err := migrationFS.ReadFile("migrations/0008_summaries_and_background.sql")
 	if err != nil {

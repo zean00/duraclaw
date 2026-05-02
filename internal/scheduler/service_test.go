@@ -11,21 +11,23 @@ import (
 )
 
 type fakeSchedulerStore struct {
-	jobs                    []db.SchedulerJob
-	sharedJobs              []db.SharedSchedulerJob
-	sharedSubs              []db.SharedSchedulerSubscription
-	subs                    []db.ReminderSubscription
-	runCtx                  db.ACPContext
-	input                   any
-	completed               bool
-	sharedCompleted         bool
-	runCreated              bool
-	runCreatedCount         int
-	outboundCreated         int
-	runDeliveryCount        int
-	completedDeliveries     []db.SharedSchedulerRunDelivery
-	deliveryOutboundCreated int
-	sharedListLimit         int
+	jobs                     []db.SchedulerJob
+	sharedJobs               []db.SharedSchedulerJob
+	sharedSubs               []db.SharedSchedulerSubscription
+	subs                     []db.ReminderSubscription
+	runCtx                   db.ACPContext
+	input                    any
+	completed                bool
+	sharedCompleted          bool
+	runCreated               bool
+	runCreatedCount          int
+	outboundCreated          int
+	runDeliveryCount         int
+	completedDeliveries      []db.SharedSchedulerRunDelivery
+	deliveryOutboundCreated  int
+	broadcastDeliveries      []db.BroadcastGenerationDelivery
+	broadcastOutboundCreated int
+	sharedListLimit          int
 }
 
 func (s *fakeSchedulerStore) ClaimDueSchedulerJobs(context.Context, string, int, time.Duration) ([]db.SchedulerJob, error) {
@@ -86,6 +88,21 @@ func (s *fakeSchedulerStore) CreateSharedSchedulerDeliveryOutbound(context.Conte
 }
 
 func (s *fakeSchedulerStore) CompleteSharedSchedulerRunDelivery(context.Context, string, string, string) error {
+	return nil
+}
+
+func (s *fakeSchedulerStore) ClaimCompletedBroadcastGenerationDeliveries(context.Context, int) ([]db.BroadcastGenerationDelivery, error) {
+	out := s.broadcastDeliveries
+	s.broadcastDeliveries = nil
+	return out, nil
+}
+
+func (s *fakeSchedulerStore) CreateBroadcastGenerationOutbound(context.Context, db.BroadcastGenerationDelivery) (bool, error) {
+	s.broadcastOutboundCreated++
+	return true, nil
+}
+
+func (s *fakeSchedulerStore) CompleteBroadcastGenerationDelivery(context.Context, string, string, string) error {
 	return nil
 }
 
@@ -246,6 +263,19 @@ func TestServicePushesCompletedSharedDurableRunToSubscribers(t *testing.T) {
 	}
 	if count != 2 || store.deliveryOutboundCreated != 2 {
 		t.Fatalf("count=%d outbound=%d", count, store.deliveryOutboundCreated)
+	}
+}
+
+func TestServicePushesCompletedBroadcastGenerationToTargets(t *testing.T) {
+	store := &fakeSchedulerStore{broadcastDeliveries: []db.BroadcastGenerationDelivery{{
+		TargetID: "target-1", BroadcastID: "b1", CustomerID: "c", UserID: "u", SessionID: "s", RunID: "run-1", Title: "Promo", FinalText: "Diskon hari ini",
+	}}}
+	count, err := NewService(store, "owner").RunOnce(context.Background(), time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || store.broadcastOutboundCreated != 1 {
+		t.Fatalf("count=%d outbound=%d", count, store.broadcastOutboundCreated)
 	}
 }
 

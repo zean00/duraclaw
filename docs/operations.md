@@ -75,7 +75,7 @@ Duraclaw uses PostgreSQL row locks, leases, and `FOR UPDATE SKIP LOCKED` for:
 
 Runs are additionally serialized per `(customer_id, session_id)`: a queued run is not claimable while another run in that session is `leased`, `running`, `running_workflow`, or `awaiting_user`. Different sessions can run concurrently across instances.
 
-If a worker exits, expired run, scheduler, reminder, shared-scheduler, async-write, recommendation, and session-monitor leases are recovered by later ticks. Outbound outbox claims also have a database lease that the outbox worker renews while a sink call is active; rows are only reclaimed after that lease expires. Shared-scheduler durable-run fanout uses stale-claim recovery for rows left in processing state after a crash.
+If a worker exits, expired run, scheduler, reminder, shared-scheduler, async-write, recommendation, and session-monitor leases are recovered by later ticks. Outbound outbox claims also have a database lease that the outbox worker renews while a sink call is active; rows are only reclaimed after that lease expires. Shared-scheduler durable-run fanout and generated-broadcast fanout use stale `processing` recovery so another scheduler tick can finish outbox creation after a crash.
 
 Operational caveats:
 
