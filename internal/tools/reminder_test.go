@@ -11,7 +11,10 @@ import (
 )
 
 type fakeReminderStore struct {
-	spec db.ReminderSubscriptionSpec
+	spec      db.ReminderSubscriptionSpec
+	updateID  string
+	update    db.ReminderSubscriptionUpdate
+	updateSub *db.ReminderSubscription
 }
 
 func (s *fakeReminderStore) CreateReminderSubscription(_ context.Context, spec db.ReminderSubscriptionSpec) (*db.ReminderSubscription, error) {
@@ -27,6 +30,42 @@ func (s *fakeReminderStore) CreateReminderSubscription(_ context.Context, spec d
 		Timezone:        "UTC",
 		Enabled:         true,
 		NextRunAt:       spec.NextRunAt,
+	}, nil
+}
+
+func (s *fakeReminderStore) UpdateUserReminderSubscription(_ context.Context, id, customerID, userID string, update db.ReminderSubscriptionUpdate) (*db.ReminderSubscription, error) {
+	s.updateID = id
+	s.update = update
+	if s.updateSub != nil {
+		return s.updateSub, nil
+	}
+	title := ""
+	if update.Title != nil {
+		title = *update.Title
+	}
+	schedule := ""
+	if update.Schedule != nil {
+		schedule = *update.Schedule
+	}
+	timezone := "UTC"
+	if update.Timezone != nil {
+		timezone = *update.Timezone
+	}
+	next := time.Now().UTC().Add(time.Hour)
+	if update.NextRunAt != nil {
+		next = *update.NextRunAt
+	}
+	return &db.ReminderSubscription{
+		ID:              id,
+		CustomerID:      customerID,
+		UserID:          userID,
+		SessionID:       "s1",
+		AgentInstanceID: "a1",
+		Title:           title,
+		Schedule:        schedule,
+		Timezone:        timezone,
+		Enabled:         true,
+		NextRunAt:       next,
 	}, nil
 }
 
@@ -65,6 +104,15 @@ func TestCreateReminderToolRequiresNextRunAtForOnce(t *testing.T) {
 	result := (CreateReminderTool{Store: &fakeReminderStore{}}).Execute(context.Background(), ExecutionContext{}, map[string]any{"schedule": "@once"})
 	if !result.IsError || !strings.Contains(result.ForLLM, "next_run_at") {
 		t.Fatalf("result=%#v", result)
+	}
+}
+
+func TestReminderToolGuidanceRequiresClarificationForAmbiguousTimes(t *testing.T) {
+	desc := CreateReminderTool{}.Description()
+	for _, want := range []string{"Do not assume ambiguous times", "ask the user for clarification", "use update_reminder instead of creating a duplicate"} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("description missing %q: %s", want, desc)
+		}
 	}
 }
 
@@ -111,6 +159,38 @@ func TestCreateReminderToolKeepsPayloadEmptyForTitleFallback(t *testing.T) {
 	raw, _ := json.Marshal(store.spec.Payload)
 	if string(raw) != "{}" {
 		t.Fatalf("payload should remain empty so scheduler falls back to title, got %s", string(raw))
+	}
+}
+
+func TestUpdateReminderToolReturnsReferenceArtifact(t *testing.T) {
+	store := &fakeReminderStore{}
+	result := (UpdateReminderTool{Store: store}).Execute(context.Background(), ExecutionContext{
+		CustomerID: "c1", UserID: "u1", SessionID: "s1", AgentInstanceID: "a1", RunID: "run-1", RequestID: "req-1",
+	}, map[string]any{
+		"subscription_id": "rem-1",
+		"title":           "buy eggs",
+		"schedule":        "@once",
+		"timezone":        "Asia/Jakarta",
+		"next_run_at":     "2030-01-01T08:00:00+07:00",
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.ForLLM)
+	}
+	if store.updateID != "rem-1" || store.update.Title == nil || *store.update.Title != "buy eggs" || store.update.NextRunAt == nil {
+		t.Fatalf("updateID=%q update=%#v", store.updateID, store.update)
+	}
+	if len(result.Artifacts) != 1 || result.Artifacts[0].Type != "reminder_reference" || result.Artifacts[0].ID != "rem-1" {
+		t.Fatalf("artifacts=%#v", result.Artifacts)
+	}
+	if !strings.Contains(result.ForLLM, `"status":"updated"`) || !strings.Contains(result.ForLLM, `"subscription_id":"rem-1"`) || !strings.Contains(result.ForLLM, "set/scheduled with the latest details") {
+		t.Fatalf("for_llm=%s", result.ForLLM)
+	}
+}
+
+func TestUpdateReminderToolRequiresSubscriptionID(t *testing.T) {
+	result := (UpdateReminderTool{Store: &fakeReminderStore{}}).Execute(context.Background(), ExecutionContext{}, map[string]any{"title": "x"})
+	if !result.IsError || !strings.Contains(result.ForLLM, "subscription_id") {
+		t.Fatalf("result=%#v", result)
 	}
 }
 

@@ -128,9 +128,9 @@ func TestDeferRunIfActiveReturnsDeferredAck(t *testing.T) {
 func TestRefinementInputExposesContextInText(t *testing.T) {
 	input := refinementInput([]byte(`{"text":"first"}`), []DeferredRunMessage{{
 		ID: "defer-1", MessageID: "msg-1", Input: []byte(`{"parts":[{"type":"text","text":"second"}]}`), CreatedAt: time.Date(2026, 4, 30, 1, 2, 3, 0, time.UTC),
-	}}, "draft answer")
+	}}, "draft answer", []map[string]any{{"type": "reminder_reference", "id": "rem-1"}})
 	text, _ := input["text"].(string)
-	for _, want := range []string{"draft answer", "first", "second", "defer-1"} {
+	for _, want := range []string{"draft answer", "first", "second", "defer-1", "reminder_reference", "rem-1", "update that artifact instead of creating a duplicate", "suppressed response as an internal draft", "completed with the latest details"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("text missing %q: %s", want, text)
 		}
@@ -153,6 +153,16 @@ func TestStoreMessagesCheckpointsAndStepsWithPgxMock(t *testing.T) {
 	messages, err := store.RecentMessages(ctx, "c1", "s1", 0)
 	if err != nil || len(messages) != 1 {
 		t.Fatalf("messages=%#v err=%v", messages, err)
+	}
+
+	mock.ExpectExec("UPDATE runs").
+		WithArgs("run-1", pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectExec("INSERT INTO run_events").WithArgs("run-1", "run.completed_suppressed", pgxmock.AnyArg()).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectQuery("SELECT customer_id").WithArgs("run-1").WillReturnRows(pgxmock.NewRows([]string{"customer_id"}).AddRow("c1"))
+	mock.ExpectExec("INSERT INTO observability_events").WithArgs("c1", "run-1", "run_state_changed", pgxmock.AnyArg()).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	if err := store.CompleteRunSuppressed(ctx, "run-1", "draft", 1); err != nil {
+		t.Fatal(err)
 	}
 
 	mock.ExpectQuery("SELECT channel_context").WithArgs("run-1").WillReturnRows(pgxmock.NewRows([]string{"channel_context"}).AddRow([]byte(`{"trace_id":"trace","traceparent":"parent"}`)))

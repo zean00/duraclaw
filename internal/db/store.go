@@ -540,9 +540,9 @@ func (s *Store) InsertMessage(ctx context.Context, customerID, sessionID, runID,
 func (s *Store) FinalMessageContent(ctx context.Context, runID string) (json.RawMessage, error) {
 	var content json.RawMessage
 	err := s.pool.QueryRow(ctx, `
-		SELECT m.content
+		SELECT COALESCE(m.content, jsonb_build_object('parts', jsonb_build_array(jsonb_build_object('type','text','text', r.suppressed_response->>'content'))))
 		FROM runs r
-		JOIN messages m ON m.id = r.final_message_id
+		LEFT JOIN messages m ON m.id = r.final_message_id
 		WHERE r.id = $1`, runID).Scan(&content)
 	return content, err
 }
@@ -625,14 +625,14 @@ func (s *Store) ClaimDeferredRunMessages(ctx context.Context, activeRunID string
 	return out, rows.Err()
 }
 
-func (s *Store) CompleteRunSuppressed(ctx context.Context, runID, messageID, content string, deferredCount int) error {
-	payload, _ := json.Marshal(map[string]any{"message_id": messageID, "content": content, "deferred_messages": deferredCount})
+func (s *Store) CompleteRunSuppressed(ctx context.Context, runID, content string, deferredCount int) error {
+	payload, _ := json.Marshal(map[string]any{"content": content, "deferred_messages": deferredCount, "visibility": "internal_draft"})
 	_, err := s.pool.Exec(ctx, `
 		UPDATE runs
-		SET state='completed', final_message_id=$2, suppress_direct_outbound=true, suppressed_response=$3, completed_at=now(), lease_owner=NULL, lease_expires_at=NULL, updated_at=now()
-		WHERE id=$1`, runID, messageID, payload)
+		SET state='completed', final_message_id=NULL, suppress_direct_outbound=true, suppressed_response=$2, completed_at=now(), lease_owner=NULL, lease_expires_at=NULL, updated_at=now()
+		WHERE id=$1`, runID, payload)
 	if err == nil {
-		_ = s.AddEvent(ctx, runID, "run.completed_suppressed", map[string]any{"message_id": messageID, "deferred_messages": deferredCount})
+		_ = s.AddEvent(ctx, runID, "run.completed_suppressed", map[string]any{"deferred_messages": deferredCount})
 		_ = s.AddObservabilityEvent(ctx, "", runID, "run_state_changed", map[string]any{"state": "completed", "suppressed": true})
 	}
 	return err
@@ -645,7 +645,11 @@ func (s *Store) CreateRefinementRun(ctx context.Context, parent *Run, deferred [
 	if maxDepth > 0 && parent.RefinementDepth >= maxDepth {
 		return nil, fmt.Errorf("maximum refinement depth reached")
 	}
-	input := refinementInput(parent.Input, deferred, draft)
+	artifacts, err := s.ToolArtifactsForRun(ctx, parent.ID)
+	if err != nil {
+		return nil, err
+	}
+	input := refinementInput(parent.Input, deferred, draft, artifacts)
 	inputJSON, _ := json.Marshal(input)
 	idempotencyKey := fmt.Sprintf("refine:%s:%d", parent.ID, parent.RefinementDepth+1)
 	var versionArg any
@@ -653,7 +657,7 @@ func (s *Store) CreateRefinementRun(ctx context.Context, parent *Run, deferred [
 		versionArg = parent.AgentInstanceVersionID
 	}
 	var r Run
-	err := s.pool.QueryRow(ctx, `
+	err = s.pool.QueryRow(ctx, `
 		INSERT INTO runs(customer_id,user_id,agent_instance_id,agent_instance_version_id,session_id,request_id,idempotency_key,state,input,channel_context,refinement_parent_run_id,refinement_depth)
 		SELECT customer_id,user_id,agent_instance_id,$2,session_id,request_id,$3,'queued',$4,channel_context,id,$5
 		FROM runs
@@ -669,7 +673,7 @@ func (s *Store) CreateRefinementRun(ctx context.Context, parent *Run, deferred [
 	return &r, nil
 }
 
-func refinementInput(parentInput json.RawMessage, deferred []DeferredRunMessage, draft string) map[string]any {
+func refinementInput(parentInput json.RawMessage, deferred []DeferredRunMessage, draft string, artifacts []map[string]any) map[string]any {
 	var original any
 	_ = json.Unmarshal(parentInput, &original)
 	followups := make([]any, 0, len(deferred))
@@ -683,26 +687,32 @@ func refinementInput(parentInput json.RawMessage, deferred []DeferredRunMessage,
 			"input":               input,
 		})
 	}
-	promptText := refinementPromptText(original, followups, draft)
+	promptText := refinementPromptText(original, followups, draft, artifacts)
 	return map[string]any{
 		"text": promptText,
 		"refinement": map[string]any{
 			"original_input":      original,
 			"suppressed_response": draft,
 			"followup_messages":   followups,
+			"parent_artifacts":    artifacts,
 		},
 	}
 }
 
-func refinementPromptText(original any, followups []any, draft string) string {
+func refinementPromptText(original any, followups []any, draft string, artifacts []map[string]any) string {
 	originalJSON, _ := json.Marshal(original)
 	followupsJSON, _ := json.Marshal(followups)
+	artifactsJSON, _ := json.Marshal(artifacts)
 	var b strings.Builder
-	b.WriteString("The assistant drafted a response, but the user sent follow-up messages before it was delivered. Refine the answer using the draft and the follow-up messages. Preserve completed side effects and do not repeat tool actions unless the user explicitly asks.\n\n")
+	b.WriteString("The assistant drafted a response, but the user sent follow-up messages before it was delivered. Treat the suppressed response as an internal draft, not as something the user has seen. Refine the answer using the draft and the follow-up messages. Preserve completed side effects and do not repeat tool actions unless the user explicitly asks. If a follow-up changes or completes a recent side-effect artifact, update that artifact instead of creating a duplicate. In the final user-facing response, describe the end result naturally as completed with the latest details; do not say you only updated a previous hidden draft unless that distinction matters to the user.\n\n")
 	b.WriteString("Original user input:\n")
 	b.Write(originalJSON)
 	b.WriteString("\n\nSuppressed draft response:\n")
 	b.WriteString(draft)
+	if len(artifacts) > 0 {
+		b.WriteString("\n\nCompleted parent tool artifacts:\n")
+		b.Write(artifactsJSON)
+	}
 	b.WriteString("\n\nDeferred follow-up messages:\n")
 	b.Write(followupsJSON)
 	return b.String()

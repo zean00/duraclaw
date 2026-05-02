@@ -126,6 +126,7 @@ func NewWorkerWithProviders(store *db.Store, registry *providers.Registry, model
 		toolRegistry.Register(tools.SavePreferenceTool{Store: store})
 		toolRegistry.Register(tools.ListPreferencesTool{Store: store})
 		toolRegistry.Register(tools.CreateReminderTool{Store: store})
+		toolRegistry.Register(tools.UpdateReminderTool{Store: store})
 		registerMediaGenerationTools(toolRegistry, registry, store, modelConfig, nil)
 	}
 	return &Worker{store: store, providers: registry, modelConfig: modelConfig, processors: artifacts.NewRegistry(artifacts.MockProcessor{}), tools: toolRegistry, policy: policy.NewEngine(store), owner: owner, leaseFor: 2 * time.Minute, maxIterations: defaultMaxIterations, interruptWindow: interruptWindow, maxRefineDepth: maxRefinementDepth, embedder: embeddings.NewHashProvider(768)}
@@ -798,12 +799,6 @@ func activityText(activityType, state string, payload map[string]any) string {
 }
 
 func (w *Worker) finalizeAssistantResponse(ctx context.Context, run *db.Run, finalContent string) error {
-	msgID, err := w.store.InsertMessage(ctx, run.CustomerID, run.SessionID, run.ID, "assistant", map[string]any{
-		"parts": []map[string]any{{"type": "text", "text": finalContent}},
-	})
-	if err != nil {
-		return err
-	}
 	if run.InterruptWindowStarted != nil && run.RefinementDepth < w.maxRefineDepth {
 		if remaining := run.InterruptWindowStarted.Add(w.interruptWindow).Sub(time.Now()); remaining > 0 {
 			timer := time.NewTimer(remaining)
@@ -819,7 +814,7 @@ func (w *Worker) finalizeAssistantResponse(ctx context.Context, run *db.Run, fin
 			return err
 		}
 		if len(deferred) > 0 {
-			if err := w.store.CompleteRunSuppressed(ctx, run.ID, msgID, finalContent, len(deferred)); err != nil {
+			if err := w.store.CompleteRunSuppressed(ctx, run.ID, finalContent, len(deferred)); err != nil {
 				return err
 			}
 			refinement, err := w.store.CreateRefinementRun(ctx, run, deferred, finalContent, w.maxRefineDepth)
@@ -830,6 +825,12 @@ func (w *Worker) finalizeAssistantResponse(ctx context.Context, run *db.Run, fin
 			w.emitTypingOutbound(ctx, refinement, "refinement_created")
 			return nil
 		}
+	}
+	msgID, err := w.store.InsertMessage(ctx, run.CustomerID, run.SessionID, run.ID, "assistant", map[string]any{
+		"parts": []map[string]any{{"type": "text", "text": finalContent}},
+	})
+	if err != nil {
+		return err
 	}
 	if err := w.emitFinalOutbound(ctx, run, msgID, finalContent); err != nil {
 		return err
@@ -2271,7 +2272,7 @@ func (w *Worker) policyContext(run *db.Run, stepID, subject, content string) pol
 	if ids, err := w.policyPackIDsForRun(context.Background(), run); err == nil && len(ids) > 0 {
 		pc.PolicyPackIDs = ids
 	}
-	if strings.HasPrefix(subject, "duraclaw.") || subject == "echo" || subject == "remember" || subject == "list_memories" || subject == "save_preference" || subject == "list_preferences" || subject == "create_reminder" {
+	if strings.HasPrefix(subject, "duraclaw.") || subject == "echo" || subject == "remember" || subject == "list_memories" || subject == "save_preference" || subject == "list_preferences" || subject == "create_reminder" || subject == "update_reminder" {
 		pc.ToolName = subject
 	} else if subject != "" {
 		pc.WorkflowID = subject
@@ -2818,7 +2819,7 @@ func internalToolDefinitions() []providers.ToolDefinition {
 			Type: "function",
 			Function: providers.ToolFunctionDefinition{
 				Name:        "duraclaw.ask_user",
-				Description: "Pause the run and ask the user for clarification.",
+				Description: "Pause the run and ask the user for clarification. Use this before calling tools when required details are missing or ambiguous; do not guess missing dates, times, identifiers, or other side-effect parameters.",
 				Parameters: map[string]any{
 					"type":                 "object",
 					"properties":           map[string]any{"question": map[string]any{"type": "string"}},

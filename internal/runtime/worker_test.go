@@ -146,6 +146,17 @@ func TestInputMapReturnsEmptyMapForInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestPolicyContextClassifiesReminderMutationTools(t *testing.T) {
+	run := &db.Run{ID: "run-1", CustomerID: "c1", UserID: "u1", AgentInstanceID: "a1", SessionID: "s1"}
+	w := &Worker{}
+	for _, toolName := range []string{"create_reminder", "update_reminder"} {
+		ctx := w.policyContext(run, "step-1", toolName, "")
+		if ctx.ToolName != toolName || ctx.WorkflowID != "" {
+			t.Fatalf("%s classified as tool=%q workflow=%q", toolName, ctx.ToolName, ctx.WorkflowID)
+		}
+	}
+}
+
 func TestWorkflowOutputTextFallsBackToJSON(t *testing.T) {
 	got := workflowOutputText(map[string]any{"ok": true})
 	if got != `{"ok":true}` {
@@ -235,6 +246,9 @@ func TestInternalToolDefinitionsAndPlanning(t *testing.T) {
 	defs := internalToolDefinitions()
 	if len(defs) != 2 || defs[0].Function.Name != "duraclaw.run_workflow" || defs[1].Function.Name != "duraclaw.ask_user" {
 		t.Fatalf("defs=%#v", defs)
+	}
+	if !strings.Contains(defs[1].Function.Description, "do not guess missing dates") {
+		t.Fatalf("ask_user guidance is too weak: %q", defs[1].Function.Description)
 	}
 	w := &Worker{}
 	if !w.isInternalTool("duraclaw.ask_user") || w.isInternalTool("echo") {

@@ -66,7 +66,7 @@ func TestReminderToolGuidanceDistinguishesFromRemember(t *testing.T) {
 	if !strings.Contains(remember.Description(), "use create_reminder instead") {
 		t.Fatalf("remember description should reject reminder-like requests: %q", remember.Description())
 	}
-	if !strings.Contains(reminder.Description(), "ingatkan saya") || !strings.Contains(reminder.Description(), "Do not use remember") {
+	if !strings.Contains(reminder.Description(), "ingatkan saya") || !strings.Contains(reminder.Description(), "Do not use remember") || !strings.Contains(reminder.Description(), "Do not assume ambiguous times") {
 		t.Fatalf("create_reminder description should cover reminder phrasing: %q", reminder.Description())
 	}
 	params := reminder.Parameters()

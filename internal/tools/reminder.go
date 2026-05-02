@@ -15,6 +15,10 @@ type ReminderStore interface {
 	CreateReminderSubscription(ctx context.Context, spec db.ReminderSubscriptionSpec) (*db.ReminderSubscription, error)
 }
 
+type ReminderUpdateStore interface {
+	UpdateUserReminderSubscription(ctx context.Context, id, customerID, userID string, update db.ReminderSubscriptionUpdate) (*db.ReminderSubscription, error)
+}
+
 type CreateReminderTool struct {
 	Store ReminderStore
 }
@@ -22,7 +26,7 @@ type CreateReminderTool struct {
 func (CreateReminderTool) Name() string { return "create_reminder" }
 
 func (CreateReminderTool) Description() string {
-	return "Create a scheduled reminder/alarm for the current user and return a reminder reference artifact. Use this for 'remind me', 'ingatkan saya', 'besok pagi jam 7', alarms, cron-like notifications, and future scheduled tasks. Do not use remember for these."
+	return "Create a scheduled reminder/alarm for the current user and return a reminder reference artifact. Use this for 'remind me', 'ingatkan saya', alarms, cron-like notifications, and future scheduled tasks only when the reminder has a clear future date/time or cron schedule. Do not assume ambiguous times such as 'later', 'tomorrow', or 'morning' without enough context; ask the user for clarification first. If a recent reminder_reference exists and the user adds or corrects timing/details, use update_reminder instead of creating a duplicate. Do not use remember for reminders."
 }
 
 func (CreateReminderTool) Retryable() bool { return false }
@@ -88,19 +92,113 @@ func (t CreateReminderTool) Execute(ctx context.Context, exec ExecutionContext, 
 	}
 }
 
+type UpdateReminderTool struct {
+	Store ReminderUpdateStore
+}
+
+func (UpdateReminderTool) Name() string { return "update_reminder" }
+
+func (UpdateReminderTool) Description() string {
+	return "Update an existing reminder subscription and return the updated reminder reference artifact. Use this when the user corrects, adds timing, or changes details for a recent reminder_reference, especially in short follow-up messages like 'at 8am'. Requires subscription_id from an existing reminder_reference. Do not create a new reminder when updating the referenced reminder satisfies the request."
+}
+
+func (UpdateReminderTool) Retryable() bool { return false }
+
+func (UpdateReminderTool) Parameters() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"subscription_id": map[string]any{"type": "string", "description": "Existing reminder subscription_id from a reminder_reference artifact."},
+			"title":           map[string]any{"type": "string", "description": "Updated human-readable reminder text."},
+			"schedule":        map[string]any{"type": "string", "description": "Updated cron expression or @once."},
+			"timezone":        map[string]any{"type": "string", "description": "Updated user timezone when known, for example Asia/Jakarta."},
+			"payload":         map[string]any{"type": "object", "description": "Updated future reminder run input."},
+			"next_run_at":     map[string]any{"type": "string", "description": "Updated RFC3339 due time. Required when schedule is @once."},
+			"metadata":        map[string]any{"type": "object"},
+			"enabled":         map[string]any{"type": "boolean"},
+		},
+		"required":             []any{"subscription_id"},
+		"additionalProperties": false,
+	}
+}
+
+func (t UpdateReminderTool) Execute(ctx context.Context, exec ExecutionContext, args map[string]any) *Result {
+	if t.Store == nil {
+		return ErrorResult("reminder store is unavailable")
+	}
+	subscriptionID := strings.TrimSpace(stringArg(args, "subscription_id"))
+	if subscriptionID == "" {
+		return ErrorResult("subscription_id is required")
+	}
+	update := db.ReminderSubscriptionUpdate{}
+	if value := strings.TrimSpace(stringArg(args, "title")); value != "" {
+		update.Title = &value
+	}
+	if value := strings.TrimSpace(stringArg(args, "schedule")); value != "" {
+		update.Schedule = &value
+		nextRunAt, err := reminderNextRunAt(value, stringArg(args, "next_run_at"))
+		if err != nil {
+			return ErrorResult(err.Error())
+		}
+		if !nextRunAt.IsZero() {
+			update.NextRunAt = &nextRunAt
+		}
+	} else if rawNext := strings.TrimSpace(stringArg(args, "next_run_at")); rawNext != "" {
+		nextRunAt, err := parseFutureReminderTime(rawNext)
+		if err != nil {
+			return ErrorResult(err.Error())
+		}
+		update.NextRunAt = &nextRunAt
+	}
+	if value := strings.TrimSpace(stringArg(args, "timezone")); value != "" {
+		update.Timezone = &value
+	}
+	if payload, ok := args["payload"]; ok {
+		update.Payload = payload
+	}
+	if metadata, ok := args["metadata"]; ok {
+		update.Metadata = metadata
+	}
+	if enabled, ok := args["enabled"].(bool); ok {
+		update.Enabled = &enabled
+	}
+	sub, err := t.Store.UpdateUserReminderSubscription(ctx, subscriptionID, exec.CustomerID, exec.UserID, update)
+	if err != nil {
+		return ErrorResult(err.Error())
+	}
+	ref := reminderReference(exec, sub)
+	raw, _ := json.Marshal(map[string]any{
+		"status":                 "updated",
+		"reminder_reference":     ref,
+		"user_response_guidance": "If this update happened while refining an undelivered draft response, tell the user the reminder has been set/scheduled with the latest details. Do not mention that an earlier hidden reminder was updated unless the user explicitly asks.",
+	})
+	return &Result{
+		ForLLM:    string(raw),
+		Artifacts: []Reference{ref},
+	}
+}
+
 func reminderNextRunAt(scheduleText, rawNext string) (time.Time, error) {
 	rawNext = strings.TrimSpace(rawNext)
 	if rawNext != "" {
-		next, err := time.Parse(time.RFC3339, rawNext)
-		if err != nil {
-			return time.Time{}, fmt.Errorf("next_run_at must be RFC3339: %w", err)
-		}
-		return next.UTC(), nil
+		return parseFutureReminderTime(rawNext)
 	}
 	if scheduleText == "@once" {
 		return time.Time{}, fmt.Errorf("next_run_at is required for @once reminders")
 	}
 	return scheduler.Next(scheduleText, time.Now().UTC())
+}
+
+func parseFutureReminderTime(rawNext string) (time.Time, error) {
+	next, err := time.Parse(time.RFC3339, strings.TrimSpace(rawNext))
+	if err != nil {
+		return time.Time{}, fmt.Errorf("next_run_at must be RFC3339: %w", err)
+	}
+	next = next.UTC()
+	if !next.After(time.Now()) {
+		return time.Time{}, fmt.Errorf("next_run_at must be in the future. Ask the user for a future reminder time or retry with a future absolute timestamp")
+	}
+	return next, nil
 }
 
 func reminderReference(exec ExecutionContext, sub *db.ReminderSubscription) Reference {

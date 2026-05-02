@@ -87,6 +87,20 @@ func TestOpenRouterRapidFollowupRefinementE2E(t *testing.T) {
 	if !suppressed || depth != 0 || state != "completed" {
 		t.Fatalf("run A state=%s suppressed=%v depth=%d", state, suppressed, depth)
 	}
+	var parentFinalMessageID *string
+	var parentAssistantMessages int
+	if err := pool.QueryRow(ctx, `SELECT final_message_id::text FROM runs WHERE id=$1`, runA.ID).Scan(&parentFinalMessageID); err != nil {
+		t.Fatal(err)
+	}
+	if parentFinalMessageID != nil {
+		t.Fatalf("suppressed parent run should not have final_message_id, got %q", *parentFinalMessageID)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM messages WHERE run_id=$1 AND role='assistant'`, runA.ID).Scan(&parentAssistantMessages); err != nil {
+		t.Fatal(err)
+	}
+	if parentAssistantMessages != 0 {
+		t.Fatalf("suppressed parent draft leaked into message history: %d assistant messages", parentAssistantMessages)
+	}
 
 	refinementID := waitForRefinementRun(t, ctx, pool, runA.ID)
 	processed, err := worker.RunOnce(ctx)
@@ -119,6 +133,13 @@ func TestOpenRouterRapidFollowupRefinementE2E(t *testing.T) {
 	}
 	if len(payload.Parts) == 0 || payload.Parts[0].Text == "" {
 		t.Fatalf("empty final outbound payload: %s", string(finalPayload))
+	}
+	var totalAssistantMessages int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM messages WHERE customer_id=$1 AND session_id=$2 AND role='assistant'`, acp.CustomerID, acp.SessionID).Scan(&totalAssistantMessages); err != nil {
+		t.Fatal(err)
+	}
+	if totalAssistantMessages != 1 {
+		t.Fatalf("expected only final visible assistant response in history, got %d", totalAssistantMessages)
 	}
 	t.Logf("run_a=%s refinement_run=%s deferred=%s final_chars=%d", runA.ID, refinementID, ack.DeferredMessageID, len(payload.Parts[0].Text))
 }

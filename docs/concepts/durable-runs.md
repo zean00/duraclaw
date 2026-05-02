@@ -64,11 +64,11 @@ Duraclaw serializes runs per session and also handles rapid follow-up messages w
 }
 ```
 
-The active run still finishes its internal pipeline, but its direct outbound message is suppressed. Duraclaw stores the draft response, creates a refinement run with the draft plus deferred messages, and emits a `typing` outbound intent so Nexus can keep the chat client warm. The refinement run input includes both structured metadata and prompt-visible text containing the original input, suppressed draft, and deferred follow-up payloads, so the model does not depend on recent-history retention to see the interruption context. Refinement runs use the same configurable window, reset from their own processing start, up to the configured maximum depth. After that, new messages become normal queued follow-up runs.
+The active run still finishes its internal pipeline, but its direct outbound message is suppressed. Duraclaw stores the response as an internal draft, creates a refinement run with the draft plus deferred messages, and emits a `typing` outbound intent so Nexus can keep the chat client warm. The refinement run input includes both structured metadata and prompt-visible text containing the original input, suppressed draft, completed parent tool artifacts, and deferred follow-up payloads, so the model does not depend on recent-history retention to see the interruption context. Refinement runs use the same configurable window, reset from their own processing start, up to the configured maximum depth. After that, new messages become normal queued follow-up runs.
 
 Deferred run creation is idempotent by `(customer_id, session_id, idempotency_key)`. Duraclaw claims the deferred idempotency row before inserting the nullable-run user message, which prevents duplicate retry requests from leaving extra orphan messages in conversation history.
 
-Completed side effects from a suppressed run are not rolled back. The refinement prompt includes the suppressed draft and tells the agent not to repeat completed tool/workflow side effects unless the user explicitly asks.
+Completed side effects from a suppressed run are not rolled back. The refinement prompt includes the suppressed draft and completed parent artifacts, tells the agent to update recent side-effect artifacts instead of duplicating them, and tells the final response to describe the completed result with the latest details rather than exposing hidden draft/update mechanics.
 
 ## Agent Activity Signals
 
