@@ -36,6 +36,19 @@ Write-like tools should be non-retryable unless they have an idempotency key or 
 
 Built-in tool exposure is controlled in two layers. Agent instance version `tool_config` can set `allowed_tools` and `disabled_tools` for versioned behavior. Admin tool access rules can then narrow tools per customer/agent instance or per user through `/admin/tool-access/...`; user rules replace the customer/agent baseline, and denied tools win over allowed tools.
 
+Some model providers only accept function names matching `^[a-zA-Z0-9_-]{1,128}$`. Use `tool_config.tool_aliases` to expose provider-safe names while Duraclaw still authorizes and executes the original tool names:
+
+```json
+{
+  "tool_aliases": {
+    "duraclaw.ask_user": "duraclaw_ask_user",
+    "duraclaw.run_workflow": "duraclaw_run_workflow"
+  }
+}
+```
+
+Aliases are applied only to tools that are actually exposed for the current run after `allowed_tools`, `disabled_tools`, admin tool-access rules, and MCP access rules are evaluated. If an alias points at a hidden tool, Duraclaw does not reverse-map provider calls for that alias. If an applied alias conflicts with another exposed provider tool name, run setup fails instead of routing the call ambiguously.
+
 ## Add an MCP Server
 
 Prefer MCP for external tool surfaces. Configure globally with `DURACLAW_MCP_CONFIG` or per agent instance version with `mcp_config`.

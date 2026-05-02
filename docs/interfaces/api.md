@@ -269,7 +269,7 @@ Payload:
 
 If no rule exists, built-in tools follow the agent instance version `tool_config`. A customer/agent rule narrows the baseline for that agent instance. A user rule replaces the customer/agent rule for that user. `denied_tools` wins over `allowed_tools`; when `allowed_tools` is empty, every built-in tool is allowed except denied tools.
 
-`tool_config.max_tool_calls_per_run` applies to both built-in tools and directly exposed MCP function tools.
+`tool_config.max_tool_calls_per_run` applies to both built-in tools and directly exposed MCP function tools. Agent versions may also set `tool_config.tool_aliases` to map original tool names to provider-safe names, for example `"duraclaw.ask_user": "duraclaw_ask_user"`; authorization and execution continue to use the original tool name. Aliases are active only when the original tool is exposed for that run. Stale aliases for filtered tools are ignored, and applied aliases must not conflict with any other exposed provider tool name.
 
 ## Outbound Status
 

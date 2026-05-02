@@ -207,7 +207,7 @@ func validateAgentInstanceVersionSpec(spec AgentInstanceVersionSpec) error {
 	if err := validateObjectConfig("model_config", spec.ModelConfig, []string{"primary", "model", "fallbacks"}); err != nil {
 		return err
 	}
-	if err := validateObjectConfig("tool_config", spec.ToolConfig, []string{"allowed_tools", "disabled_tools", "max_iterations", "max_tool_calls_per_run"}); err != nil {
+	if err := validateObjectConfig("tool_config", spec.ToolConfig, []string{"allowed_tools", "disabled_tools", "max_iterations", "max_tool_calls_per_run", "tool_aliases"}); err != nil {
 		return err
 	}
 	if err := validateToolConfigValues(spec.ToolConfig); err != nil {
@@ -373,7 +373,45 @@ func validateToolConfigValues(value any) error {
 			}
 		}
 	}
+	if raw, ok := obj["tool_aliases"]; ok {
+		aliases, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("tool_config.tool_aliases must be an object")
+		}
+		seen := map[string]string{}
+		for original, aliasRaw := range aliases {
+			original = strings.TrimSpace(original)
+			if original == "" {
+				return fmt.Errorf("tool_config.tool_aliases contains an empty tool name")
+			}
+			alias, ok := aliasRaw.(string)
+			if !ok {
+				return fmt.Errorf("tool_config.tool_aliases.%s must be a string", original)
+			}
+			alias = strings.TrimSpace(alias)
+			if !providerSafeToolAlias(alias) {
+				return fmt.Errorf("tool_config.tool_aliases.%s must match ^[a-zA-Z0-9_-]{1,128}$", original)
+			}
+			if prior, exists := seen[alias]; exists && prior != original {
+				return fmt.Errorf("tool_config.tool_aliases alias %q is assigned to both %q and %q", alias, prior, original)
+			}
+			seen[alias] = original
+		}
+	}
 	return nil
+}
+
+func providerSafeToolAlias(value string) bool {
+	if value == "" || len(value) > 128 {
+		return false
+	}
+	for _, r := range value {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func validateMCPConfigValues(value any) error {

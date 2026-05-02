@@ -2550,13 +2550,25 @@ func (w *Worker) toolDefinitions(ctx context.Context, run *db.Run) ([]providers.
 	if err != nil {
 		return nil, err
 	}
-	defs := []providers.ToolDefinition{}
-	if toolRegistry != nil {
-		defs = append(defs, toolRegistry.ToProviderDefs()...)
+	aliases, err := w.toolAliasesForRun(ctx, run)
+	if err != nil {
+		return nil, err
 	}
 	mcpBindings, mcpDefs, err := w.mcpToolBindings(ctx, run)
 	if err != nil {
 		return nil, err
+	}
+	filtered, err := w.visibleToolDefinitions(ctx, run, toolRegistry, mcpBindings, mcpDefs)
+	if err != nil {
+		return nil, err
+	}
+	return applyToolAliases(filtered, aliases)
+}
+
+func (w *Worker) visibleToolDefinitions(ctx context.Context, run *db.Run, toolRegistry *tools.Registry, mcpBindings map[string]mcpToolBinding, mcpDefs []providers.ToolDefinition) ([]providers.ToolDefinition, error) {
+	defs := []providers.ToolDefinition{}
+	if toolRegistry != nil {
+		defs = append(defs, toolRegistry.ToProviderDefs()...)
 	}
 	defs = append(defs, mcpDefs...)
 	internal := internalToolDefinitions()
@@ -2702,9 +2714,26 @@ func (w *Worker) executeToolCalls(ctx context.Context, run *db.Run, stepID strin
 	if err != nil {
 		return nil, err
 	}
-	mcpBindings, _, err := w.mcpToolBindings(ctx, run)
+	mcpBindings, mcpDefs, err := w.mcpToolBindings(ctx, run)
 	if err != nil {
 		return nil, err
+	}
+	defs, err := w.visibleToolDefinitions(ctx, run, toolRegistry, mcpBindings, mcpDefs)
+	if err != nil {
+		return nil, err
+	}
+	configuredAliases, err := w.toolAliasesForRun(ctx, run)
+	if err != nil {
+		return nil, err
+	}
+	aliases, err := appliedToolAliasesForDefinitions(defs, configuredAliases)
+	if err != nil {
+		return nil, err
+	}
+	normalizedCalls := make([]providers.ToolCall, 0, len(calls))
+	for _, call := range calls {
+		call.Function.Name = aliases.OriginalName(call.Function.Name)
+		normalizedCalls = append(normalizedCalls, call)
 	}
 	maxToolCalls, err := w.maxToolCallsForRun(ctx, run)
 	if err != nil {
@@ -2719,15 +2748,23 @@ func (w *Worker) executeToolCalls(ctx context.Context, run *db.Run, stepID strin
 		if err != nil {
 			return nil, err
 		}
-		planned := w.plannedToolExecutions(toolRegistry, completed, calls)
+		planned := w.plannedToolExecutions(toolRegistry, completed, normalizedCalls)
 		if existing+planned > maxToolCalls {
 			return nil, fmt.Errorf("tool call count %d exceeds configured limit %d", existing+planned, maxToolCalls)
 		}
 	}
 	results := make([]toolExecutionResult, 0, len(calls))
 	channelCtx := w.runChannelContext(ctx, run.ID)
-	for _, call := range calls {
-		w.emitAgentActivity(ctx, run, "tool", "started", map[string]any{"tool_name": call.Function.Name, "tool_call_id": call.ID})
+	for i, call := range normalizedCalls {
+		providerToolName := call.Function.Name
+		if i < len(calls) {
+			providerToolName = calls[i].Function.Name
+		}
+		activityPayload := map[string]any{"tool_name": call.Function.Name, "tool_call_id": call.ID}
+		if providerToolName != call.Function.Name {
+			activityPayload["provider_tool_name"] = providerToolName
+		}
+		w.emitAgentActivity(ctx, run, "tool", "started", activityPayload)
 		if binding, ok := mcpBindings[call.Function.Name]; ok {
 			if _, err := w.policyEngine().Enforce(ctx, "pre_tool", w.policyContext(run, stepID, binding.ServerName+"."+binding.ToolName, "")); err != nil {
 				w.emitAgentActivity(ctx, run, "tool", "failed", map[string]any{"tool_name": call.Function.Name, "tool_call_id": call.ID, "error": err.Error()})
@@ -2814,6 +2851,93 @@ func (w *Worker) executeToolCalls(ctx context.Context, run *db.Run, stepID strin
 		results = append(results, toolExecutionResult{ToolCallID: call.ID, Content: call.Function.Name + ": " + result.ForLLM})
 	}
 	return results, nil
+}
+
+type toolAliasSet struct {
+	OriginalToAlias map[string]string
+	AliasToOriginal map[string]string
+}
+
+func (a toolAliasSet) ProviderName(name string) string {
+	if alias := strings.TrimSpace(a.OriginalToAlias[name]); alias != "" {
+		return alias
+	}
+	return name
+}
+
+func (a toolAliasSet) OriginalName(name string) string {
+	if original := strings.TrimSpace(a.AliasToOriginal[name]); original != "" {
+		return original
+	}
+	return name
+}
+
+func (w *Worker) toolAliasesForRun(ctx context.Context, run *db.Run) (toolAliasSet, error) {
+	out := toolAliasSet{OriginalToAlias: map[string]string{}, AliasToOriginal: map[string]string{}}
+	if w == nil || w.store == nil || run == nil {
+		return out, nil
+	}
+	version, err := w.store.AgentInstanceVersion(ctx, run.AgentInstanceVersionID)
+	if err != nil || version == nil || len(version.ToolConfig) == 0 {
+		return out, err
+	}
+	var cfg struct {
+		ToolAliases map[string]string `json:"tool_aliases"`
+	}
+	if err := json.Unmarshal(version.ToolConfig, &cfg); err != nil {
+		return out, err
+	}
+	for original, alias := range cfg.ToolAliases {
+		original = strings.TrimSpace(original)
+		alias = strings.TrimSpace(alias)
+		if original == "" || alias == "" {
+			continue
+		}
+		if prior, exists := out.AliasToOriginal[alias]; exists && prior != original {
+			return out, fmt.Errorf("tool alias %q maps to both %q and %q", alias, prior, original)
+		}
+		out.OriginalToAlias[original] = alias
+		out.AliasToOriginal[alias] = original
+	}
+	return out, nil
+}
+
+func appliedToolAliasesForDefinitions(defs []providers.ToolDefinition, configured toolAliasSet) (toolAliasSet, error) {
+	if len(defs) == 0 || len(configured.OriginalToAlias) == 0 {
+		return toolAliasSet{OriginalToAlias: map[string]string{}, AliasToOriginal: map[string]string{}}, nil
+	}
+	applied := toolAliasSet{OriginalToAlias: map[string]string{}, AliasToOriginal: map[string]string{}}
+	seen := map[string]string{}
+	for _, def := range defs {
+		original := def.Function.Name
+		providerName := configured.ProviderName(original)
+		if prior, exists := seen[providerName]; exists && prior != original {
+			return applied, fmt.Errorf("provider tool alias %q conflicts between %q and %q", providerName, prior, original)
+		}
+		seen[providerName] = original
+		if providerName != original {
+			applied.OriginalToAlias[original] = providerName
+			applied.AliasToOriginal[providerName] = original
+		}
+	}
+	return applied, nil
+}
+
+func applyToolAliases(defs []providers.ToolDefinition, aliases toolAliasSet) ([]providers.ToolDefinition, error) {
+	if len(defs) == 0 || len(aliases.OriginalToAlias) == 0 {
+		return defs, nil
+	}
+	applied, err := appliedToolAliasesForDefinitions(defs, aliases)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]providers.ToolDefinition, 0, len(defs))
+	for _, def := range defs {
+		original := def.Function.Name
+		def.Function.Name = applied.ProviderName(original)
+		out = append(out, def)
+	}
+	return out, nil
 }
 
 func (w *Worker) executeMCPTool(ctx context.Context, run *db.Run, binding mcpToolBinding, providerToolCallID string, args map[string]any) (map[string]any, error) {

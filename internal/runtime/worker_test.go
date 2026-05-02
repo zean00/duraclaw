@@ -313,6 +313,62 @@ func TestMCPProviderToolNameIsSafeAndStable(t *testing.T) {
 	}
 }
 
+func TestApplyToolAliasesRenamesProviderDefinitions(t *testing.T) {
+	defs := []providers.ToolDefinition{
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "duraclaw.ask_user"}},
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "echo"}},
+	}
+	got, err := applyToolAliases(defs, toolAliasSet{
+		OriginalToAlias: map[string]string{"duraclaw.ask_user": "duraclaw_ask_user"},
+		AliasToOriginal: map[string]string{"duraclaw_ask_user": "duraclaw.ask_user"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].Function.Name != "duraclaw_ask_user" || got[1].Function.Name != "echo" {
+		t.Fatalf("aliases not applied: %#v", got)
+	}
+	aliases := toolAliasSet{AliasToOriginal: map[string]string{"duraclaw_ask_user": "duraclaw.ask_user"}}
+	if got := aliases.OriginalName("duraclaw_ask_user"); got != "duraclaw.ask_user" {
+		t.Fatalf("original name=%q", got)
+	}
+}
+
+func TestApplyToolAliasesRejectsProviderNameConflict(t *testing.T) {
+	defs := []providers.ToolDefinition{
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "duraclaw.ask_user"}},
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "echo"}},
+	}
+	_, err := applyToolAliases(defs, toolAliasSet{OriginalToAlias: map[string]string{"duraclaw.ask_user": "echo"}})
+	if err == nil {
+		t.Fatal("expected conflict")
+	}
+}
+
+func TestAppliedToolAliasesIgnoreAliasesForHiddenTools(t *testing.T) {
+	defs := []providers.ToolDefinition{
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "echo"}},
+	}
+	configured := toolAliasSet{
+		OriginalToAlias: map[string]string{"duraclaw.ask_user": "echo"},
+		AliasToOriginal: map[string]string{"echo": "duraclaw.ask_user"},
+	}
+	applied, err := appliedToolAliasesForDefinitions(defs, configured)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := applied.OriginalName("echo"); got != "echo" {
+		t.Fatalf("stale alias rewrote exposed echo to %q", got)
+	}
+	aliased, err := applyToolAliases(defs, configured)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if aliased[0].Function.Name != "echo" {
+		t.Fatalf("unexpected provider name: %#v", aliased)
+	}
+}
+
 func TestMCPToolDefinitionsRespectAccessRules(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
