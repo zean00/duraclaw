@@ -311,6 +311,47 @@ func TestMCPProviderToolNameIsSafeAndStable(t *testing.T) {
 	if got != mcpProviderToolName("Prayer Tools", "search-times.v1") {
 		t.Fatal("name should be stable")
 	}
+	if alias := mcpProviderToolAliasName("wulan_integrations", "self_service.create_deeplink"); alias != "mcp__wulan_integrations__self_service_create_deeplink" {
+		t.Fatalf("alias=%q", alias)
+	}
+}
+
+func TestMCPBindingAliasesProviderSafeUnhashedName(t *testing.T) {
+	canonical := mcpProviderToolName("wulan_integrations", "location.create_override")
+	alias := mcpProviderToolAliasName("wulan_integrations", "location.create_override")
+	binding := mcpToolBinding{FunctionName: canonical, ServerName: "wulan_integrations", ToolName: "location.create_override"}
+	bindings := map[string]mcpToolBinding{canonical: binding}
+	addMCPBindingAlias(bindings, map[string]bool{}, alias, binding)
+	got, ok := bindings["mcp__wulan_integrations__location_create_override"]
+	if !ok || got.ServerName != "wulan_integrations" || got.ToolName != "location.create_override" {
+		t.Fatalf("missing alias binding: %#v", bindings)
+	}
+}
+
+func TestMCPBindingAliasCollisionRemovesAmbiguousAlias(t *testing.T) {
+	bindings := map[string]mcpToolBinding{}
+	ambiguousAliases := map[string]bool{}
+	first := mcpToolBinding{FunctionName: "mcp__srv__tool_one__aaaa", ServerName: "srv", ToolName: "tool.one"}
+	second := mcpToolBinding{FunctionName: "mcp__srv__tool_one__bbbb", ServerName: "srv", ToolName: "tool-one"}
+	addMCPBindingAlias(bindings, ambiguousAliases, "mcp__srv__tool_one", first)
+	addMCPBindingAlias(bindings, ambiguousAliases, "mcp__srv__tool_one", second)
+	if _, ok := bindings["mcp__srv__tool_one"]; ok {
+		t.Fatalf("ambiguous alias should be removed: %#v", bindings)
+	}
+}
+
+func TestMCPBindingAliasCollisionStaysDisabledAfterThreeWayCollision(t *testing.T) {
+	bindings := map[string]mcpToolBinding{}
+	ambiguousAliases := map[string]bool{}
+	first := mcpToolBinding{FunctionName: "mcp__srv__tool_one__aaaa", ServerName: "srv", ToolName: "tool.one"}
+	second := mcpToolBinding{FunctionName: "mcp__srv__tool_one__bbbb", ServerName: "srv", ToolName: "tool-one"}
+	third := mcpToolBinding{FunctionName: "mcp__srv__tool_one__cccc", ServerName: "srv", ToolName: "tool one"}
+	addMCPBindingAlias(bindings, ambiguousAliases, "mcp__srv__tool_one", first)
+	addMCPBindingAlias(bindings, ambiguousAliases, "mcp__srv__tool_one", second)
+	addMCPBindingAlias(bindings, ambiguousAliases, "mcp__srv__tool_one", third)
+	if _, ok := bindings["mcp__srv__tool_one"]; ok {
+		t.Fatalf("ambiguous alias should stay disabled after later collisions: %#v", bindings)
+	}
 }
 
 func TestApplyToolAliasesRenamesProviderDefinitions(t *testing.T) {

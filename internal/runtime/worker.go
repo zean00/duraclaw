@@ -2612,6 +2612,7 @@ func (w *Worker) mcpToolBindings(ctx context.Context, run *db.Run) (map[string]m
 	traceCtx := w.runTraceContext(ctx, run.ID)
 	channelCtx := w.runChannelContext(ctx, run.ID)
 	bindings := map[string]mcpToolBinding{}
+	ambiguousAliases := map[string]bool{}
 	defs := []providers.ToolDefinition{}
 	for _, status := range manager.Statuses() {
 		discoveryCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
@@ -2636,6 +2637,7 @@ func (w *Worker) mcpToolBindings(ctx context.Context, run *db.Run) (map[string]m
 			functionName := mcpProviderToolName(status.Name, tool.Name)
 			binding := mcpToolBinding{FunctionName: functionName, ServerName: status.Name, ToolName: tool.Name, Tool: tool}
 			bindings[functionName] = binding
+			addMCPBindingAlias(bindings, ambiguousAliases, mcpProviderToolAliasName(status.Name, tool.Name), binding)
 			defs = append(defs, mcpToolDefinition(binding))
 		}
 	}
@@ -2643,8 +2645,26 @@ func (w *Worker) mcpToolBindings(ctx context.Context, run *db.Run) (map[string]m
 	return bindings, defs, nil
 }
 
+func addMCPBindingAlias(bindings map[string]mcpToolBinding, ambiguousAliases map[string]bool, alias string, binding mcpToolBinding) {
+	alias = strings.TrimSpace(alias)
+	if alias == "" || alias == binding.FunctionName {
+		return
+	}
+	if ambiguousAliases[alias] {
+		return
+	}
+	if prior, exists := bindings[alias]; exists {
+		if prior.ServerName != binding.ServerName || prior.ToolName != binding.ToolName {
+			delete(bindings, alias)
+			ambiguousAliases[alias] = true
+		}
+		return
+	}
+	bindings[alias] = binding
+}
+
 func mcpProviderToolName(serverName, toolName string) string {
-	base := "mcp__" + providerToolNamePart(serverName) + "__" + providerToolNamePart(toolName)
+	base := mcpProviderToolAliasName(serverName, toolName)
 	hash := fnv.New32a()
 	_, _ = hash.Write([]byte(strings.TrimSpace(serverName) + "\x00" + strings.TrimSpace(toolName)))
 	suffix := fmt.Sprintf("__%08x", hash.Sum32())
@@ -2652,6 +2672,10 @@ func mcpProviderToolName(serverName, toolName string) string {
 		base = strings.TrimRight(base[:64-len(suffix)], "_")
 	}
 	return base + suffix
+}
+
+func mcpProviderToolAliasName(serverName, toolName string) string {
+	return "mcp__" + providerToolNamePart(serverName) + "__" + providerToolNamePart(toolName)
 }
 
 func providerToolNamePart(value string) string {
