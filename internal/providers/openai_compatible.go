@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -525,6 +526,39 @@ func audioMediaType(format string) string {
 	}
 }
 
+func audioTranscriptionFormat(mediaType, filename string) string {
+	value := strings.ToLower(strings.TrimSpace(mediaType))
+	if semi := strings.Index(value, ";"); semi >= 0 {
+		value = strings.TrimSpace(value[:semi])
+	}
+	switch value {
+	case "audio/mpeg", "audio/mp3":
+		return "mp3"
+	case "audio/wav", "audio/x-wav":
+		return "wav"
+	case "audio/mp4", "audio/x-m4a":
+		return "mp4"
+	case "audio/webm":
+		return "webm"
+	case "audio/ogg", "audio/opus":
+		return "ogg"
+	case "audio/flac":
+		return "flac"
+	}
+	ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(strings.TrimSpace(filename))), ".")
+	switch ext {
+	case "mp3", "wav", "mp4", "m4a", "webm", "ogg", "oga", "opus", "flac":
+		if ext == "m4a" {
+			return "mp4"
+		}
+		if ext == "oga" || ext == "opus" {
+			return "ogg"
+		}
+		return ext
+	}
+	return ""
+}
+
 func responseContentText(raw any) string {
 	switch v := raw.(type) {
 	case string:
@@ -634,6 +668,59 @@ func (p OpenRouterProvider) GenerateImage(ctx context.Context, req ImageGenerati
 
 func (p OpenRouterProvider) GenerateAudio(ctx context.Context, req AudioGenerationRequest) (*AudioGenerationResult, error) {
 	return p.compatible().GenerateAudio(ctx, req)
+}
+
+func (p OpenRouterProvider) TranscribeAudio(ctx context.Context, req AudioTranscriptionRequest) (*AudioTranscriptionResult, error) {
+	if len(req.Data) == 0 {
+		return nil, fmt.Errorf("audio transcription requires data")
+	}
+	if strings.TrimSpace(req.Model) == "" {
+		req.Model = p.DefaultModel
+	}
+	if strings.TrimSpace(req.Model) == "" {
+		req.Model = "openai/whisper-large-v3"
+	}
+	format := audioTranscriptionFormat(req.MediaType, req.Filename)
+	if format == "" {
+		format = "webm"
+	}
+	body := map[string]any{
+		"model": req.Model,
+		"input_audio": map[string]any{
+			"data":   base64.StdEncoding.EncodeToString(req.Data),
+			"format": format,
+		},
+	}
+	if strings.TrimSpace(req.Language) != "" {
+		body["language"] = req.Language
+	}
+	if strings.TrimSpace(req.Prompt) != "" {
+		body["prompt"] = req.Prompt
+	}
+	resp, err := p.compatible().jsonRequest(ctx, "/audio/transcriptions", body)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var payload struct {
+		Text  string         `json:"text"`
+		Usage UsageInfo      `json:"usage"`
+		Raw   map[string]any `json:"-"`
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, err
+	}
+	var metadata map[string]any
+	_ = json.Unmarshal(raw, &metadata)
+	text := strings.TrimSpace(payload.Text)
+	if text == "" {
+		return nil, fmt.Errorf("audio transcription returned no text")
+	}
+	return &AudioTranscriptionResult{Text: text, Usage: payload.Usage, Metadata: metadata}, nil
 }
 
 func (p OpenRouterProvider) compatible() OpenAICompatibleProvider {

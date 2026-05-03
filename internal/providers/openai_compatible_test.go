@@ -234,6 +234,44 @@ func TestOpenAICompatibleProviderTranscribeAudioValidationAndTextFormat(t *testi
 	}
 }
 
+func TestOpenRouterProviderTranscribeAudioUsesJSONEndpoint(t *testing.T) {
+	var sawPath, auth, referer, title string
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawPath = r.URL.Path
+		auth = r.Header.Get("Authorization")
+		referer = r.Header.Get("HTTP-Referer")
+		title = r.Header.Get("X-Title")
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Fatalf("content-type=%q", got)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"text":  "transkrip suara",
+			"usage": map[string]any{"input_tokens": 3, "output_tokens": 2, "cost": 0.000001},
+		})
+	}))
+	defer server.Close()
+	got, err := (OpenRouterProvider{
+		BaseURL: server.URL, APIKey: "key", DefaultModel: "openai/whisper-large-v3", Referer: "https://duraclaw.test", Title: "Duraclaw",
+	}).TranscribeAudio(t.Context(), AudioTranscriptionRequest{Data: []byte("audio"), Filename: "voice-note.webm", MediaType: "audio/webm; codecs=opus", Language: "id"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, _ := body["input_audio"].(map[string]any)
+	if sawPath != "/audio/transcriptions" || auth != "Bearer key" || referer != "https://duraclaw.test" || title != "Duraclaw" {
+		t.Fatalf("path/auth/headers=%q %q %q %q", sawPath, auth, referer, title)
+	}
+	if body["model"] != "openai/whisper-large-v3" || body["language"] != "id" || input["format"] != "webm" || input["data"] != "YXVkaW8=" {
+		t.Fatalf("body=%#v", body)
+	}
+	if got.Text != "transkrip suara" || got.Usage.InputTokens != 3 || got.Usage.CostMicros != 1 {
+		t.Fatalf("got=%#v", got)
+	}
+}
+
 func TestOpenAICompatibleProviderUploadFile(t *testing.T) {
 	var sawPurpose string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

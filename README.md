@@ -135,10 +135,11 @@ For OpenRouter:
 ```bash
 DURACLAW_ARTIFACT_PROCESSOR_PROVIDER=openrouter
 DURACLAW_ARTIFACT_PROCESSOR_API_KEY=...
-DURACLAW_ARTIFACT_PROCESSOR_MODEL=openai/gpt-4.1-mini
+DURACLAW_ARTIFACT_PROCESSOR_MODEL=openai/whisper-large-v3
+DURACLAW_ARTIFACT_PROCESSOR_MODALITIES=audio,image,document,video
 ```
 
-Provider processors use multimodal chat input parts and persist standard artifact representations such as `vision_summary`, `document_text`, `transcript`, and `video_summary`.
+OpenRouter audio transcription uses OpenRouter's `/audio/transcriptions` STT endpoint and persists a `transcript` representation. Provider processors use multimodal chat input parts for other modalities and persist standard artifact representations such as `vision_summary`, `document_text`, `transcript`, and `video_summary`.
 
 Admin endpoints are open by default for local development. Set this in shared or production environments:
 
