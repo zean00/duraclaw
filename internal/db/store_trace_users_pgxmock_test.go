@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -65,6 +66,34 @@ func TestStoreUserMetadataWithPgxMock(t *testing.T) {
 	mock.ExpectExec("UPDATE users").WithArgs("c1", "missing", []byte(`{}`)).WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 	if err := store.UpdateUserMetadata(ctx, "c1", "missing", nil); err == nil {
 		t.Fatal("expected user not found")
+	}
+	mock.ExpectExec("UPDATE users").WithArgs("c1", "u1", []byte(`{"tier":"bronze"}`)).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	if err := store.MergeUserMetadata(ctx, "c1", "u1", map[string]string{"tier": "bronze"}); err != nil {
+		t.Fatal(err)
+	}
+	mock.ExpectBegin()
+	mock.ExpectExec("INSERT INTO users").WithArgs("c1", "u1", []byte(`{"recommendation":{"blocked_channels":["whatsapp"]}}`)).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("UPDATE sessions").WithArgs("c1", "u1", []byte(`{"recommendation":{"blocked_channels":["whatsapp"]}}`), "u1").WillReturnResult(pgxmock.NewResult("UPDATE", 2))
+	mock.ExpectCommit()
+	mock.ExpectRollback()
+	if err := store.UpsertUserRecommendationPolicy(ctx, "c1", "u1", SessionRecommendationPolicy{BlockedChannels: []string{"whatsapp", "whatsapp"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestUpsertUserRecommendationPolicyRollsBackWhenSessionUpdateFails(t *testing.T) {
+	store, mock := newMockStore(t)
+	ctx := context.Background()
+
+	mock.ExpectBegin()
+	mock.ExpectExec("INSERT INTO users").WithArgs("c1", "u1", []byte(`{"recommendation":{"blocked_channels":["whatsapp"]}}`)).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("UPDATE sessions").WithArgs("c1", "u1", []byte(`{"recommendation":{"blocked_channels":["whatsapp"]}}`), "u1").WillReturnError(errors.New("session update failed"))
+	mock.ExpectRollback()
+	if err := store.UpsertUserRecommendationPolicy(ctx, "c1", "u1", SessionRecommendationPolicy{BlockedChannels: []string{"whatsapp"}}); err == nil {
+		t.Fatal("expected session update error")
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

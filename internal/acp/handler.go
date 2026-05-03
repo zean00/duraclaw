@@ -882,6 +882,28 @@ func (h *Handler) deleteMemory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"memory_id": r.PathValue("memory_id"), "deleted": true})
 }
 
+func (h *Handler) upsertUserRecommendationDelivery(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		CustomerID      string   `json:"customer_id"`
+		BlockedChannels []string `json:"blocked_channels"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	userID := strings.TrimSpace(r.PathValue("user_id"))
+	if payload.CustomerID == "" || userID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id and user_id are required"))
+		return
+	}
+	policy := db.NormalizeRecommendationPolicy(db.SessionRecommendationPolicy{BlockedChannels: payload.BlockedChannels})
+	if err := h.store.UpsertUserRecommendationPolicy(r.Context(), payload.CustomerID, userID, policy); err != nil {
+		writeError(w, statusForError(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"customer_id": payload.CustomerID, "user_id": userID, "recommendation": policy})
+}
+
 func (h *Handler) createPreference(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
 		CustomerID string         `json:"customer_id"`

@@ -261,6 +261,7 @@ The GitHub Actions workflow runs the full suite with a `pgvector/pgvector:pg17` 
 - `DELETE /admin/recommendations/items/{item_id}?customer_id={customer_id}`
 - `GET /admin/recommendations/decisions?customer_id={customer_id}`
 - `GET /admin/recommendations/jobs?customer_id={customer_id}`
+- `PUT /admin/users/{user_id}/recommendation-delivery`
 - `GET /admin/mcp/servers`
 - `GET /admin/mcp/servers/{server_name}/tools`
 - `GET /admin/mcp/servers/{server_name}/resources`

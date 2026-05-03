@@ -232,7 +232,13 @@ func (s *Store) EnsureSession(ctx context.Context, c ACPContext) error {
 		if err := ensureDefaultAgentInstanceVersion(ctx, tx, c.CustomerID, c.AgentInstanceID); err != nil {
 			return err
 		}
-		sessionMetadata, _ := json.Marshal(sessionMetadataFromContext(c))
+		metadata := sessionMetadataFromContext(c)
+		if userMetadata, err := userMetadataTx(ctx, tx, c.CustomerID, c.UserID); err == nil {
+			if recommendation, ok := userMetadata["recommendation"]; ok {
+				metadata["recommendation"] = recommendation
+			}
+		}
+		sessionMetadata, _ := json.Marshal(metadata)
 		if len(sessionMetadata) == 0 || string(sessionMetadata) == "null" {
 			sessionMetadata = []byte(`{}`)
 		}
@@ -244,6 +250,14 @@ func (s *Store) EnsureSession(ctx context.Context, c ACPContext) error {
 			c.CustomerID, c.UserID, c.AgentInstanceID, c.SessionID, sessionMetadata)
 		return err
 	})
+}
+
+func userMetadataTx(ctx context.Context, tx pgx.Tx, customerID, userID string) (map[string]any, error) {
+	var raw []byte
+	if err := tx.QueryRow(ctx, `SELECT metadata FROM users WHERE customer_id=$1 AND id=$2`, customerID, userID).Scan(&raw); err != nil {
+		return nil, err
+	}
+	return decodeMetadata(raw), nil
 }
 
 func (s *Store) CreateRun(ctx context.Context, c ACPContext, input any) (*Run, error) {

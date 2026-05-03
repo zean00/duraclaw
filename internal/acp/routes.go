@@ -38,6 +38,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /admin/runtime-limits/customer/{customer_id}/agent-instances/{agent_instance_id}", h.requireAdmin(h.getAgentInstanceRuntimeLimits))
 	mux.HandleFunc("PUT /admin/runtime-limits/customer/{customer_id}/users/{user_id}", h.requireAdmin(h.upsertUserRuntimeLimits))
 	mux.HandleFunc("GET /admin/runtime-limits/customer/{customer_id}/users/{user_id}", h.requireAdmin(h.getUserRuntimeLimits))
+	mux.HandleFunc("PUT /admin/users/{user_id}/recommendation-delivery", h.requireAdmin(h.upsertUserRecommendationDelivery))
 	mux.HandleFunc("GET /admin/usage/model", h.requireAdmin(h.getModelUsageSummary))
 	mux.HandleFunc("POST /admin/knowledge/text", h.requireAdmin(h.ingestKnowledgeText))
 	mux.HandleFunc("GET /admin/knowledge/documents", h.requireAdmin(h.listKnowledgeDocuments))

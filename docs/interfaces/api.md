@@ -174,6 +174,18 @@ Admin recommendation routes:
 - `DELETE /admin/recommendations/items/{item_id}?customer_id={customer_id}`
 - `GET /admin/recommendations/decisions?customer_id={customer_id}`
 - `GET /admin/recommendations/jobs?customer_id={customer_id}`
+- `PUT /admin/users/{user_id}/recommendation-delivery`
+
+User recommendation delivery request:
+
+```json
+{
+  "customer_id": "customer-1",
+  "blocked_channels": ["whatsapp"]
+}
+```
+
+This updates the user-level default policy and atomically propagates it to existing sessions for the same `user_id` or matching channel user ID. If propagation fails, the user policy update is rolled back.
 
 Recommendation item request:
 

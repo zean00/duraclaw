@@ -809,6 +809,18 @@ func TestCreatePreferenceValidatesBeforeStore(t *testing.T) {
 	}
 }
 
+func TestUpsertUserRecommendationDeliveryRequiresScope(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPut, "/admin/users/u/recommendation-delivery", strings.NewReader(`{"blocked_channels":["whatsapp"]}`))
+	rec := httptest.NewRecorder()
+	NewHandler(nil).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "customer_id") {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+}
+
 func TestListMemoriesRequiresScope(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/admin/memories?customer_id=c", nil)
 	rec := httptest.NewRecorder()
