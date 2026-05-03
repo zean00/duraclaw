@@ -1649,16 +1649,21 @@ func containsNormalizedTerm(text string, terms []string) bool {
 func (w *Worker) applyRecommendationResult(ctx context.Context, run *db.Run, scope scopeJudgement, content string, ch <-chan recommendationSidecarResult) string {
 	result := <-ch
 	candidateIDs := recommendationItemIDs(result.Candidates)
+	delivery := w.recommendationDelivery(ctx, run)
 	if result.Err != nil {
 		status := "failed"
 		if result.TimedOut {
 			status = "timeout"
-			_ = w.enqueueRecommendationJob(ctx, run, scope, content, result)
+			if delivery.Blocked {
+				status = "channel_suppressed"
+			} else {
+				_ = w.enqueueRecommendationJob(ctx, run, scope, content, result)
+			}
 		}
 		_, _ = w.store.RecordRecommendationDecision(ctx, db.RecommendationDecisionSpec{
 			CustomerID: run.CustomerID, RunID: run.ID, UserID: run.UserID, SessionID: run.SessionID,
 			ScopeIntent: scope.Intent, ContextMode: result.ContextMode, CandidateItemIDs: candidateIDs,
-			DeliveryStatus: status, Error: result.Err.Error(),
+			DeliveryStatus: status, Error: result.Err.Error(), Metadata: recommendationDeliveryMetadata(delivery),
 		})
 		return content
 	}
@@ -1666,7 +1671,16 @@ func (w *Worker) applyRecommendationResult(ctx context.Context, run *db.Run, sco
 		_, _ = w.store.RecordRecommendationDecision(ctx, db.RecommendationDecisionSpec{
 			CustomerID: run.CustomerID, RunID: run.ID, UserID: run.UserID, SessionID: run.SessionID,
 			ScopeIntent: scope.Intent, ContextMode: result.ContextMode, CandidateItemIDs: candidateIDs,
-			DeliveryStatus: "no_candidate", Reason: result.Result.Reason,
+			DeliveryStatus: "no_candidate", Reason: result.Result.Reason, Metadata: recommendationDeliveryMetadata(delivery),
+		})
+		return content
+	}
+	if delivery.Blocked {
+		_, _ = w.store.RecordRecommendationDecision(ctx, db.RecommendationDecisionSpec{
+			CustomerID: run.CustomerID, RunID: run.ID, UserID: run.UserID, SessionID: run.SessionID,
+			ScopeIntent: scope.Intent, ContextMode: result.ContextMode, CandidateItemIDs: candidateIDs,
+			SelectedItemID: result.Result.ItemID, RecommendationText: result.Result.RecommendationText,
+			Reason: result.Result.Reason, DeliveryStatus: "channel_suppressed", Metadata: recommendationDeliveryMetadata(delivery),
 		})
 		return content
 	}
@@ -1679,7 +1693,7 @@ func (w *Worker) applyRecommendationResult(ctx context.Context, run *db.Run, sco
 			CustomerID: run.CustomerID, RunID: run.ID, UserID: run.UserID, SessionID: run.SessionID,
 			ScopeIntent: scope.Intent, ContextMode: result.ContextMode, CandidateItemIDs: candidateIDs,
 			SelectedItemID: result.Result.ItemID, RecommendationText: result.Result.RecommendationText,
-			Reason: result.Result.Reason, DeliveryStatus: "failed", Error: err.Error(),
+			Reason: result.Result.Reason, DeliveryStatus: "failed", Error: err.Error(), Metadata: recommendationDeliveryMetadata(delivery),
 		})
 		return content
 	}
@@ -1687,12 +1701,30 @@ func (w *Worker) applyRecommendationResult(ctx context.Context, run *db.Run, sco
 		CustomerID: run.CustomerID, RunID: run.ID, UserID: run.UserID, SessionID: run.SessionID,
 		ScopeIntent: scope.Intent, ContextMode: result.ContextMode, CandidateItemIDs: candidateIDs,
 		SelectedItemID: result.Result.ItemID, RecommendationText: result.Result.RecommendationText,
-		Reason: result.Result.Reason, DeliveryStatus: "inline_merged",
+		Reason: result.Result.Reason, DeliveryStatus: "inline_merged", Metadata: recommendationDeliveryMetadata(delivery),
 	})
 	if decision != nil {
 		_ = w.store.AddEvent(ctx, run.ID, "recommendation.artifact", map[string]any{"artifacts": []map[string]any{recommendationArtifact(decision, result.Candidates)}})
 	}
 	return merged
+}
+
+func (w *Worker) recommendationDelivery(ctx context.Context, run *db.Run) db.SessionRecommendationDelivery {
+	if w == nil || w.store == nil || run == nil {
+		return db.SessionRecommendationDelivery{}
+	}
+	delivery, err := w.store.SessionRecommendationDelivery(ctx, run.CustomerID, run.SessionID)
+	if err != nil {
+		return db.SessionRecommendationDelivery{}
+	}
+	return delivery
+}
+
+func recommendationDeliveryMetadata(delivery db.SessionRecommendationDelivery) map[string]any {
+	if delivery.ChannelType == "" && !delivery.Blocked {
+		return nil
+	}
+	return map[string]any{"channel_type": delivery.ChannelType, "channel_blocked": delivery.Blocked}
 }
 
 func (w *Worker) recommendationConfig(ctx context.Context, run *db.Run) (recommendationProfileConfig, error) {
@@ -1838,6 +1870,16 @@ func (w *Worker) processRecommendationJob(ctx context.Context, job db.Recommenda
 		return w.store.CompleteRecommendationJob(ctx, job.ID, "no_candidate", "")
 	}
 	runID := derefString(job.RunID)
+	delivery := w.recommendationDelivery(ctx, run)
+	if delivery.Blocked {
+		_, _ = w.store.RecordRecommendationDecision(ctx, db.RecommendationDecisionSpec{
+			CustomerID: job.CustomerID, RunID: runID, UserID: job.UserID, SessionID: job.SessionID,
+			ScopeIntent: job.ScopeIntent, ContextMode: job.ContextMode, CandidateItemIDs: recommendationItemIDs(candidates),
+			SelectedItemID: rec.ItemID, RecommendationText: rec.RecommendationText, Reason: rec.Reason,
+			DeliveryStatus: "channel_suppressed", Metadata: recommendationDeliveryMetadata(delivery),
+		})
+		return w.store.CompleteRecommendationJob(ctx, job.ID, "cancelled", "recommendation suppressed for channel")
+	}
 	decision, _ := w.store.RecordRecommendationDecision(ctx, db.RecommendationDecisionSpec{
 		CustomerID: job.CustomerID, RunID: runID, UserID: job.UserID, SessionID: job.SessionID,
 		ScopeIntent: job.ScopeIntent, ContextMode: job.ContextMode, CandidateItemIDs: recommendationItemIDs(candidates),

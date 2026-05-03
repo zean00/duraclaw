@@ -80,6 +80,18 @@ When `profile_config.recommendation.enabled` is true, Duraclaw starts a recommen
 
 Recommendation messages emit a `recommendation_reference` artifact. The artifact includes the decision ID, selected catalog item ID, title, kind, URL, sponsored flag, sponsor name, and candidate item IDs. Inline recommendations attach this artifact to the final assistant message; delayed recommendation jobs attach it to the outbound `recommendation` payload.
 
+Recommendation delivery can be suppressed per session/channel with session metadata:
+
+```json
+{
+  "recommendation": {
+    "blocked_channels": ["whatsapp"]
+  }
+}
+```
+
+When the current session channel is blocked, Duraclaw may still run recommendation selection for audit, but it does not merge recommendation text, attach a recommendation artifact, enqueue delayed recommendation jobs, or send broadcast/promotion fanout for that session. Missing policy allows delivery by default, so webchat continues receiving recommendations unless explicitly blocked.
+
 The recommendation input reuses scope judgement context selection:
 
 - `direct` intent uses only the current user request.

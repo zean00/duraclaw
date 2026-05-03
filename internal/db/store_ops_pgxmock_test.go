@@ -97,8 +97,8 @@ func TestStoreBroadcastMethodsWithPgxMock(t *testing.T) {
 	}
 
 	mock.ExpectQuery("SELECT id").WithArgs("c1", 100).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "customer_id", "title", "payload", "generation_mode", "agent_instance_id", "generation_request", "status", "created_at", "updated_at"}).
-			AddRow("b1", "c1", "title", []byte(`{}`), "direct", nil, []byte(`{}`), "queued", now, now))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "customer_id", "external_broadcast_id", "title", "payload", "generation_mode", "agent_instance_id", "generation_request", "status", "created_at", "updated_at"}).
+			AddRow("b1", "c1", "", "title", []byte(`{}`), "direct", nil, []byte(`{}`), "queued", now, now))
 	broadcasts, err := store.ListBroadcasts(ctx, "c1", 0)
 	if err != nil || len(broadcasts) != 1 {
 		t.Fatalf("broadcasts=%#v err=%v", broadcasts, err)
@@ -124,5 +124,59 @@ func TestStoreBroadcastMethodsWithPgxMock(t *testing.T) {
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCreateDirectBroadcastSuppressesBlockedChannelWithPgxMock(t *testing.T) {
+	store, mock := newMockStore(t)
+	ctx := context.Background()
+
+	mock.ExpectExec("INSERT INTO customers").WithArgs("c1").WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectQuery("SELECT id, metadata").WithArgs("c1", pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "metadata"}).
+			AddRow("s1", []byte(`{"channel_type":"whatsapp","recommendation":{"blocked_channels":["whatsapp"]}}`)).
+			AddRow("s2", []byte(`{"channel_type":"webchat","recommendation":{"blocked_channels":["whatsapp"]}}`)))
+	mock.ExpectBegin()
+	mock.ExpectQuery("INSERT INTO broadcasts").
+		WithArgs("c1", "ext-1", "title", []byte(`{"body":"hi"}`), "direct", "", []byte(`{}`)).
+		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow("b1"))
+	mock.ExpectQuery("INSERT INTO broadcast_targets").
+		WithArgs("b1", "c1", "u1", "s1", "channel_suppressed").
+		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow("t1"))
+	mock.ExpectQuery("INSERT INTO broadcast_targets").
+		WithArgs("b1", "c1", "u2", "s2", "pending").
+		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow("t2"))
+	mock.ExpectQuery("INSERT INTO outbound_intents").
+		WithArgs("c1", "u2", "s2", nil, "broadcast", pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow("intent-1"))
+	mock.ExpectQuery("INSERT INTO async_outbox").
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(int64(99)))
+	mock.ExpectExec("UPDATE outbound_intents").WithArgs("intent-1", int64(99)).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectExec("UPDATE broadcast_targets").WithArgs("t2", "intent-1").WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectCommit()
+	mock.ExpectRollback()
+
+	id, queued, suppressed, runs, err := store.CreateBroadcastFromSpec(ctx, BroadcastSpec{
+		CustomerID: "c1", ExternalBroadcastID: "ext-1", Title: "title", Payload: map[string]any{"body": "hi"},
+		Targets: []BroadcastTargetSpec{{UserID: "u1", SessionID: "s1"}, {UserID: "u2", SessionID: "s2"}},
+	})
+	if err != nil || id != "b1" || queued != 1 || suppressed != 1 || runs != 0 {
+		t.Fatalf("id=%q queued=%d suppressed=%d runs=%d err=%v", id, queued, suppressed, runs, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBroadcastReferenceArtifact(t *testing.T) {
+	payload := broadcastOutboundPayload("b1", "ext-1", "t1", "title", []byte(`{"body":"hi"}`), "hello", "run-1")
+	artifacts, ok := payload["artifacts"].([]map[string]any)
+	if !ok || len(artifacts) != 1 || artifacts[0]["type"] != "broadcast_reference" || artifacts[0]["id"] != "b1" {
+		t.Fatalf("payload=%#v", payload)
+	}
+	data, ok := artifacts[0]["data"].(map[string]any)
+	if !ok || data["broadcast_id"] != "b1" || data["external_broadcast_id"] != "ext-1" {
+		t.Fatalf("artifact=%#v", artifacts[0])
 	}
 }

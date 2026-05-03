@@ -246,6 +246,8 @@ func TestRecommendationPipelineReusesScopeContextDecision(t *testing.T) {
 		`Type:       "recommendation"`,
 		"recommendation_reference",
 		"mergeRecommendation(ctx, run, content, result.Result)",
+		"recommendationDelivery(ctx, run)",
+		`DeliveryStatus: "channel_suppressed"`,
 	} {
 		if !strings.Contains(src, want) {
 			t.Fatalf("recommendation pipeline missing %q", want)

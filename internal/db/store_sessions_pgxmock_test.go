@@ -126,3 +126,22 @@ func TestStoreSessionTransferAndBackgroundRunsWithPgxMock(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestSessionRecommendationDeliveryFromMetadata(t *testing.T) {
+	policy := NormalizeRecommendationPolicy(SessionRecommendationPolicy{BlockedChannels: []string{" WhatsApp ", "whatsapp", ""}})
+	if len(policy.BlockedChannels) != 1 || policy.BlockedChannels[0] != "whatsapp" {
+		t.Fatalf("policy=%#v", policy)
+	}
+	delivery := sessionRecommendationDeliveryFromMetadata(map[string]any{
+		"channel_type": "WhatsApp",
+		"recommendation": map[string]any{
+			"blocked_channels": []any{"whatsapp"},
+		},
+	})
+	if !delivery.Blocked || delivery.ChannelType != "whatsapp" {
+		t.Fatalf("delivery=%#v", delivery)
+	}
+	if sessionRecommendationDeliveryFromMetadata(map[string]any{"channel_type": "webchat"}).Blocked {
+		t.Fatal("webchat should be allowed by default")
+	}
+}

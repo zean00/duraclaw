@@ -274,6 +274,24 @@ func TestTwentySecondMigrationContainsGeneratedBroadcasts(t *testing.T) {
 	}
 }
 
+func TestTwentyThirdMigrationContainsBroadcastChannelControls(t *testing.T) {
+	raw, err := migrationFS.ReadFile("migrations/0023_broadcast_recommendation_channel_controls.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw)
+	for _, want := range []string{
+		"external_broadcast_id",
+		"broadcasts_customer_external_id_idx",
+		"channel_suppressed",
+		"broadcasts_status_check",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("migration missing %q", want)
+		}
+	}
+}
+
 func TestEighthMigrationContainsSummariesAndBackgroundSchema(t *testing.T) {
 	raw, err := migrationFS.ReadFile("migrations/0008_summaries_and_background.sql")
 	if err != nil {

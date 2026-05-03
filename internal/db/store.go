@@ -232,12 +232,16 @@ func (s *Store) EnsureSession(ctx context.Context, c ACPContext) error {
 		if err := ensureDefaultAgentInstanceVersion(ctx, tx, c.CustomerID, c.AgentInstanceID); err != nil {
 			return err
 		}
+		sessionMetadata, _ := json.Marshal(sessionMetadataFromContext(c))
+		if len(sessionMetadata) == 0 || string(sessionMetadata) == "null" {
+			sessionMetadata = []byte(`{}`)
+		}
 		_, err := tx.Exec(ctx, `
-			INSERT INTO sessions(customer_id,user_id,agent_instance_id,id)
-			VALUES($1,$2,$3,$4)
+			INSERT INTO sessions(customer_id,user_id,agent_instance_id,id,metadata)
+			VALUES($1,$2,$3,$4,$5)
 			ON CONFLICT (customer_id,id) DO UPDATE
-			SET user_id=EXCLUDED.user_id, updated_at=now()`,
-			c.CustomerID, c.UserID, c.AgentInstanceID, c.SessionID)
+			SET user_id=EXCLUDED.user_id, metadata=sessions.metadata || EXCLUDED.metadata, updated_at=now()`,
+			c.CustomerID, c.UserID, c.AgentInstanceID, c.SessionID, sessionMetadata)
 		return err
 	})
 }

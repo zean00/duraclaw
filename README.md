@@ -310,7 +310,7 @@ The GitHub Actions workflow runs the full suite with a `pgvector/pgvector:pg17` 
 - `GET /acp/sessions/{session_id}/runs/by-idempotency-key/{key}`
 
 Write requests require customer execution context headers. Existing-run write requests also require `X-Run-ID` matching the route run id.
-`PUT /acp/sessions/{session_id}` can optionally enqueue a durable greeting run with body `{"send_greeting":true,"greeting_channels":["webchat"],"nickname":"Sahal"}`. When `greeting_channels` is set, Duraclaw only sends the proactive greeting for matching `X-Channel-Type` values. Greeting runs are system-initiated and do not store the internal greeting instruction as a user message.
+`PUT /acp/sessions/{session_id}` can optionally enqueue a durable greeting run with body `{"send_greeting":true,"greeting_channels":["webchat"],"nickname":"Sahal"}`. When `greeting_channels` is set, Duraclaw only sends the proactive greeting for matching `X-Channel-Type` values. Greeting runs are system-initiated and do not store the internal greeting instruction as a user message. The same endpoint accepts `{"recommendation":{"blocked_channels":["whatsapp"]}}` to suppress recommendation and broadcast/promotion delivery for matching session channels while leaving webchat/default channels enabled.
 Run status, event, trace, artifact, and representation reads require `X-Customer-ID` for tenant scoping.
 Outbound intent status callbacks also require `X-Customer-ID` and accept `sent_to_nexus`, `delivered`, `failed`, or `cancelled` (`sent` is accepted as a compatibility alias for `sent_to_nexus`).
 Retention cleanup accepts `artifact_days`, `event_days`, `outbox_days`, `async_write_days`, `observability_days`, and `broadcast_days`.
@@ -436,7 +436,7 @@ The persistence layer also includes:
 - Reminder subscriptions fan out into deterministic durable runs; one-shot workflow timer wake jobs are backed by scheduler jobs.
 - Knowledge documents and vector-ready chunks with pgvector search helpers.
 - Outbound intents queued through `async_outbox` for Nexus-owned delivery.
-- Broadcast creation creates per-target outbound intents for Nexus-owned delivery. `POST /admin/broadcasts` can also include `generation.mode: "agent_per_instance"` or `"per_user"` plus `generation.agent_instance_id`, `guidelines`, `context`, and `details` so Duraclaw generates promotion/offer/feature copy through that agent profile before fanout.
+- Broadcast creation creates per-target outbound intents for Nexus-owned delivery. `POST /admin/broadcasts` can include optional `external_broadcast_id`; Duraclaw returns the internal `broadcast_id`, reports `suppressed_targets`, and attaches a `broadcast_reference` artifact to outbound broadcast payloads. `generation.mode: "agent_per_instance"` or `"per_user"` plus `generation.agent_instance_id`, `guidelines`, `context`, and `details` lets Duraclaw generate promotion/offer/feature copy through that agent profile before fanout.
 - Recent session message history used by the worker when composing model context.
 - Durable session summaries and text-matched customer knowledge are included in model context.
 - Latest session transfer note included in model context after reassignment.

@@ -3,11 +3,13 @@ package db
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type BroadcastTargetSpec struct {
@@ -24,11 +26,12 @@ type BroadcastGenerationSpec struct {
 }
 
 type BroadcastSpec struct {
-	CustomerID string                  `json:"customer_id"`
-	Title      string                  `json:"title"`
-	Payload    any                     `json:"payload"`
-	Targets    []BroadcastTargetSpec   `json:"targets"`
-	Generation BroadcastGenerationSpec `json:"generation,omitempty"`
+	CustomerID          string                  `json:"customer_id"`
+	ExternalBroadcastID string                  `json:"external_broadcast_id,omitempty"`
+	Title               string                  `json:"title"`
+	Payload             any                     `json:"payload"`
+	Targets             []BroadcastTargetSpec   `json:"targets"`
+	Generation          BroadcastGenerationSpec `json:"generation,omitempty"`
 }
 
 type BroadcastTargetSelection struct {
@@ -43,6 +46,7 @@ type BroadcastTargetSelection struct {
 type Broadcast struct {
 	ID                string          `json:"id"`
 	CustomerID        string          `json:"customer_id"`
+	ExternalID        string          `json:"external_broadcast_id,omitempty"`
 	Title             string          `json:"title"`
 	Payload           json.RawMessage `json:"payload"`
 	GenerationMode    string          `json:"generation_mode"`
@@ -71,27 +75,27 @@ func (s *Store) CreateBroadcast(ctx context.Context, customerID, title string, p
 	return s.createDirectBroadcast(ctx, customerID, title, payload, targets)
 }
 
-func (s *Store) CreateBroadcastFromSpec(ctx context.Context, spec BroadcastSpec) (string, int, int, error) {
+func (s *Store) CreateBroadcastFromSpec(ctx context.Context, spec BroadcastSpec) (string, int, int, int, error) {
 	mode := normalizeBroadcastGenerationMode(spec.Generation.Mode)
 	if mode == "direct" {
-		id, count, err := s.createDirectBroadcast(ctx, spec.CustomerID, spec.Title, spec.Payload, spec.Targets)
-		return id, count, 0, err
+		id, count, suppressed, err := s.createDirectBroadcastFromSpec(ctx, spec)
+		return id, count, suppressed, 0, err
 	}
 	if spec.CustomerID == "" || spec.Title == "" || len(spec.Targets) == 0 {
-		return "", 0, 0, fmt.Errorf("customer_id, title, and targets are required")
+		return "", 0, 0, 0, fmt.Errorf("customer_id, title, and targets are required")
 	}
 	if strings.TrimSpace(spec.Generation.AgentInstanceID) == "" {
-		return "", 0, 0, fmt.Errorf("generation.agent_instance_id is required")
+		return "", 0, 0, 0, fmt.Errorf("generation.agent_instance_id is required")
 	}
 	if mode != "agent_per_instance" && mode != "per_user" {
-		return "", 0, 0, fmt.Errorf("generation.mode must be direct, agent_per_instance, or per_user")
+		return "", 0, 0, 0, fmt.Errorf("generation.mode must be direct, agent_per_instance, or per_user")
 	}
 	if err := s.ensureCustomer(ctx, spec.CustomerID); err != nil {
-		return "", 0, 0, err
+		return "", 0, 0, 0, err
 	}
 	for _, target := range spec.Targets {
 		if target.UserID == "" || target.SessionID == "" {
-			return "", 0, 0, fmt.Errorf("broadcast targets require user_id and session_id")
+			return "", 0, 0, 0, fmt.Errorf("broadcast targets require user_id and session_id")
 		}
 	}
 	payloadJSON, _ := json.Marshal(spec.Payload)
@@ -102,41 +106,65 @@ func (s *Store) CreateBroadcastFromSpec(ctx context.Context, spec BroadcastSpec)
 	if len(generationJSON) == 0 {
 		generationJSON = []byte(`{}`)
 	}
-	var broadcastID string
-	if err := s.pool.QueryRow(ctx, `
-		INSERT INTO broadcasts(customer_id,title,payload,generation_mode,agent_instance_id,generation_request,status)
-		VALUES($1,$2,$3,$4,$5,$6,'queued')
-		RETURNING id::text`, spec.CustomerID, spec.Title, payloadJSON, mode, spec.Generation.AgentInstanceID, generationJSON).Scan(&broadcastID); err != nil {
-		return "", 0, 0, err
+	broadcastID, err := s.insertBroadcast(ctx, spec.CustomerID, spec.ExternalBroadcastID, spec.Title, payloadJSON, mode, spec.Generation.AgentInstanceID, generationJSON)
+	if err != nil {
+		return "", 0, 0, 0, err
+	}
+	delivery, err := s.RecommendationDeliveryBySession(ctx, spec.CustomerID, broadcastSessionIDs(spec.Targets))
+	if err != nil {
+		return broadcastID, 0, 0, 0, err
 	}
 	targetIDs := make([]string, 0, len(spec.Targets))
+	allowedTargets := make([]BroadcastTargetSpec, 0, len(spec.Targets))
+	suppressed := 0
 	for _, target := range spec.Targets {
 		var targetID string
+		status := "generating"
+		if delivery[target.SessionID].Blocked {
+			status = "channel_suppressed"
+			suppressed++
+		}
 		if err := s.pool.QueryRow(ctx, `
 			INSERT INTO broadcast_targets(broadcast_id,customer_id,user_id,session_id,status)
-			VALUES($1,$2,$3,$4,'generating')
-			RETURNING id::text`, broadcastID, spec.CustomerID, target.UserID, target.SessionID).Scan(&targetID); err != nil {
-			return broadcastID, len(targetIDs), 0, err
+			VALUES($1,$2,$3,$4,$5)
+			RETURNING id::text`, broadcastID, spec.CustomerID, target.UserID, target.SessionID, status).Scan(&targetID); err != nil {
+			return broadcastID, len(targetIDs), suppressed, 0, err
+		}
+		if status == "channel_suppressed" {
+			continue
 		}
 		targetIDs = append(targetIDs, targetID)
+		allowedTargets = append(allowedTargets, target)
 	}
-	runCount, err := s.createBroadcastGenerationRuns(ctx, broadcastID, spec, mode, targetIDs)
+	if len(targetIDs) == 0 {
+		_, _ = s.pool.Exec(ctx, `UPDATE broadcasts SET status='channel_suppressed', updated_at=now() WHERE id=$1`, broadcastID)
+		return broadcastID, 0, suppressed, 0, nil
+	}
+	allowedSpec := spec
+	allowedSpec.Targets = allowedTargets
+	runCount, err := s.createBroadcastGenerationRuns(ctx, broadcastID, allowedSpec, mode, targetIDs)
 	if err != nil {
 		_ = s.failBroadcastGeneration(ctx, broadcastID, spec.CustomerID, err.Error())
 	}
-	return broadcastID, len(targetIDs), runCount, err
+	return broadcastID, len(targetIDs), suppressed, runCount, err
 }
 
 func (s *Store) createDirectBroadcast(ctx context.Context, customerID, title string, payload any, targets []BroadcastTargetSpec) (string, int, error) {
+	id, count, _, err := s.createDirectBroadcastFromSpec(ctx, BroadcastSpec{CustomerID: customerID, Title: title, Payload: payload, Targets: targets})
+	return id, count, err
+}
+
+func (s *Store) createDirectBroadcastFromSpec(ctx context.Context, spec BroadcastSpec) (string, int, int, error) {
+	customerID, title, payload, targets := spec.CustomerID, spec.Title, spec.Payload, spec.Targets
 	if customerID == "" || title == "" || len(targets) == 0 {
-		return "", 0, fmt.Errorf("customer_id, title, and targets are required")
+		return "", 0, 0, fmt.Errorf("customer_id, title, and targets are required")
 	}
 	if err := s.ensureCustomer(ctx, customerID); err != nil {
-		return "", 0, err
+		return "", 0, 0, err
 	}
 	for _, target := range targets {
 		if target.UserID == "" || target.SessionID == "" {
-			return "", 0, fmt.Errorf("broadcast targets require user_id and session_id")
+			return "", 0, 0, fmt.Errorf("broadcast targets require user_id and session_id")
 		}
 	}
 	payloadJSON, _ := json.Marshal(payload)
@@ -145,27 +173,40 @@ func (s *Store) createDirectBroadcast(ctx context.Context, customerID, title str
 	}
 	var broadcastID string
 	created := 0
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		if err := tx.QueryRow(ctx, `
-			INSERT INTO broadcasts(customer_id,title,payload,status)
-			VALUES($1,$2,$3,'queued')
-			RETURNING id::text`, customerID, title, payloadJSON).Scan(&broadcastID); err != nil {
+	suppressed := 0
+	delivery, err := s.RecommendationDeliveryBySession(ctx, customerID, broadcastSessionIDs(targets))
+	if err != nil {
+		return "", 0, 0, err
+	}
+	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		id, err := s.insertBroadcastTx(ctx, tx, customerID, spec.ExternalBroadcastID, title, payloadJSON, "direct", "", []byte(`{}`))
+		if err != nil {
 			return err
 		}
+		broadcastID = id
 		for _, target := range targets {
 			var targetID string
+			status := "pending"
+			blocked := delivery[target.SessionID].Blocked
+			if blocked {
+				status = "channel_suppressed"
+			}
 			if err := tx.QueryRow(ctx, `
 				INSERT INTO broadcast_targets(broadcast_id,customer_id,user_id,session_id,status)
-				VALUES($1,$2,$3,$4,'pending')
-				RETURNING id::text`, broadcastID, customerID, target.UserID, target.SessionID).Scan(&targetID); err != nil {
+				VALUES($1,$2,$3,$4,$5)
+				RETURNING id::text`, broadcastID, customerID, target.UserID, target.SessionID, status).Scan(&targetID); err != nil {
 				return err
+			}
+			if blocked {
+				suppressed++
+				continue
 			}
 			intentID, _, err := createOutboundIntentTx(ctx, tx, OutboundIntent{
 				CustomerID: customerID,
 				UserID:     target.UserID,
 				SessionID:  target.SessionID,
 				Type:       "broadcast",
-				Payload:    mustJSON(map[string]any{"broadcast_id": broadcastID, "target_id": targetID, "title": title, "payload": json.RawMessage(payloadJSON)}),
+				Payload:    mustJSON(broadcastOutboundPayload(broadcastID, spec.ExternalBroadcastID, targetID, title, payloadJSON, "", "")),
 			})
 			if err != nil {
 				return err
@@ -175,9 +216,14 @@ func (s *Store) createDirectBroadcast(ctx context.Context, customerID, title str
 			}
 			created++
 		}
+		if created == 0 && suppressed > 0 {
+			if _, err := tx.Exec(ctx, `UPDATE broadcasts SET status='channel_suppressed', updated_at=now() WHERE id=$1`, broadcastID); err != nil {
+				return err
+			}
+		}
 		return nil
 	})
-	return broadcastID, created, err
+	return broadcastID, created, suppressed, err
 }
 
 func (s *Store) createBroadcastGenerationRuns(ctx context.Context, broadcastID string, spec BroadcastSpec, mode string, targetIDs []string) (int, error) {
@@ -289,6 +335,75 @@ func normalizeBroadcastGenerationMode(mode string) string {
 		return "direct"
 	}
 	return mode
+}
+
+func (s *Store) insertBroadcast(ctx context.Context, customerID, externalID, title string, payloadJSON []byte, mode, agentInstanceID string, generationJSON []byte) (string, error) {
+	var broadcastID string
+	err := s.pool.QueryRow(ctx, `
+		INSERT INTO broadcasts(customer_id,external_broadcast_id,title,payload,generation_mode,agent_instance_id,generation_request,status)
+		VALUES($1,NULLIF($2,''),$3,$4,$5,NULLIF($6,''),$7,'queued')
+		RETURNING id::text`, customerID, strings.TrimSpace(externalID), title, payloadJSON, mode, agentInstanceID, generationJSON).Scan(&broadcastID)
+	if err != nil {
+		return "", broadcastInsertError(err)
+	}
+	return broadcastID, nil
+}
+
+func (s *Store) insertBroadcastTx(ctx context.Context, tx pgx.Tx, customerID, externalID, title string, payloadJSON []byte, mode, agentInstanceID string, generationJSON []byte) (string, error) {
+	var broadcastID string
+	err := tx.QueryRow(ctx, `
+		INSERT INTO broadcasts(customer_id,external_broadcast_id,title,payload,generation_mode,agent_instance_id,generation_request,status)
+		VALUES($1,NULLIF($2,''),$3,$4,$5,NULLIF($6,''),$7,'queued')
+		RETURNING id::text`, customerID, strings.TrimSpace(externalID), title, payloadJSON, mode, agentInstanceID, generationJSON).Scan(&broadcastID)
+	if err != nil {
+		return "", broadcastInsertError(err)
+	}
+	return broadcastID, nil
+}
+
+func broadcastInsertError(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		return ConflictError{Message: "external_broadcast_id already exists for customer"}
+	}
+	return err
+}
+
+func broadcastSessionIDs(targets []BroadcastTargetSpec) []string {
+	out := make([]string, 0, len(targets))
+	for _, target := range targets {
+		out = append(out, target.SessionID)
+	}
+	return out
+}
+
+func broadcastOutboundPayload(broadcastID, externalID, targetID, title string, payloadJSON []byte, text string, runID string) map[string]any {
+	payload := map[string]any{
+		"broadcast_id": broadcastID,
+		"target_id":    targetID,
+		"title":        title,
+		"payload":      json.RawMessage(payloadJSON),
+		"artifacts":    []map[string]any{broadcastReferenceArtifact(broadcastID, externalID)},
+	}
+	if strings.TrimSpace(text) != "" {
+		payload["text"] = strings.TrimSpace(text)
+		payload["parts"] = []map[string]any{{"type": "text", "text": strings.TrimSpace(text)}}
+	}
+	if strings.TrimSpace(runID) != "" {
+		payload["run_id"] = runID
+	}
+	return payload
+}
+
+func broadcastReferenceArtifact(broadcastID, externalID string) map[string]any {
+	data := map[string]any{
+		"reference_type": "broadcast",
+		"broadcast_id":   broadcastID,
+	}
+	if strings.TrimSpace(externalID) != "" {
+		data["external_broadcast_id"] = strings.TrimSpace(externalID)
+	}
+	return map[string]any{"type": "broadcast_reference", "id": broadcastID, "data": data}
 }
 
 func (s *Store) ResolveBroadcastTargets(ctx context.Context, customerID string, selection BroadcastTargetSelection) ([]BroadcastTargetSpec, error) {
@@ -450,7 +565,7 @@ func (s *Store) ListBroadcasts(ctx context.Context, customerID string, limit int
 		limit = 100
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT id::text, customer_id, title, payload, generation_mode, agent_instance_id, generation_request, status, created_at, updated_at
+		SELECT id::text, customer_id, COALESCE(external_broadcast_id,''), title, payload, generation_mode, agent_instance_id, generation_request, status, created_at, updated_at
 		FROM broadcasts
 		WHERE customer_id=$1
 		ORDER BY created_at DESC
@@ -462,7 +577,7 @@ func (s *Store) ListBroadcasts(ctx context.Context, customerID string, limit int
 	var broadcasts []Broadcast
 	for rows.Next() {
 		var broadcast Broadcast
-		if err := rows.Scan(&broadcast.ID, &broadcast.CustomerID, &broadcast.Title, &broadcast.Payload, &broadcast.GenerationMode, &broadcast.AgentInstanceID, &broadcast.GenerationRequest, &broadcast.Status, &broadcast.CreatedAt, &broadcast.UpdatedAt); err != nil {
+		if err := rows.Scan(&broadcast.ID, &broadcast.CustomerID, &broadcast.ExternalID, &broadcast.Title, &broadcast.Payload, &broadcast.GenerationMode, &broadcast.AgentInstanceID, &broadcast.GenerationRequest, &broadcast.Status, &broadcast.CreatedAt, &broadcast.UpdatedAt); err != nil {
 			return nil, err
 		}
 		broadcasts = append(broadcasts, broadcast)
@@ -524,17 +639,18 @@ func (s *Store) CancelBroadcast(ctx context.Context, customerID, broadcastID str
 }
 
 type BroadcastGenerationDelivery struct {
-	TargetID    string          `json:"target_id"`
-	BroadcastID string          `json:"broadcast_id"`
-	CustomerID  string          `json:"customer_id"`
-	UserID      string          `json:"user_id"`
-	SessionID   string          `json:"session_id"`
-	RunID       string          `json:"run_id"`
-	RunState    string          `json:"run_state"`
-	RunError    string          `json:"run_error,omitempty"`
-	Title       string          `json:"title"`
-	Payload     json.RawMessage `json:"payload"`
-	FinalText   string          `json:"final_text"`
+	TargetID            string          `json:"target_id"`
+	BroadcastID         string          `json:"broadcast_id"`
+	ExternalBroadcastID string          `json:"external_broadcast_id,omitempty"`
+	CustomerID          string          `json:"customer_id"`
+	UserID              string          `json:"user_id"`
+	SessionID           string          `json:"session_id"`
+	RunID               string          `json:"run_id"`
+	RunState            string          `json:"run_state"`
+	RunError            string          `json:"run_error,omitempty"`
+	Title               string          `json:"title"`
+	Payload             json.RawMessage `json:"payload"`
+	FinalText           string          `json:"final_text"`
 }
 
 func (s *Store) ClaimCompletedBroadcastGenerationDeliveries(ctx context.Context, limit int) ([]BroadcastGenerationDelivery, error) {
@@ -557,7 +673,7 @@ func (s *Store) ClaimCompletedBroadcastGenerationDeliveries(ctx context.Context,
 		SET status='processing', updated_at=now()
 		FROM candidate
 		WHERE bt.id=candidate.id
-		RETURNING bt.id::text, bt.broadcast_id::text, bt.customer_id, bt.user_id, bt.session_id, bt.generation_run_id::text,
+		RETURNING bt.id::text, bt.broadcast_id::text, COALESCE((SELECT external_broadcast_id FROM broadcasts WHERE id=bt.broadcast_id),''), bt.customer_id, bt.user_id, bt.session_id, bt.generation_run_id::text,
 			(SELECT state FROM runs WHERE id=bt.generation_run_id),
 			COALESCE((SELECT error FROM runs WHERE id=bt.generation_run_id),''),
 			(SELECT title FROM broadcasts WHERE id=bt.broadcast_id),
@@ -570,7 +686,7 @@ func (s *Store) ClaimCompletedBroadcastGenerationDeliveries(ctx context.Context,
 	var out []BroadcastGenerationDelivery
 	for rows.Next() {
 		var delivery BroadcastGenerationDelivery
-		if err := rows.Scan(&delivery.TargetID, &delivery.BroadcastID, &delivery.CustomerID, &delivery.UserID, &delivery.SessionID, &delivery.RunID, &delivery.RunState, &delivery.RunError, &delivery.Title, &delivery.Payload, &delivery.FinalText); err != nil {
+		if err := rows.Scan(&delivery.TargetID, &delivery.BroadcastID, &delivery.ExternalBroadcastID, &delivery.CustomerID, &delivery.UserID, &delivery.SessionID, &delivery.RunID, &delivery.RunState, &delivery.RunError, &delivery.Title, &delivery.Payload, &delivery.FinalText); err != nil {
 			return nil, err
 		}
 		out = append(out, delivery)
@@ -595,15 +711,7 @@ func (s *Store) CreateBroadcastGenerationOutbound(ctx context.Context, delivery 
 		if status != "processing" {
 			return nil
 		}
-		payload := map[string]any{
-			"broadcast_id": delivery.BroadcastID,
-			"target_id":    delivery.TargetID,
-			"title":        delivery.Title,
-			"payload":      json.RawMessage(delivery.Payload),
-			"text":         strings.TrimSpace(delivery.FinalText),
-			"parts":        []map[string]any{{"type": "text", "text": strings.TrimSpace(delivery.FinalText)}},
-			"run_id":       delivery.RunID,
-		}
+		payload := broadcastOutboundPayload(delivery.BroadcastID, delivery.ExternalBroadcastID, delivery.TargetID, delivery.Title, delivery.Payload, delivery.FinalText, delivery.RunID)
 		intentID, _, err := createOutboundIntentTx(ctx, tx, OutboundIntent{CustomerID: delivery.CustomerID, UserID: delivery.UserID, SessionID: delivery.SessionID, RunID: &delivery.RunID, Type: "broadcast", Payload: mustJSON(payload)})
 		if err != nil {
 			return err

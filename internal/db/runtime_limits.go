@@ -85,6 +85,17 @@ func IsValidationError(err error) bool {
 	return errors.As(err, &v)
 }
 
+type ConflictError struct {
+	Message string
+}
+
+func (e ConflictError) Error() string { return e.Message }
+
+func IsConflictError(err error) bool {
+	var c ConflictError
+	return errors.As(err, &c)
+}
+
 func (s *Store) UpsertCustomerRuntimeLimits(ctx context.Context, limits RuntimeLimits) (*RuntimeLimits, error) {
 	if limits.CustomerID == "" {
 		return nil, ValidationError{Message: "customer_id is required"}

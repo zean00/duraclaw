@@ -60,6 +60,18 @@ Explicit session creation can optionally enqueue a durable greeting run:
 
 `greeting_channels` is optional. When present, Duraclaw only creates the greeting run if `X-Channel-Type` matches one of the listed channels. This lets deployments enable proactive greetings for lower-cost channels such as webchat while skipping channels such as WhatsApp. The greeting is generated asynchronously by the normal worker, using the agent profile/personality, channel context, and refreshed user profile data. Greeting runs are system-initiated and do not insert the internal greeting instruction into session `messages`.
 
+The same session endpoint can set channel suppression for recommendation-style delivery:
+
+```json
+{
+  "recommendation": {
+    "blocked_channels": ["whatsapp"]
+  }
+}
+```
+
+Duraclaw stores the normalized `X-Channel-Type` on the session. If a session's channel is listed in `recommendation.blocked_channels`, normal recommendations and broadcast/promotion fanout are audited but not sent to that session. Missing policy or missing channel allows delivery by default.
+
 Artifacts:
 
 - `POST /acp/runs/{run_id}/artifacts`
@@ -196,11 +208,14 @@ Admin broadcast routes:
 
 `POST /admin/broadcasts` supports direct payload fanout and agent-generated promotion/offer/feature messages. Direct broadcasts omit `generation` and immediately queue per-target outbound `broadcast` intents. Generated broadcasts set `generation.mode` to `agent_per_instance` or `per_user`; Duraclaw creates trusted system runs through the configured `generation.agent_instance_id`, suppresses direct run outbound, and the scheduler fans out the generated message to broadcast targets when the run completes.
 
+Broadcasts accept optional `external_broadcast_id` for caller-side reconciliation. Duraclaw always returns the internal UUID `broadcast_id`; duplicate `external_broadcast_id` values for the same customer return `409 Conflict`. Broadcast outbound payloads include a simple `broadcast_reference` artifact containing the internal `broadcast_id` and optional external ID. Targets whose session channel is blocked by session recommendation policy are persisted with status `channel_suppressed`, counted as `suppressed_targets`, and are not queued to Nexus.
+
 Generated broadcast request:
 
 ```json
 {
   "customer_id": "customer-1",
+  "external_broadcast_id": "may-discount-2026",
   "title": "May discount",
   "payload": {"campaign_id": "may-discount"},
   "target_selection": {"agent_instance_id": "agent-1", "limit": 1000},

@@ -1984,12 +1984,13 @@ func adminMCPExecutionContext(r *http.Request) mcp.ExecutionContext {
 
 func (h *Handler) createBroadcast(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
-		CustomerID      string                      `json:"customer_id"`
-		Title           string                      `json:"title"`
-		Payload         map[string]any              `json:"payload"`
-		Generation      db.BroadcastGenerationSpec  `json:"generation"`
-		Targets         []db.BroadcastTargetSpec    `json:"targets"`
-		TargetSelection db.BroadcastTargetSelection `json:"target_selection"`
+		CustomerID          string                      `json:"customer_id"`
+		ExternalBroadcastID string                      `json:"external_broadcast_id"`
+		Title               string                      `json:"title"`
+		Payload             map[string]any              `json:"payload"`
+		Generation          db.BroadcastGenerationSpec  `json:"generation"`
+		Targets             []db.BroadcastTargetSpec    `json:"targets"`
+		TargetSelection     db.BroadcastTargetSelection `json:"target_selection"`
 	}
 	if err := decodeJSON(w, r, &payload); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -2032,18 +2033,23 @@ func (h *Handler) createBroadcast(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, err)
 		return
 	}
-	id, count, runs, err := h.store.CreateBroadcastFromSpec(r.Context(), db.BroadcastSpec{
-		CustomerID: payload.CustomerID,
-		Title:      payload.Title,
-		Payload:    payload.Payload,
-		Targets:    payload.Targets,
-		Generation: payload.Generation,
+	id, count, suppressed, runs, err := h.store.CreateBroadcastFromSpec(r.Context(), db.BroadcastSpec{
+		CustomerID:          payload.CustomerID,
+		ExternalBroadcastID: payload.ExternalBroadcastID,
+		Title:               payload.Title,
+		Payload:             payload.Payload,
+		Targets:             payload.Targets,
+		Generation:          payload.Generation,
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
+		writeError(w, statusForError(err), err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"broadcast_id": id, "targets": count, "generation_mode": mode, "generation_runs": runs})
+	resp := map[string]any{"broadcast_id": id, "targets": count, "suppressed_targets": suppressed, "generation_mode": mode, "generation_runs": runs}
+	if strings.TrimSpace(payload.ExternalBroadcastID) != "" {
+		resp["external_broadcast_id"] = strings.TrimSpace(payload.ExternalBroadcastID)
+	}
+	writeJSON(w, http.StatusCreated, resp)
 }
 
 func (h *Handler) listBroadcasts(w http.ResponseWriter, r *http.Request) {
@@ -2175,14 +2181,28 @@ func (h *Handler) ensureSession(w http.ResponseWriter, r *http.Request) {
 		SendGreeting     bool     `json:"send_greeting"`
 		GreetingChannels []string `json:"greeting_channels"`
 		Nickname         string   `json:"nickname"`
+		Recommendation   *struct {
+			BlockedChannels []string `json:"blocked_channels"`
+		} `json:"recommendation"`
 	}
 	if err := decodeOptionalJSON(w, r, &payload); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	var recommendationPolicy *db.SessionRecommendationPolicy
+	if payload.Recommendation != nil {
+		policy := db.NormalizeRecommendationPolicy(db.SessionRecommendationPolicy{BlockedChannels: payload.Recommendation.BlockedChannels})
+		recommendationPolicy = &policy
+	}
 	if err := h.store.EnsureSession(r.Context(), c); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
+	}
+	if recommendationPolicy != nil {
+		if err := h.store.MergeSessionMetadata(r.Context(), c.CustomerID, c.SessionID, map[string]any{"recommendation": recommendationPolicy}); err != nil {
+			writeError(w, statusForError(err), err)
+			return
+		}
 	}
 	if err := h.refreshUserProfile(r.Context(), c); err != nil {
 		writeError(w, http.StatusBadGateway, err)
@@ -3081,6 +3101,9 @@ func statusForError(err error) int {
 	}
 	if db.IsValidationError(err) {
 		return http.StatusBadRequest
+	}
+	if db.IsConflictError(err) {
+		return http.StatusConflict
 	}
 	return http.StatusInternalServerError
 }

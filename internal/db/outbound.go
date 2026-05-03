@@ -120,7 +120,7 @@ func (s *Store) SetOutboundIntentStatus(ctx context.Context, id, customerID, sta
 				AND NOT EXISTS (
 					SELECT 1 FROM broadcast_targets t
 					WHERE t.broadcast_id=b.id
-					AND t.status NOT IN ('delivered','cancelled')
+					AND t.status NOT IN ('delivered','cancelled','channel_suppressed')
 				)`, id); err != nil {
 				return err
 			}
@@ -135,7 +135,7 @@ func (s *Store) SetOutboundIntentStatus(ctx context.Context, id, customerID, sta
 				AND NOT EXISTS (
 					SELECT 1 FROM broadcast_targets t
 					WHERE t.broadcast_id=b.id
-					AND t.status NOT IN ('sent_to_nexus','delivered','cancelled')
+					AND t.status NOT IN ('sent_to_nexus','delivered','cancelled','channel_suppressed')
 				)`, id); err != nil {
 				return err
 			}

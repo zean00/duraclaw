@@ -139,6 +139,12 @@ func TestStatusForErrorMapsValidationToBadRequest(t *testing.T) {
 	}
 }
 
+func TestStatusForErrorMapsConflict(t *testing.T) {
+	if got := statusForError(db.ConflictError{Message: "duplicate"}); got != http.StatusConflict {
+		t.Fatalf("status=%d", got)
+	}
+}
+
 func TestAccessLogStatusCounter(t *testing.T) {
 	counters := observability.NewCounters()
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
