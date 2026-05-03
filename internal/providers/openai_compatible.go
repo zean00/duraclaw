@@ -537,7 +537,7 @@ func audioTranscriptionFormat(mediaType, filename string) string {
 	case "audio/wav", "audio/x-wav":
 		return "wav"
 	case "audio/mp4", "audio/x-m4a":
-		return "mp4"
+		return "m4a"
 	case "audio/webm":
 		return "webm"
 	case "audio/ogg", "audio/opus":
@@ -548,9 +548,6 @@ func audioTranscriptionFormat(mediaType, filename string) string {
 	ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(strings.TrimSpace(filename))), ".")
 	switch ext {
 	case "mp3", "wav", "mp4", "m4a", "webm", "ogg", "oga", "opus", "flac":
-		if ext == "m4a" {
-			return "mp4"
-		}
 		if ext == "oga" || ext == "opus" {
 			return "ogg"
 		}
@@ -673,9 +670,6 @@ func (p OpenRouterProvider) GenerateAudio(ctx context.Context, req AudioGenerati
 func (p OpenRouterProvider) TranscribeAudio(ctx context.Context, req AudioTranscriptionRequest) (*AudioTranscriptionResult, error) {
 	if len(req.Data) == 0 {
 		return nil, fmt.Errorf("audio transcription requires data")
-	}
-	if strings.TrimSpace(req.Model) == "" {
-		req.Model = p.DefaultModel
 	}
 	if strings.TrimSpace(req.Model) == "" {
 		req.Model = "openai/whisper-large-v3"

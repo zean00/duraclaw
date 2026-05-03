@@ -137,6 +137,23 @@ func TestProviderMediaHelpers(t *testing.T) {
 			t.Fatalf("extensionForMediaType(%q)=%q want %q", input, got, want)
 		}
 	}
+	transcriptionFormats := map[string]string{
+		"audio/mp4":   "m4a",
+		"audio/x-m4a": "m4a",
+		"voice.m4a":   "m4a",
+		"voice.mp4":   "mp4",
+	}
+	for input, want := range transcriptionFormats {
+		mediaType := input
+		filename := ""
+		if strings.Contains(input, ".") {
+			mediaType = ""
+			filename = input
+		}
+		if got := audioTranscriptionFormat(mediaType, filename); got != want {
+			t.Fatalf("audioTranscriptionFormat(%q, %q)=%q want %q", mediaType, filename, got, want)
+		}
+	}
 	mediaTypes := map[string]string{
 		"opus": "audio/opus",
 		"aac":  "audio/aac",
@@ -255,8 +272,8 @@ func TestOpenRouterProviderTranscribeAudioUsesJSONEndpoint(t *testing.T) {
 	}))
 	defer server.Close()
 	got, err := (OpenRouterProvider{
-		BaseURL: server.URL, APIKey: "key", DefaultModel: "openai/whisper-large-v3", Referer: "https://duraclaw.test", Title: "Duraclaw",
-	}).TranscribeAudio(t.Context(), AudioTranscriptionRequest{Data: []byte("audio"), Filename: "voice-note.webm", MediaType: "audio/webm; codecs=opus", Language: "id"})
+		BaseURL: server.URL, APIKey: "key", DefaultModel: "openai/gpt-4.1-mini", Referer: "https://duraclaw.test", Title: "Duraclaw",
+	}).TranscribeAudio(t.Context(), AudioTranscriptionRequest{Data: []byte("audio"), Filename: "voice-note.m4a", MediaType: "audio/mp4", Language: "id"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +281,7 @@ func TestOpenRouterProviderTranscribeAudioUsesJSONEndpoint(t *testing.T) {
 	if sawPath != "/audio/transcriptions" || auth != "Bearer key" || referer != "https://duraclaw.test" || title != "Duraclaw" {
 		t.Fatalf("path/auth/headers=%q %q %q %q", sawPath, auth, referer, title)
 	}
-	if body["model"] != "openai/whisper-large-v3" || body["language"] != "id" || input["format"] != "webm" || input["data"] != "YXVkaW8=" {
+	if body["model"] != "openai/whisper-large-v3" || body["language"] != "id" || input["format"] != "m4a" || input["data"] != "YXVkaW8=" {
 		t.Fatalf("body=%#v", body)
 	}
 	if got.Text != "transkrip suara" || got.Usage.InputTokens != 3 || got.Usage.CostMicros != 1 {

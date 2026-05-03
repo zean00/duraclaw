@@ -170,16 +170,16 @@ DURACLAW_ARTIFACT_PROCESSOR_MODEL=gpt-4.1-mini
 DURACLAW_ARTIFACT_PROCESSOR_MODALITIES=audio,image,document,video
 ```
 
-For OpenRouter speech-to-text:
+For OpenRouter:
 
 ```bash
 DURACLAW_ARTIFACT_PROCESSOR_PROVIDER=openrouter
 DURACLAW_ARTIFACT_PROCESSOR_API_KEY=...
-DURACLAW_ARTIFACT_PROCESSOR_MODEL=openai/whisper-large-v3
+DURACLAW_ARTIFACT_PROCESSOR_MODEL=openai/gpt-4.1-mini
 DURACLAW_ARTIFACT_PROCESSOR_MODALITIES=audio,image,document,video
 ```
 
-OpenRouter audio transcription uses OpenRouter's `/audio/transcriptions` STT endpoint and persists a `transcript` representation. Provider processors use multimodal chat prompts for other modalities and persist artifact representations such as `vision_summary`, `document_text`, `transcript`, and `video_summary`.
+OpenRouter audio transcription uses OpenRouter's `/audio/transcriptions` STT endpoint, defaults to `openai/whisper-large-v3` unless artifact metadata supplies `transcription_model` or `model`, and persists a `transcript` representation. Provider processors use multimodal chat prompts for other modalities and persist artifact representations such as `vision_summary`, `document_text`, `transcript`, and `video_summary`.
 
 ## Generated Media Storage
 
