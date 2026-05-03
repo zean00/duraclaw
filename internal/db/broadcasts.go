@@ -137,7 +137,9 @@ func (s *Store) CreateBroadcastFromSpec(ctx context.Context, spec BroadcastSpec)
 		allowedTargets = append(allowedTargets, target)
 	}
 	if len(targetIDs) == 0 {
-		_, _ = s.pool.Exec(ctx, `UPDATE broadcasts SET status='channel_suppressed', updated_at=now() WHERE id=$1`, broadcastID)
+		if _, err := s.pool.Exec(ctx, `UPDATE broadcasts SET status='channel_suppressed', updated_at=now() WHERE id=$1`, broadcastID); err != nil {
+			return broadcastID, 0, suppressed, 0, err
+		}
 		return broadcastID, 0, suppressed, 0, nil
 	}
 	allowedSpec := spec

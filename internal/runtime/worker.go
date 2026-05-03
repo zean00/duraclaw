@@ -1713,7 +1713,8 @@ func (w *Worker) recommendationDelivery(ctx context.Context, run *db.Run) db.Ses
 	if w == nil || w.store == nil || run == nil {
 		return db.SessionRecommendationDelivery{}
 	}
-	delivery, err := w.store.SessionRecommendationDelivery(ctx, run.CustomerID, run.SessionID)
+	channel := w.runChannelContext(ctx, run.ID)
+	delivery, err := w.store.SessionRecommendationDeliveryForChannel(ctx, run.CustomerID, run.SessionID, channel.ChannelType)
 	if err != nil {
 		return db.SessionRecommendationDelivery{}
 	}

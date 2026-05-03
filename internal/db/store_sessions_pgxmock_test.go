@@ -144,4 +144,12 @@ func TestSessionRecommendationDeliveryFromMetadata(t *testing.T) {
 	if sessionRecommendationDeliveryFromMetadata(map[string]any{"channel_type": "webchat"}).Blocked {
 		t.Fatal("webchat should be allowed by default")
 	}
+	if !sessionRecommendationDeliveryForChannel(map[string]any{
+		"channel_type": "webchat",
+		"recommendation": map[string]any{
+			"blocked_channels": []any{"whatsapp"},
+		},
+	}, "whatsapp").Blocked {
+		t.Fatal("explicit run channel should be used instead of mutable session channel")
+	}
 }

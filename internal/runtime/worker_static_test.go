@@ -247,6 +247,7 @@ func TestRecommendationPipelineReusesScopeContextDecision(t *testing.T) {
 		"recommendation_reference",
 		"mergeRecommendation(ctx, run, content, result.Result)",
 		"recommendationDelivery(ctx, run)",
+		"SessionRecommendationDeliveryForChannel",
 		`DeliveryStatus: "channel_suppressed"`,
 	} {
 		if !strings.Contains(src, want) {

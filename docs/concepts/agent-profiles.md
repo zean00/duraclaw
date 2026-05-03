@@ -90,7 +90,7 @@ Recommendation delivery can be suppressed per session/channel with session metad
 }
 ```
 
-When the current session channel is blocked, Duraclaw may still run recommendation selection for audit, but it does not merge recommendation text, attach a recommendation artifact, enqueue delayed recommendation jobs, or send broadcast/promotion fanout for that session. Missing policy allows delivery by default, so webchat continues receiving recommendations unless explicitly blocked.
+When the run channel is blocked, Duraclaw may still run recommendation selection for audit, but it does not merge recommendation text, attach a recommendation artifact, enqueue delayed recommendation jobs, or send broadcast/promotion fanout for that session. Missing policy allows delivery by default, so webchat continues receiving recommendations unless explicitly blocked.
 
 The recommendation input reuses scope judgement context selection:
 

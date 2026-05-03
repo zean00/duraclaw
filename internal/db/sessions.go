@@ -165,6 +165,14 @@ func (s *Store) SessionRecommendationDelivery(ctx context.Context, customerID, s
 	return sessionRecommendationDeliveryFromMetadata(metadata), nil
 }
 
+func (s *Store) SessionRecommendationDeliveryForChannel(ctx context.Context, customerID, sessionID, channelType string) (SessionRecommendationDelivery, error) {
+	metadata, err := s.SessionMetadata(ctx, customerID, sessionID)
+	if err != nil {
+		return SessionRecommendationDelivery{}, err
+	}
+	return sessionRecommendationDeliveryForChannel(metadata, channelType), nil
+}
+
 func (s *Store) RecommendationDeliveryBySession(ctx context.Context, customerID string, sessionIDs []string) (map[string]SessionRecommendationDelivery, error) {
 	out := map[string]SessionRecommendationDelivery{}
 	if customerID == "" || len(sessionIDs) == 0 {
@@ -201,6 +209,10 @@ func (s *Store) RecommendationDeliveryBySession(ctx context.Context, customerID 
 
 func sessionRecommendationDeliveryFromMetadata(metadata map[string]any) SessionRecommendationDelivery {
 	channelType, _ := metadata["channel_type"].(string)
+	return sessionRecommendationDeliveryForChannel(metadata, channelType)
+}
+
+func sessionRecommendationDeliveryForChannel(metadata map[string]any, channelType string) SessionRecommendationDelivery {
 	channelType = normalizeChannelName(channelType)
 	delivery := SessionRecommendationDelivery{ChannelType: channelType}
 	if channelType == "" {

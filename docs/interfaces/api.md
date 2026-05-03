@@ -70,7 +70,7 @@ The same session endpoint can set channel suppression for recommendation-style d
 }
 ```
 
-Duraclaw stores the normalized `X-Channel-Type` on the session. If a session's channel is listed in `recommendation.blocked_channels`, normal recommendations and broadcast/promotion fanout are audited but not sent to that session. Missing policy or missing channel allows delivery by default.
+Duraclaw stores the normalized `X-Channel-Type` on the session. Normal recommendation runs evaluate the run's persisted channel context against `recommendation.blocked_channels`; broadcast/promotion fanout evaluates each target session's stored channel. Matching channels are audited but not sent. Missing policy or missing channel allows delivery by default.
 
 Artifacts:
 
