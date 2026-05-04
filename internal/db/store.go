@@ -693,8 +693,22 @@ func (s *Store) CreateRefinementRun(ctx context.Context, parent *Run, deferred [
 	if err != nil {
 		return nil, err
 	}
+	if err := s.transferArtifactsToRun(ctx, parent.ID, r.ID); err != nil {
+		return nil, err
+	}
 	_ = s.AddEvent(ctx, r.ID, "run.queued", map[string]any{"state": r.State, "refinement_parent_run_id": parent.ID, "deferred_messages": len(deferred)})
 	return &r, nil
+}
+
+func (s *Store) transferArtifactsToRun(ctx context.Context, fromRunID, toRunID string) error {
+	if strings.TrimSpace(fromRunID) == "" || strings.TrimSpace(toRunID) == "" || fromRunID == toRunID {
+		return nil
+	}
+	_, err := s.pool.Exec(ctx, `
+		UPDATE artifacts
+		SET run_id=$2, updated_at=now()
+		WHERE run_id=$1`, fromRunID, toRunID)
+	return err
 }
 
 func refinementInput(parentInput json.RawMessage, deferred []DeferredRunMessage, draft string, artifacts []map[string]any) map[string]any {

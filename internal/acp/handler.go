@@ -2375,6 +2375,11 @@ func (h *Handler) startRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	payloadArtifacts, err := h.artifactsFromRunPayload(r, c, payload)
+	if err != nil {
+		writeError(w, http.StatusForbidden, err)
+		return
+	}
 	if existing, err := h.store.RunByIdempotencyKey(r.Context(), c.CustomerID, c.SessionID, c.IdempotencyKey); err == nil {
 		writeJSON(w, http.StatusAccepted, existing)
 		return
@@ -2396,6 +2401,10 @@ func (h *Handler) startRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if deferred != nil {
+		if err := h.attachRunArtifacts(r.Context(), deferred.ActiveRunID, payloadArtifacts); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
 		typingPayload, _ := json.Marshal(map[string]any{"active_run_id": deferred.ActiveRunID, "state": "processing", "reason": "deferred_followup"})
 		_, _, _ = h.store.CreateOutboundIntent(r.Context(), db.OutboundIntent{
 			CustomerID: c.CustomerID,
@@ -2416,8 +2425,92 @@ func (h *Handler) startRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, statusForError(err), err)
 		return
 	}
+	if err := h.attachRunArtifacts(r.Context(), run.ID, payloadArtifacts); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	_ = h.store.AddObservabilityEvent(r.Context(), c.CustomerID, run.ID, "acp_run_created", map[string]any{"request_id": c.RequestID})
 	writeJSON(w, http.StatusAccepted, run)
+}
+
+func (h *Handler) attachRunArtifacts(ctx context.Context, runID string, artifacts []db.Artifact) error {
+	for _, artifact := range artifacts {
+		if err := h.store.AttachArtifact(ctx, runID, artifact); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (h *Handler) artifactsFromRunPayload(r *http.Request, c db.ACPContext, payload map[string]any) ([]db.Artifact, error) {
+	rawArtifacts, _ := payload["artifacts"].([]any)
+	out := make([]db.Artifact, 0, len(rawArtifacts))
+	artifactRule := h.artifactRule(r, c)
+	for _, raw := range rawArtifacts {
+		item, _ := raw.(map[string]any)
+		id := firstNonEmptyStringFromMap(item, "artifact_id", "id")
+		if strings.TrimSpace(id) == "" {
+			continue
+		}
+		mediaType := firstNonEmptyStringFromMap(item, "media_type", "mime_type")
+		sizeBytes := int64FromAny(item["size_bytes"])
+		if err := policy.AllowArtifact(sizeBytes, mediaType, artifactRule); err != nil {
+			return nil, err
+		}
+		out = append(out, db.Artifact{
+			ID:              strings.TrimSpace(id),
+			Modality:        artifactModality(mediaType),
+			MediaType:       strings.TrimSpace(mediaType),
+			Filename:        firstNonEmptyStringFromMap(item, "filename", "name"),
+			SizeBytes:       sizeBytes,
+			Checksum:        firstNonEmptyStringFromMap(item, "checksum", "sha256"),
+			StorageRef:      firstNonEmptyStringFromMap(item, "storage_ref", "storage_uri", "source_url"),
+			SourceChannel:   c.ChannelType,
+			SourceMessageID: firstNonEmptyStringFromMap(item, "source_message_id", "message_id", "id"),
+			State:           "available",
+			Metadata:        map[string]any{"source": "acp_run_payload"},
+		})
+	}
+	return out, nil
+}
+
+func artifactModality(mediaType string) string {
+	mediaType = strings.ToLower(strings.TrimSpace(mediaType))
+	switch {
+	case strings.HasPrefix(mediaType, "image/"):
+		return "image"
+	case strings.HasPrefix(mediaType, "audio/"):
+		return "audio"
+	case strings.HasPrefix(mediaType, "video/"):
+		return "video"
+	default:
+		return "document"
+	}
+}
+
+func firstNonEmptyStringFromMap(item map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, _ := item[key].(string); strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func int64FromAny(value any) int64 {
+	switch v := value.(type) {
+	case float64:
+		return int64(v)
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	case json.Number:
+		n, _ := v.Int64()
+		return n
+	default:
+		return 0
+	}
 }
 
 func (h *Handler) refreshUserProfile(ctx context.Context, c db.ACPContext) error {

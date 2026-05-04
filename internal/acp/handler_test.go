@@ -5,6 +5,7 @@ import (
 	"duraclaw/internal/db"
 	"duraclaw/internal/mcp"
 	"duraclaw/internal/observability"
+	"duraclaw/internal/policy"
 	"os"
 
 	"net/http"
@@ -616,6 +617,43 @@ func TestValidateRunInputRequiresArtifactID(t *testing.T) {
 	payload := map[string]any{"parts": []any{map[string]any{"type": "artifact_ref", "data": map[string]any{}}}}
 	if err := validateRunInput(payload); err == nil || !strings.Contains(err.Error(), "artifact_id") {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestArtifactsFromRunPayloadAcceptsNexusShape(t *testing.T) {
+	payload := map[string]any{"artifacts": []any{map[string]any{
+		"id":          "att-1",
+		"name":        "proposal.pdf",
+		"mime_type":   "application/pdf",
+		"size_bytes":  float64(123),
+		"sha256":      "abc",
+		"storage_uri": "file:///tmp/proposal.pdf",
+	}}}
+	req := httptest.NewRequest(http.MethodPost, "/acp/runs", nil)
+	got, err := NewHandler(nil).artifactsFromRunPayload(req, db.ACPContext{ChannelType: "email"}, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got=%#v", got)
+	}
+	artifact := got[0]
+	if artifact.ID != "att-1" || artifact.Filename != "proposal.pdf" || artifact.MediaType != "application/pdf" || artifact.Modality != "document" || artifact.StorageRef != "file:///tmp/proposal.pdf" || artifact.SourceChannel != "email" {
+		t.Fatalf("artifact=%#v", artifact)
+	}
+}
+
+func TestArtifactsFromRunPayloadEnforcesPolicy(t *testing.T) {
+	payload := map[string]any{"artifacts": []any{map[string]any{
+		"id":         "att-1",
+		"mime_type":  "application/x-msdownload",
+		"size_bytes": float64(123),
+	}}}
+	req := httptest.NewRequest(http.MethodPost, "/acp/runs", nil)
+	handler := NewHandler(nil)
+	handler.artifactPolicy = policy.ArtifactRule{MediaTypes: map[string]bool{"application/pdf": true}}
+	if _, err := handler.artifactsFromRunPayload(req, db.ACPContext{ChannelType: "email"}, payload); err == nil {
+		t.Fatal("expected artifact policy error")
 	}
 }
 

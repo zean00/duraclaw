@@ -14,6 +14,8 @@ Nexus receives media
   -> agent or workflow continues
 ```
 
+For email attachments, Nexus sends hydrated attachment metadata in the ACP run `artifacts` array and includes matching `artifact_ref` content parts. Duraclaw persists those inbound artifacts on the run before worker execution so artifact processors can derive prompt-safe representations.
+
 ## Artifact States
 
 - `pending`

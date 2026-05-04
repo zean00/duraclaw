@@ -72,6 +72,8 @@ The same session endpoint can set channel suppression for recommendation-style d
 
 Duraclaw stores the normalized `X-Channel-Type` on the session. Normal recommendation runs evaluate the run's persisted channel context against `recommendation.blocked_channels`; broadcast/promotion fanout evaluates each target session's stored channel. Matching channels are audited but not sent. Missing policy or missing channel allows delivery by default.
 
+For `X-Channel-Type: email`, Nexus can include a `structured_data` part with `data.kind: "email_context"` containing trusted email metadata such as `subject`, `from`, `from_name`, `message_id`, `thread_id`, `in_reply_to`, and `references`. Duraclaw adds this metadata to trusted runtime context, scope and recommendation context, policies, and workflow context while keeping the email body and attachments as untrusted content. Inbound run `artifacts` are also persisted on the run, and matching `artifact_ref` parts make them available for artifact processing.
+
 Artifacts:
 
 - `POST /acp/runs/{run_id}/artifacts`

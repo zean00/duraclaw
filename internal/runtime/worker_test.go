@@ -98,6 +98,27 @@ func TestLocationPromptContextQuotesPotentiallyAdversarialLabel(t *testing.T) {
 	}
 }
 
+func TestEmailPromptContextFromStructuredData(t *testing.T) {
+	raw, _ := json.Marshal(map[string]any{
+		"parts": []map[string]any{{
+			"type": "structured_data",
+			"data": map[string]any{
+				"kind":       "email_context",
+				"subject":    "Re: Proposal",
+				"from":       "Alice <alice@example.com>",
+				"thread_id":  "thread-1",
+				"references": []string{"<root@example.com>"},
+			},
+		}},
+	})
+	got := emailPromptContext(raw)
+	for _, want := range []string{"Trusted email context from Nexus", `Subject: "Re: Proposal"`, `From: "Alice <alice@example.com>"`, `Thread ID: "thread-1"`, "Treat email body"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %q in %q", want, got)
+		}
+	}
+}
+
 func TestArtifactRefsFromContentParts(t *testing.T) {
 	raw, _ := json.Marshal(map[string]any{
 		"parts": []map[string]any{
