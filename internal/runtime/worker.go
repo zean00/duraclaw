@@ -2707,6 +2707,7 @@ func (w *Worker) mcpToolBindings(ctx context.Context, run *db.Run) (map[string]m
 	channelCtx := w.runChannelContext(ctx, run.ID)
 	bindings := map[string]mcpToolBinding{}
 	ambiguousAliases := map[string]bool{}
+	reservedAliases := w.mcpBindingReservedAliasNames()
 	defs := []providers.ToolDefinition{}
 	for _, status := range manager.Statuses() {
 		discoveryCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
@@ -2731,7 +2732,8 @@ func (w *Worker) mcpToolBindings(ctx context.Context, run *db.Run) (map[string]m
 			functionName := mcpProviderToolName(status.Name, tool.Name)
 			binding := mcpToolBinding{FunctionName: functionName, ServerName: status.Name, ToolName: tool.Name, Tool: tool}
 			bindings[functionName] = binding
-			addMCPBindingAlias(bindings, ambiguousAliases, mcpProviderToolAliasName(status.Name, tool.Name), binding)
+			addMCPBindingAlias(bindings, ambiguousAliases, reservedAliases, mcpProviderToolAliasName(status.Name, tool.Name), binding)
+			addMCPBindingAlias(bindings, ambiguousAliases, reservedAliases, mcpReadableToolAliasName(status.Name, tool.Name), binding)
 			defs = append(defs, mcpToolDefinition(binding))
 		}
 	}
@@ -2739,9 +2741,29 @@ func (w *Worker) mcpToolBindings(ctx context.Context, run *db.Run) (map[string]m
 	return bindings, defs, nil
 }
 
-func addMCPBindingAlias(bindings map[string]mcpToolBinding, ambiguousAliases map[string]bool, alias string, binding mcpToolBinding) {
+func (w *Worker) mcpBindingReservedAliasNames() map[string]bool {
+	reserved := map[string]bool{}
+	for _, def := range internalToolDefinitions() {
+		if name := strings.TrimSpace(def.Function.Name); name != "" {
+			reserved[name] = true
+		}
+	}
+	if w != nil && w.tools != nil {
+		for _, def := range w.tools.ToProviderDefs() {
+			if name := strings.TrimSpace(def.Function.Name); name != "" {
+				reserved[name] = true
+			}
+		}
+	}
+	return reserved
+}
+
+func addMCPBindingAlias(bindings map[string]mcpToolBinding, ambiguousAliases map[string]bool, reservedAliases map[string]bool, alias string, binding mcpToolBinding) {
 	alias = strings.TrimSpace(alias)
 	if alias == "" || alias == binding.FunctionName {
+		return
+	}
+	if reservedAliases[alias] {
 		return
 	}
 	if ambiguousAliases[alias] {
@@ -2770,6 +2792,15 @@ func mcpProviderToolName(serverName, toolName string) string {
 
 func mcpProviderToolAliasName(serverName, toolName string) string {
 	return "mcp__" + providerToolNamePart(serverName) + "__" + providerToolNamePart(toolName)
+}
+
+func mcpReadableToolAliasName(serverName, toolName string) string {
+	serverName = strings.TrimSpace(serverName)
+	toolName = strings.TrimSpace(toolName)
+	if serverName == "" || toolName == "" {
+		return ""
+	}
+	return serverName + "." + toolName
 }
 
 func providerToolNamePart(value string) string {

@@ -476,10 +476,36 @@ func TestMCPBindingAliasesProviderSafeUnhashedName(t *testing.T) {
 	alias := mcpProviderToolAliasName("wulan_integrations", "location.create_override")
 	binding := mcpToolBinding{FunctionName: canonical, ServerName: "wulan_integrations", ToolName: "location.create_override"}
 	bindings := map[string]mcpToolBinding{canonical: binding}
-	addMCPBindingAlias(bindings, map[string]bool{}, alias, binding)
+	addMCPBindingAlias(bindings, map[string]bool{}, nil, alias, binding)
 	got, ok := bindings["mcp__wulan_integrations__location_create_override"]
 	if !ok || got.ServerName != "wulan_integrations" || got.ToolName != "location.create_override" {
 		t.Fatalf("missing alias binding: %#v", bindings)
+	}
+}
+
+func TestMCPBindingAliasesReadableServerToolName(t *testing.T) {
+	canonical := mcpProviderToolName("wulan_integrations", "self_service.create_deeplink")
+	alias := mcpReadableToolAliasName("wulan_integrations", "self_service.create_deeplink")
+	binding := mcpToolBinding{FunctionName: canonical, ServerName: "wulan_integrations", ToolName: "self_service.create_deeplink"}
+	bindings := map[string]mcpToolBinding{canonical: binding}
+	addMCPBindingAlias(bindings, map[string]bool{}, nil, alias, binding)
+	got, ok := bindings["wulan_integrations.self_service.create_deeplink"]
+	if !ok || got.ServerName != "wulan_integrations" || got.ToolName != "self_service.create_deeplink" {
+		t.Fatalf("missing readable alias binding: %#v", bindings)
+	}
+}
+
+func TestMCPBindingAliasDoesNotShadowReservedToolName(t *testing.T) {
+	canonical := mcpProviderToolName("duraclaw", "ask_user")
+	alias := mcpReadableToolAliasName("duraclaw", "ask_user")
+	binding := mcpToolBinding{FunctionName: canonical, ServerName: "duraclaw", ToolName: "ask_user"}
+	bindings := map[string]mcpToolBinding{canonical: binding}
+	addMCPBindingAlias(bindings, map[string]bool{}, map[string]bool{"duraclaw.ask_user": true}, alias, binding)
+	if _, ok := bindings["duraclaw.ask_user"]; ok {
+		t.Fatalf("reserved internal tool name should not be an MCP alias: %#v", bindings)
+	}
+	if _, ok := bindings[canonical]; !ok {
+		t.Fatalf("canonical MCP binding should remain available: %#v", bindings)
 	}
 }
 
@@ -488,8 +514,8 @@ func TestMCPBindingAliasCollisionRemovesAmbiguousAlias(t *testing.T) {
 	ambiguousAliases := map[string]bool{}
 	first := mcpToolBinding{FunctionName: "mcp__srv__tool_one__aaaa", ServerName: "srv", ToolName: "tool.one"}
 	second := mcpToolBinding{FunctionName: "mcp__srv__tool_one__bbbb", ServerName: "srv", ToolName: "tool-one"}
-	addMCPBindingAlias(bindings, ambiguousAliases, "mcp__srv__tool_one", first)
-	addMCPBindingAlias(bindings, ambiguousAliases, "mcp__srv__tool_one", second)
+	addMCPBindingAlias(bindings, ambiguousAliases, nil, "mcp__srv__tool_one", first)
+	addMCPBindingAlias(bindings, ambiguousAliases, nil, "mcp__srv__tool_one", second)
 	if _, ok := bindings["mcp__srv__tool_one"]; ok {
 		t.Fatalf("ambiguous alias should be removed: %#v", bindings)
 	}
@@ -501,9 +527,9 @@ func TestMCPBindingAliasCollisionStaysDisabledAfterThreeWayCollision(t *testing.
 	first := mcpToolBinding{FunctionName: "mcp__srv__tool_one__aaaa", ServerName: "srv", ToolName: "tool.one"}
 	second := mcpToolBinding{FunctionName: "mcp__srv__tool_one__bbbb", ServerName: "srv", ToolName: "tool-one"}
 	third := mcpToolBinding{FunctionName: "mcp__srv__tool_one__cccc", ServerName: "srv", ToolName: "tool one"}
-	addMCPBindingAlias(bindings, ambiguousAliases, "mcp__srv__tool_one", first)
-	addMCPBindingAlias(bindings, ambiguousAliases, "mcp__srv__tool_one", second)
-	addMCPBindingAlias(bindings, ambiguousAliases, "mcp__srv__tool_one", third)
+	addMCPBindingAlias(bindings, ambiguousAliases, nil, "mcp__srv__tool_one", first)
+	addMCPBindingAlias(bindings, ambiguousAliases, nil, "mcp__srv__tool_one", second)
+	addMCPBindingAlias(bindings, ambiguousAliases, nil, "mcp__srv__tool_one", third)
 	if _, ok := bindings["mcp__srv__tool_one"]; ok {
 		t.Fatalf("ambiguous alias should stay disabled after later collisions: %#v", bindings)
 	}
