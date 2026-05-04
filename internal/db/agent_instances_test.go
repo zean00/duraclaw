@@ -17,7 +17,8 @@ func TestValidateAgentInstanceVersionSpecAllowsKnownConfigKeys(t *testing.T) {
 		ModelConfig: map[string]any{"primary": "mock/duraclaw", "fallbacks": []string{"mock/other"}, "options": map[string]any{"max_tokens": 256}},
 		ToolConfig: map[string]any{
 			"allowed_tools": []string{"echo"}, "max_iterations": 4, "max_tool_calls_per_run": 2,
-			"tool_aliases": map[string]any{"duraclaw.ask_user": "duraclaw_ask_user"},
+			"interleave_tool_calls": true,
+			"tool_aliases":          map[string]any{"duraclaw.ask_user": "duraclaw_ask_user"},
 			"tool_metadata": map[string]any{"echo": map[string]any{
 				"tags":           []string{"debug"},
 				"side_effect":    "read",
@@ -100,12 +101,18 @@ func TestValidateAgentInstanceVersionSpecRejectsInvalidPolicyConfigValues(t *tes
 }
 
 func TestValidateAgentInstanceVersionSpecRejectsInvalidToolConfigValues(t *testing.T) {
-	err := ValidateAgentInstanceVersionSpecForTest(AgentInstanceVersionSpec{
-		CustomerID: "c", AgentInstanceID: "a",
-		ToolConfig: map[string]any{"allowed_tools": "echo", "max_iterations": -1},
-	})
-	if err == nil {
-		t.Fatal("expected validation error")
+	cases := []map[string]any{
+		{"allowed_tools": "echo", "max_iterations": -1},
+		{"interleave_tool_calls": "yes"},
+	}
+	for _, toolConfig := range cases {
+		err := ValidateAgentInstanceVersionSpecForTest(AgentInstanceVersionSpec{
+			CustomerID: "c", AgentInstanceID: "a",
+			ToolConfig: toolConfig,
+		})
+		if err == nil {
+			t.Fatalf("expected validation error for %#v", toolConfig)
+		}
 	}
 }
 

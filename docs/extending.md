@@ -65,6 +65,8 @@ When `profile_config.tool_selection.enabled` is true, Duraclaw shortlists the al
 
 These hints affect ranking only. They cannot expose tools hidden by agent version config, admin access rules, MCP access rules, prompt-injection blocking, or policy enforcement.
 
+For experiments with dependent tools, set `tool_config.interleave_tool_calls` to `true`. This changes only multi-call model responses: Duraclaw executes the first proposed tool, returns its result to the model, and lets the model decide the next call instead of executing the whole proposed batch. Leave it disabled for the lowest-latency path.
+
 ## Add an MCP Server
 
 Prefer MCP for external tool surfaces. Configure globally with `DURACLAW_MCP_CONFIG` or per agent instance version with `mcp_config`.

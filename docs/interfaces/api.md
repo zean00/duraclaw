@@ -300,6 +300,8 @@ If no rule exists, built-in tools follow the agent instance version `tool_config
 
 Agent versions may enable `profile_config.tool_selection` to shortlist authorized model-loop tools before the main model call. `tool_config.tool_metadata` can add ranking hints such as `tags`, `side_effect`, and `conflicts_with`; these hints do not override admin access rules or policy enforcement.
 
+Agent versions may set `tool_config.interleave_tool_calls: true` to experiment with reasoning between tool calls. When enabled, a model response containing multiple tool calls is not executed as a full batch; Duraclaw executes only the first call, sends that result back into the loop, and requires the model to choose the next tool after seeing the result. The default is `false`.
+
 ## Outbound Status
 
 Nexus reports delivery status through:

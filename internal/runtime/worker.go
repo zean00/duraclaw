@@ -536,9 +536,20 @@ func (w *Worker) completeOutOfScopeRun(ctx context.Context, run *db.Run, scope s
 	return w.finalizeAssistantResponse(ctx, run, response)
 }
 
+func toolCallsForExecution(calls []providers.ToolCall, interleave bool) ([]providers.ToolCall, int) {
+	if !interleave || len(calls) <= 1 {
+		return calls, 0
+	}
+	return append([]providers.ToolCall(nil), calls[:1]...), len(calls) - 1
+}
+
 func (w *Worker) agentLoopPhase(ctx context.Context, run *db.Run, text string, messages []providers.Message, toolDefs []providers.ToolDefinition) (*providers.LLMResponse, error) {
 	var resp *providers.LLMResponse
 	maxIterations, err := w.maxIterationsForRun(ctx, run)
+	if err != nil {
+		return nil, err
+	}
+	interleaveToolCalls, err := w.interleaveToolCallsForRun(ctx, run)
 	if err != nil {
 		return nil, err
 	}
@@ -576,30 +587,31 @@ func (w *Worker) agentLoopPhase(ctx context.Context, run *db.Run, text string, m
 		if len(resp.ToolCalls) == 0 {
 			break
 		}
-		toolStepID, err := w.store.StartRunStep(ctx, run.ID, "tool_execution", map[string]any{"tool_calls": len(resp.ToolCalls), "iteration": iteration})
+		toolCalls, suppressedToolCalls := toolCallsForExecution(resp.ToolCalls, interleaveToolCalls)
+		toolStepID, err := w.store.StartRunStep(ctx, run.ID, "tool_execution", map[string]any{"tool_calls": len(toolCalls), "model_tool_calls": len(resp.ToolCalls), "suppressed_tool_calls": suppressedToolCalls, "interleaved": interleaveToolCalls && suppressedToolCalls > 0, "iteration": iteration})
 		if err != nil {
 			return nil, err
 		}
-		w.emitAgentActivity(ctx, run, "tool", "batch_started", map[string]any{"iteration": iteration, "tool_calls": len(resp.ToolCalls)})
-		messages = append(messages, providers.Message{Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls})
-		toolResults, err := w.executeToolCalls(ctx, run, toolStepID, resp.ToolCalls)
+		w.emitAgentActivity(ctx, run, "tool", "batch_started", map[string]any{"iteration": iteration, "tool_calls": len(toolCalls), "model_tool_calls": len(resp.ToolCalls), "suppressed_tool_calls": suppressedToolCalls, "interleaved": interleaveToolCalls && suppressedToolCalls > 0})
+		messages = append(messages, providers.Message{Role: "assistant", Content: resp.Content, ToolCalls: toolCalls})
+		toolResults, err := w.executeToolCalls(ctx, run, toolStepID, toolCalls)
 		if err != nil {
 			msg := err.Error()
 			_ = w.store.CompleteRunStep(context.Background(), run.ID, toolStepID, "failed", nil, &msg)
 			w.emitAgentActivity(ctx, run, "tool", "failed", map[string]any{"iteration": iteration, "error": err.Error()})
 			return nil, err
 		}
-		if err := w.store.CompleteRunStep(ctx, run.ID, toolStepID, "succeeded", map[string]any{"tool_results": len(toolResults), "iteration": iteration}, nil); err != nil {
+		if err := w.store.CompleteRunStep(ctx, run.ID, toolStepID, "succeeded", map[string]any{"tool_results": len(toolResults), "suppressed_tool_calls": suppressedToolCalls, "interleaved": interleaveToolCalls && suppressedToolCalls > 0, "iteration": iteration}, nil); err != nil {
 			return nil, err
 		}
 		for _, result := range toolResults {
 			messages = append(messages, providers.Message{Role: "tool", Content: result.Content, ToolCallID: result.ToolCallID})
 		}
-		if err := w.store.Checkpoint(ctx, run.ID, "tools_complete", map[string]any{"tool_calls": len(toolResults)}); err != nil {
+		if err := w.store.Checkpoint(ctx, run.ID, "tools_complete", map[string]any{"tool_calls": len(toolResults), "suppressed_tool_calls": suppressedToolCalls, "interleaved": interleaveToolCalls && suppressedToolCalls > 0}); err != nil {
 			return nil, err
 		}
-		w.emitAgentActivity(ctx, run, "tool", "batch_completed", map[string]any{"iteration": iteration, "tool_results": len(toolResults)})
-		w.enqueueAsyncObservability(ctx, run, "checkpoint.tools_complete", map[string]any{"tool_results": toolResults, "iteration": iteration})
+		w.emitAgentActivity(ctx, run, "tool", "batch_completed", map[string]any{"iteration": iteration, "tool_results": len(toolResults), "suppressed_tool_calls": suppressedToolCalls, "interleaved": interleaveToolCalls && suppressedToolCalls > 0})
+		w.enqueueAsyncObservability(ctx, run, "checkpoint.tools_complete", map[string]any{"tool_results": toolResults, "suppressed_tool_calls": suppressedToolCalls, "interleaved": interleaveToolCalls && suppressedToolCalls > 0, "iteration": iteration})
 		if iteration == maxIterations {
 			return nil, fmt.Errorf("agent loop exceeded %d iterations", maxIterations)
 		}
@@ -2198,6 +2210,20 @@ func (w *Worker) maxToolCallsForRun(ctx context.Context, run *db.Run) (int, erro
 		return 0, err
 	}
 	return cfg.MaxToolCallsPerRun, nil
+}
+
+func (w *Worker) interleaveToolCallsForRun(ctx context.Context, run *db.Run) (bool, error) {
+	version, err := w.store.AgentInstanceVersion(ctx, run.AgentInstanceVersionID)
+	if err != nil || version == nil || len(version.ToolConfig) == 0 {
+		return false, err
+	}
+	var cfg struct {
+		InterleaveToolCalls bool `json:"interleave_tool_calls"`
+	}
+	if err := json.Unmarshal(version.ToolConfig, &cfg); err != nil {
+		return false, err
+	}
+	return cfg.InterleaveToolCalls, nil
 }
 
 func (w *Worker) workflowAllowedForRun(ctx context.Context, run *db.Run, workflowID string) error {

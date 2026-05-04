@@ -210,7 +210,7 @@ func validateAgentInstanceVersionSpec(spec AgentInstanceVersionSpec) error {
 	if err := validateModelConfigValues(spec.ModelConfig); err != nil {
 		return err
 	}
-	if err := validateObjectConfig("tool_config", spec.ToolConfig, []string{"allowed_tools", "disabled_tools", "max_iterations", "max_tool_calls_per_run", "tool_aliases", "tool_metadata"}); err != nil {
+	if err := validateObjectConfig("tool_config", spec.ToolConfig, []string{"allowed_tools", "disabled_tools", "max_iterations", "max_tool_calls_per_run", "interleave_tool_calls", "tool_aliases", "tool_metadata"}); err != nil {
 		return err
 	}
 	if err := validateToolConfigValues(spec.ToolConfig); err != nil {
@@ -424,6 +424,11 @@ func validateToolConfigValues(value any) error {
 			if err := validateNonNegativeInteger("tool_config."+key, raw); err != nil {
 				return err
 			}
+		}
+	}
+	if raw, ok := obj["interleave_tool_calls"]; ok {
+		if _, ok := raw.(bool); !ok {
+			return fmt.Errorf("tool_config.interleave_tool_calls must be a boolean")
 		}
 	}
 	if raw, ok := obj["tool_aliases"]; ok {

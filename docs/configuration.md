@@ -235,6 +235,20 @@ Modes:
 
 If `model` is empty, router fallback uses the run's normal `model_config`. Router failures are non-fatal; Duraclaw falls back to the deterministic shortlist and records a `tool_selection.completed` run event.
 
+## Tool Loop
+
+By default, when the model returns multiple tool calls in one response, Duraclaw executes that batch before the next model call. Agent versions can opt into experimental interleaving:
+
+```json
+{
+  "tool_config": {
+    "interleave_tool_calls": true
+  }
+}
+```
+
+When enabled, Duraclaw executes only the first tool call from a multi-call model response, appends that tool result, and immediately asks the model to continue. The remaining proposed calls from that response are not executed; the model must choose them again after seeing the first result. This adds extra model round trips but allows reasoning between dependent tool calls even when a provider emits several calls upfront. Existing `tool_config.max_iterations` and `tool_config.max_tool_calls_per_run` still bound the run.
+
 ## Outbound Delivery
 
 Log sink is the default. Nexus delivery:

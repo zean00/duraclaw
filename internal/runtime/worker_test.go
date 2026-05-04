@@ -53,6 +53,27 @@ func TestExtractTextForReminderDueRun(t *testing.T) {
 	}
 }
 
+func TestToolCallsForExecutionInterleavesFirstCallOnly(t *testing.T) {
+	calls := []providers.ToolCall{
+		{ID: "call-1", Function: providers.FunctionCall{Name: "first"}},
+		{ID: "call-2", Function: providers.FunctionCall{Name: "second"}},
+		{ID: "call-3", Function: providers.FunctionCall{Name: "third"}},
+	}
+
+	got, suppressed := toolCallsForExecution(calls, true)
+	if suppressed != 2 {
+		t.Fatalf("suppressed=%d", suppressed)
+	}
+	if len(got) != 1 || got[0].ID != "call-1" {
+		t.Fatalf("got=%#v", got)
+	}
+
+	batched, suppressed := toolCallsForExecution(calls, false)
+	if suppressed != 0 || len(batched) != len(calls) {
+		t.Fatalf("batched=%#v suppressed=%d", batched, suppressed)
+	}
+}
+
 func TestLocationPromptContextFromContentParts(t *testing.T) {
 	raw, _ := json.Marshal(map[string]any{
 		"parts": []map[string]any{
