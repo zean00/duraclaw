@@ -1244,9 +1244,27 @@ func TestSessionGreetingHelpers(t *testing.T) {
 	if c.IdempotencyKey != "session-greeting:s1" || !strings.Contains(c.RequestID, "req-1") {
 		t.Fatalf("context=%#v", c)
 	}
-	input := sessionGreetingInput("Sahal", "webchat")
-	if !strings.Contains(input["text"].(string), "Sahal") || input["system_event"] != "session_greeting" {
+	input := sessionGreetingInput("Sahal", "webchat", "")
+	if !strings.Contains(input["text"].(string), "Sahal") || !strings.Contains(input["text"].(string), "Bahasa Indonesia") || input["preferred_language"] != "id" || input["system_event"] != "session_greeting" {
 		t.Fatalf("input=%#v", input)
+	}
+	input = sessionGreetingInput("Sahal", "webchat", "en")
+	if !strings.Contains(input["text"].(string), "English") || input["preferred_language"] != "en" {
+		t.Fatalf("input=%#v", input)
+	}
+	if got := greetingLanguageFromMetadata(map[string]any{"preferred_chat_language": "en"}); got != "en" {
+		t.Fatalf("expected metadata preferred_chat_language to drive greeting language, got %q", got)
+	}
+	if got := greetingLanguageFromMetadata(map[string]any{"chat_language": "id"}); got != "id" {
+		t.Fatalf("expected metadata chat_language to drive greeting language, got %q", got)
+	}
+	if got := greetingLanguageFromMetadata(map[string]any{"profile": map[string]any{"locale": "en-US"}}); got != "en" {
+		t.Fatalf("expected profile locale to drive greeting language, got %q", got)
+	}
+	for _, locale := range []string{"en-GB", "en_AU", "english"} {
+		if got := normalizeGreetingLanguage(locale); got != "en" {
+			t.Fatalf("expected %q to normalize to en, got %q", locale, got)
+		}
 	}
 }
 

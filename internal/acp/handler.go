@@ -2200,10 +2200,11 @@ func (h *Handler) ensureSession(w http.ResponseWriter, r *http.Request) {
 	}
 	c.SessionID = r.PathValue("session_id")
 	var payload struct {
-		SendGreeting     bool     `json:"send_greeting"`
-		GreetingChannels []string `json:"greeting_channels"`
-		Nickname         string   `json:"nickname"`
-		Recommendation   *struct {
+		SendGreeting      bool     `json:"send_greeting"`
+		GreetingChannels  []string `json:"greeting_channels"`
+		Nickname          string   `json:"nickname"`
+		PreferredLanguage string   `json:"preferred_language"`
+		Recommendation    *struct {
 			BlockedChannels []string `json:"blocked_channels"`
 		} `json:"recommendation"`
 	}
@@ -2232,7 +2233,7 @@ func (h *Handler) ensureSession(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := map[string]any{"session_id": c.SessionID, "state": "ready"}
 	if payload.SendGreeting && channelAllowedForGreeting(c.ChannelType, payload.GreetingChannels) {
-		run, err := h.store.CreateSystemRun(r.Context(), sessionGreetingContext(c), sessionGreetingInput(payload.Nickname, c.ChannelType))
+		run, err := h.store.CreateSystemRun(r.Context(), sessionGreetingContext(c), sessionGreetingInput(payload.Nickname, c.ChannelType, h.greetingLanguage(r.Context(), c, payload.PreferredLanguage)))
 		if err != nil {
 			writeError(w, statusForError(err), err)
 			return
@@ -2278,10 +2279,16 @@ func sessionGreetingContext(c db.ACPContext) db.ACPContext {
 	return c
 }
 
-func sessionGreetingInput(nickname, channelType string) map[string]any {
+func sessionGreetingInput(nickname, channelType, preferredLanguage string) map[string]any {
 	nickname = strings.TrimSpace(nickname)
 	channelType = strings.TrimSpace(channelType)
+	preferredLanguage = normalizeGreetingLanguage(preferredLanguage)
 	text := "Generate a short proactive greeting for this newly opened session. Use the agent personality and available user profile context. Be personal but not intrusive."
+	if preferredLanguage == "en" {
+		text += " Reply in English unless the user's latest message uses another language."
+	} else {
+		text += " Reply in natural Bahasa Indonesia unless the user's latest message uses another language."
+	}
 	if nickname != "" {
 		text += " Address the user by nickname: " + nickname + "."
 	}
@@ -2289,11 +2296,48 @@ func sessionGreetingInput(nickname, channelType string) map[string]any {
 		text += " Adapt the greeting for channel: " + channelType + "."
 	}
 	return map[string]any{
-		"text":         text,
-		"system_event": "session_greeting",
-		"nickname":     nickname,
-		"channel_type": channelType,
+		"text":               text,
+		"system_event":       "session_greeting",
+		"nickname":           nickname,
+		"channel_type":       channelType,
+		"preferred_language": preferredLanguage,
 	}
+}
+
+func (h *Handler) greetingLanguage(ctx context.Context, c db.ACPContext, requested string) string {
+	if strings.TrimSpace(requested) != "" || h == nil || h.store == nil {
+		return normalizeGreetingLanguage(requested)
+	}
+	metadata, err := h.store.UserMetadata(ctx, c.CustomerID, c.UserID)
+	if err != nil {
+		return normalizeGreetingLanguage("")
+	}
+	return greetingLanguageFromMetadata(metadata)
+}
+
+func greetingLanguageFromMetadata(metadata map[string]any) string {
+	for _, key := range []string{"preferred_chat_language", "chat_language", "ui_language", "locale"} {
+		if value, ok := metadata[key].(string); ok && strings.TrimSpace(value) != "" {
+			return normalizeGreetingLanguage(value)
+		}
+	}
+	if profile, ok := metadata["profile"].(map[string]any); ok {
+		for _, key := range []string{"preferred_chat_language", "chat_language", "ui_language", "locale"} {
+			if value, ok := profile[key].(string); ok && strings.TrimSpace(value) != "" {
+				return normalizeGreetingLanguage(value)
+			}
+		}
+	}
+	return normalizeGreetingLanguage("")
+}
+
+func normalizeGreetingLanguage(v string) string {
+	normalized := strings.ToLower(strings.TrimSpace(v))
+	normalized = strings.ReplaceAll(normalized, "_", "-")
+	if normalized == "english" || normalized == "eng" || normalized == "en" || strings.HasPrefix(normalized, "en-") {
+		return "en"
+	}
+	return "id"
 }
 
 func (h *Handler) reassignSession(w http.ResponseWriter, r *http.Request) {
