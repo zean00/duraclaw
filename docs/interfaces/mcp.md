@@ -65,6 +65,8 @@ Server and tool names are normalized to provider-safe lowercase identifiers. The
 
 Duraclaw rechecks MCP access immediately before execution, so a tool hidden by a later whitelist or blacklist change cannot be executed just because it appeared in a prior model turn.
 
+When `profile_config.tool_selection.enabled` is true, MCP tools that pass MCP access rules become candidates for the same model-loop shortlist as built-in tools. The shortlist can hide irrelevant MCP tools from the main model prompt for that run, but it cannot grant access to a blocked MCP tool.
+
 MCP function calls count against the same `tool_config.max_tool_calls_per_run` limit as built-in model-loop tools. The limiter counts persisted local tool calls and persisted MCP calls for the run, so repeated MCP calls across multiple loop iterations cannot bypass the cap.
 
 Policy and profile instructions can recommend when to use MCP tools, for example “use the catalog search tool before recommending products.” These instructions are advisory only. They cannot grant access to a blocked MCP tool, and whitelist/blacklist rules still win.

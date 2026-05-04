@@ -298,6 +298,8 @@ If no rule exists, built-in tools follow the agent instance version `tool_config
 
 `tool_config.max_tool_calls_per_run` applies to both built-in tools and directly exposed MCP function tools. Agent versions may also set `tool_config.tool_aliases` to map original tool names to provider-safe names, for example `"duraclaw.ask_user": "duraclaw_ask_user"`; authorization and execution continue to use the original tool name. Aliases are active only when the original tool is exposed for that run. Stale aliases for filtered tools are ignored, and applied aliases must not conflict with any other exposed provider tool name.
 
+Agent versions may enable `profile_config.tool_selection` to shortlist authorized model-loop tools before the main model call. `tool_config.tool_metadata` can add ranking hints such as `tags`, `side_effect`, and `conflicts_with`; these hints do not override admin access rules or policy enforcement.
+
 ## Outbound Status
 
 Nexus reports delivery status through:

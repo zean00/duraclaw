@@ -210,7 +210,7 @@ func validateAgentInstanceVersionSpec(spec AgentInstanceVersionSpec) error {
 	if err := validateModelConfigValues(spec.ModelConfig); err != nil {
 		return err
 	}
-	if err := validateObjectConfig("tool_config", spec.ToolConfig, []string{"allowed_tools", "disabled_tools", "max_iterations", "max_tool_calls_per_run", "tool_aliases"}); err != nil {
+	if err := validateObjectConfig("tool_config", spec.ToolConfig, []string{"allowed_tools", "disabled_tools", "max_iterations", "max_tool_calls_per_run", "tool_aliases", "tool_metadata"}); err != nil {
 		return err
 	}
 	if err := validateToolConfigValues(spec.ToolConfig); err != nil {
@@ -225,7 +225,7 @@ func validateAgentInstanceVersionSpec(spec AgentInstanceVersionSpec) error {
 	if err := validatePolicyConfigValues(spec.PolicyConfig); err != nil {
 		return err
 	}
-	if err := validateObjectConfig("profile_config", spec.ProfileConfig, []string{"personality", "communication_style", "language_capabilities", "domain_scope", "recommendation"}); err != nil {
+	if err := validateObjectConfig("profile_config", spec.ProfileConfig, []string{"personality", "communication_style", "language_capabilities", "domain_scope", "recommendation", "tool_selection"}); err != nil {
 		return err
 	}
 	if err := validateProfileConfigValues(spec.ProfileConfig); err != nil {
@@ -312,6 +312,43 @@ func validateProfileConfigValues(value any) error {
 		if raw, ok := rec["block_sensitive_product_mix"]; ok {
 			if _, ok := raw.(bool); !ok {
 				return fmt.Errorf("profile_config.recommendation.block_sensitive_product_mix must be a boolean")
+			}
+		}
+	}
+	if raw, ok := obj["tool_selection"]; ok {
+		selection, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("profile_config.tool_selection must be an object")
+		}
+		if raw, ok := selection["enabled"]; ok {
+			if _, ok := raw.(bool); !ok {
+				return fmt.Errorf("profile_config.tool_selection.enabled must be a boolean")
+			}
+		}
+		for _, key := range []string{"mode", "model"} {
+			if raw, ok := selection[key]; ok {
+				if _, ok := raw.(string); !ok {
+					return fmt.Errorf("profile_config.tool_selection.%s must be a string", key)
+				}
+			}
+		}
+		if raw, ok := selection["mode"]; ok {
+			mode := strings.ToLower(strings.TrimSpace(fmt.Sprint(raw)))
+			switch mode {
+			case "", "disabled", "heuristic", "hybrid", "llm":
+			default:
+				return fmt.Errorf("profile_config.tool_selection.mode must be disabled, heuristic, hybrid, or llm")
+			}
+		}
+		if raw, ok := selection["max_tools"]; ok {
+			if err := validateNonNegativeInteger("profile_config.tool_selection.max_tools", raw); err != nil {
+				return err
+			}
+		}
+		if raw, ok := selection["confidence_threshold"]; ok {
+			threshold, ok := numericValue(raw)
+			if !ok || threshold < 0 || threshold > 1 {
+				return fmt.Errorf("profile_config.tool_selection.confidence_threshold must be between 0 and 1")
 			}
 		}
 	}
@@ -412,6 +449,33 @@ func validateToolConfigValues(value any) error {
 				return fmt.Errorf("tool_config.tool_aliases alias %q is assigned to both %q and %q", alias, prior, original)
 			}
 			seen[alias] = original
+		}
+	}
+	if raw, ok := obj["tool_metadata"]; ok {
+		metadata, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("tool_config.tool_metadata must be an object")
+		}
+		for name, rawMeta := range metadata {
+			if strings.TrimSpace(name) == "" {
+				return fmt.Errorf("tool_config.tool_metadata contains an empty tool name")
+			}
+			meta, ok := rawMeta.(map[string]any)
+			if !ok {
+				return fmt.Errorf("tool_config.tool_metadata.%s must be an object", name)
+			}
+			for _, key := range []string{"tags", "conflicts_with"} {
+				if raw, ok := meta[key]; ok {
+					if err := validateStringArray("tool_config.tool_metadata."+name+"."+key, raw); err != nil {
+						return err
+					}
+				}
+			}
+			if raw, ok := meta["side_effect"]; ok {
+				if _, ok := raw.(string); !ok {
+					return fmt.Errorf("tool_config.tool_metadata.%s.side_effect must be a string", name)
+				}
+			}
 		}
 	}
 	return nil

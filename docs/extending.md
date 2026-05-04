@@ -49,6 +49,22 @@ Some model providers only accept function names matching `^[a-zA-Z0-9_-]{1,128}$
 
 Aliases are applied only to tools that are actually exposed for the current run after `allowed_tools`, `disabled_tools`, admin tool-access rules, and MCP access rules are evaluated. If an alias points at a hidden tool, Duraclaw does not reverse-map provider calls for that alias. If an applied alias conflicts with another exposed provider tool name, run setup fails instead of routing the call ambiguously.
 
+When `profile_config.tool_selection.enabled` is true, Duraclaw shortlists the already-authorized model-loop tools before the main model call. Built-ins have default metadata, and custom tools can add optional selection hints through `tool_config.tool_metadata`:
+
+```json
+{
+  "tool_metadata": {
+    "customer_notes.capture": {
+      "tags": ["note", "todo", "capture"],
+      "side_effect": "write",
+      "conflicts_with": ["remember", "create_reminder"]
+    }
+  }
+}
+```
+
+These hints affect ranking only. They cannot expose tools hidden by agent version config, admin access rules, MCP access rules, prompt-injection blocking, or policy enforcement.
+
 ## Add an MCP Server
 
 Prefer MCP for external tool surfaces. Configure globally with `DURACLAW_MCP_CONFIG` or per agent instance version with `mcp_config`.

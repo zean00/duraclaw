@@ -382,7 +382,15 @@ func (w *Worker) process(ctx context.Context, run *db.Run) (err error) {
 	} else if isReminderDueRun(run.Input) {
 		w.enqueueAsyncRunEvent(ctx, run, "reminder_due.tools_blocked", map[string]any{"reason": "due reminder notification must not create or update reminders"})
 	} else if !scope.InjectionRisk {
-		toolDefs, err = w.toolDefinitions(ctx, run)
+		toolDefs, err = w.visibleToolDefinitionsForRun(ctx, run)
+		if err != nil {
+			return err
+		}
+		toolDefs, err = w.selectToolDefinitions(ctx, run, scope, text, toolDefs)
+		if err != nil {
+			return err
+		}
+		toolDefs, err = w.applyToolAliasesForRun(ctx, run, toolDefs)
 		if err != nil {
 			return err
 		}
@@ -1324,6 +1332,7 @@ type agentProfileConfig struct {
 		ConfidenceThreshold float64  `json:"confidence_threshold"`
 	} `json:"domain_scope"`
 	Recommendation recommendationProfileConfig `json:"recommendation"`
+	ToolSelection  toolSelectionProfileConfig  `json:"tool_selection"`
 }
 
 type recommendationProfileConfig struct {
@@ -1337,6 +1346,14 @@ type recommendationProfileConfig struct {
 	BlockSensitiveProductMix bool     `json:"block_sensitive_product_mix"`
 	SensitiveContextTerms    []string `json:"sensitive_context_terms"`
 	ProductRequestTerms      []string `json:"product_request_terms"`
+}
+
+type toolSelectionProfileConfig struct {
+	Enabled             bool    `json:"enabled"`
+	Mode                string  `json:"mode"`
+	Model               string  `json:"model"`
+	MaxTools            int     `json:"max_tools"`
+	ConfidenceThreshold float64 `json:"confidence_threshold"`
 }
 
 func (w *Worker) agentProfile(ctx context.Context, run *db.Run) (agentProfileConfig, error) {
@@ -2593,11 +2610,15 @@ func messageText(raw json.RawMessage) string {
 }
 
 func (w *Worker) toolDefinitions(ctx context.Context, run *db.Run) ([]providers.ToolDefinition, error) {
-	toolRegistry, err := w.toolRegistryForRun(ctx, run)
+	defs, err := w.visibleToolDefinitionsForRun(ctx, run)
 	if err != nil {
 		return nil, err
 	}
-	aliases, err := w.toolAliasesForRun(ctx, run)
+	return w.applyToolAliasesForRun(ctx, run, defs)
+}
+
+func (w *Worker) visibleToolDefinitionsForRun(ctx context.Context, run *db.Run) ([]providers.ToolDefinition, error) {
+	toolRegistry, err := w.toolRegistryForRun(ctx, run)
 	if err != nil {
 		return nil, err
 	}
@@ -2605,11 +2626,15 @@ func (w *Worker) toolDefinitions(ctx context.Context, run *db.Run) ([]providers.
 	if err != nil {
 		return nil, err
 	}
-	filtered, err := w.visibleToolDefinitions(ctx, run, toolRegistry, mcpBindings, mcpDefs)
+	return w.visibleToolDefinitions(ctx, run, toolRegistry, mcpBindings, mcpDefs)
+}
+
+func (w *Worker) applyToolAliasesForRun(ctx context.Context, run *db.Run, defs []providers.ToolDefinition) ([]providers.ToolDefinition, error) {
+	aliases, err := w.toolAliasesForRun(ctx, run)
 	if err != nil {
 		return nil, err
 	}
-	return applyToolAliases(filtered, aliases)
+	return applyToolAliases(defs, aliases)
 }
 
 func (w *Worker) visibleToolDefinitions(ctx context.Context, run *db.Run, toolRegistry *tools.Registry, mcpBindings map[string]mcpToolBinding, mcpDefs []providers.ToolDefinition) ([]providers.ToolDefinition, error) {

@@ -208,6 +208,33 @@ DURACLAW_MCP_CONFIG='{"servers":[{"name":"tools","transport":"http","base_url":"
 
 Agent instance versions may also define `mcp_config.servers`.
 
+## Tool Selection
+
+Agent versions can enable a synchronous model-loop tool shortlist after scope judgement and before the main model call. Existing hard controls still apply first: `tool_config.allowed_tools`, `tool_config.disabled_tools`, admin tool-access rules, MCP tool-access rules, prompt-injection blocking, and `pre_tool` / `post_tool` policy checks.
+
+```json
+{
+  "profile_config": {
+    "tool_selection": {
+      "enabled": true,
+      "mode": "hybrid",
+      "model": "openrouter/openai/gpt-4.1-mini",
+      "max_tools": 6,
+      "confidence_threshold": 0.65
+    }
+  }
+}
+```
+
+Modes:
+
+- `disabled`: expose all authorized tools, matching prior behavior.
+- `heuristic`: deterministic shortlist only, lowest latency.
+- `hybrid`: deterministic shortlist plus router-model fallback when confidence is low.
+- `llm`: always use the configured router model after authorization.
+
+If `model` is empty, router fallback uses the run's normal `model_config`. Router failures are non-fatal; Duraclaw falls back to the deterministic shortlist and records a `tool_selection.completed` run event.
+
 ## Outbound Delivery
 
 Log sink is the default. Nexus delivery:

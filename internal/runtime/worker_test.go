@@ -300,6 +300,106 @@ func TestInternalToolDefinitionsAndPlanning(t *testing.T) {
 	}
 }
 
+func TestHeuristicToolSelectionPrefersReminderOverMemory(t *testing.T) {
+	defs := []providers.ToolDefinition{
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "create_reminder", Description: "Create a reminder"}},
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "remember", Description: "Persist a memory"}},
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "duraclaw.ask_user", Description: "Ask for clarification"}},
+	}
+	decision := heuristicToolSelection("Bisa bantu ingatkan saya besok jam 7 untuk bawa tas hitam?", scopeJudgement{Intent: "direct"}, defs, builtInToolSelectionMetadata(), toolSelectionProfileConfig{MaxTools: 3})
+	if len(decision.SelectedTools) == 0 || decision.SelectedTools[0] != "create_reminder" {
+		t.Fatalf("selected=%#v reason=%s", decision.SelectedTools, decision.Reason)
+	}
+	for _, name := range decision.SelectedTools {
+		if name == "remember" {
+			t.Fatalf("remember should be suppressed for reminder request: %#v", decision.SelectedTools)
+		}
+	}
+}
+
+func TestHeuristicToolSelectionAsksWhenReminderTimeAmbiguous(t *testing.T) {
+	defs := []providers.ToolDefinition{
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "create_reminder", Description: "Create a reminder"}},
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "duraclaw.ask_user", Description: "Ask for clarification"}},
+	}
+	decision := heuristicToolSelection("ingatkan saya besok pagi untuk bawa tas", scopeJudgement{Intent: "direct"}, defs, builtInToolSelectionMetadata(), toolSelectionProfileConfig{MaxTools: 2})
+	if len(decision.SelectedTools) == 0 || decision.SelectedTools[0] != "duraclaw.ask_user" {
+		t.Fatalf("selected=%#v reason=%s", decision.SelectedTools, decision.Reason)
+	}
+	for _, name := range decision.SelectedTools {
+		if name == "create_reminder" {
+			t.Fatalf("create_reminder should be suppressed until time is clarified: %#v", decision.SelectedTools)
+		}
+	}
+}
+
+func TestHeuristicToolSelectionPrefersUpdateForShortReminderFollowup(t *testing.T) {
+	defs := []providers.ToolDefinition{
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "create_reminder", Description: "Create a reminder"}},
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "update_reminder", Description: "Update a reminder"}},
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "remember", Description: "Persist a memory"}},
+	}
+	decision := heuristicToolSelection("previous reminder_reference exists\nUser request: at 8am", scopeJudgement{Intent: "implicit"}, defs, builtInToolSelectionMetadata(), toolSelectionProfileConfig{MaxTools: 2})
+	if len(decision.SelectedTools) == 0 || decision.SelectedTools[0] != "update_reminder" {
+		t.Fatalf("selected=%#v reason=%s", decision.SelectedTools, decision.Reason)
+	}
+	for _, name := range decision.SelectedTools {
+		if name == "create_reminder" || name == "remember" {
+			t.Fatalf("duplicate/incorrect tool should be suppressed: %#v", decision.SelectedTools)
+		}
+	}
+}
+
+func TestHeuristicToolSelectionPrefersPreferenceOverMemory(t *testing.T) {
+	defs := []providers.ToolDefinition{
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "remember", Description: "Persist a memory"}},
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "save_preference", Description: "Persist a preference"}},
+	}
+	decision := heuristicToolSelection("Tolong ingat preferensi saya: jawab singkat saja", scopeJudgement{Intent: "direct"}, defs, builtInToolSelectionMetadata(), toolSelectionProfileConfig{MaxTools: 2})
+	if len(decision.SelectedTools) == 0 || decision.SelectedTools[0] != "save_preference" {
+		t.Fatalf("selected=%#v reason=%s", decision.SelectedTools, decision.Reason)
+	}
+}
+
+func TestHeuristicToolSelectionCanExposeNoToolsForPlainChat(t *testing.T) {
+	defs := []providers.ToolDefinition{
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "remember", Description: "Persist a memory"}},
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "create_reminder", Description: "Create a reminder"}},
+	}
+	decision := heuristicToolSelection("halo, apa kabar?", scopeJudgement{Intent: "direct"}, defs, builtInToolSelectionMetadata(), toolSelectionProfileConfig{MaxTools: 2, ConfidenceThreshold: 0.65})
+	if len(decision.SelectedTools) != 0 || decision.Confidence < 0.65 {
+		t.Fatalf("selected=%#v confidence=%f reason=%s", decision.SelectedTools, decision.Confidence, decision.Reason)
+	}
+}
+
+func TestHeuristicToolSelectionUsesOriginalNamesBeforeAliases(t *testing.T) {
+	defs := []providers.ToolDefinition{
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "create_reminder", Description: "Create a reminder"}},
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "duraclaw.ask_user", Description: "Ask for clarification"}},
+	}
+	decision := heuristicToolSelection("ingatkan saya besok pagi untuk bawa tas", scopeJudgement{Intent: "direct"}, defs, builtInToolSelectionMetadata(), toolSelectionProfileConfig{MaxTools: 2})
+	selected := filterToolDefinitionsByNames(defs, decision.SelectedTools)
+	aliased, err := applyToolAliases(selected, toolAliasSet{
+		OriginalToAlias: map[string]string{"duraclaw.ask_user": "duraclaw_ask_user"},
+		AliasToOriginal: map[string]string{"duraclaw_ask_user": "duraclaw.ask_user"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(aliased) != 1 || aliased[0].Function.Name != "duraclaw_ask_user" {
+		t.Fatalf("aliased shortlist=%#v", aliased)
+	}
+}
+
+func TestRouterToolSelectionCanSelectNoTools(t *testing.T) {
+	defs := []providers.ToolDefinition{{Type: "function", Function: providers.ToolFunctionDefinition{Name: "remember"}}}
+	selected := filterToolDefinitionsByNames(defs, nil)
+	decision := toolSelectionDecision{Confidence: 0.9, Reason: "plain chat"}
+	if len(selected) != 0 || decision.Confidence < defaultToolSelectionConfidence {
+		t.Fatalf("expected confident no-tool decision to be representable")
+	}
+}
+
 func TestMCPProviderToolNameIsSafeAndStable(t *testing.T) {
 	got := mcpProviderToolName("Prayer Tools", "search-times.v1")
 	if !strings.HasPrefix(got, "mcp__prayer_tools__search_times_v1__") {

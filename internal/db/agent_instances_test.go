@@ -14,8 +14,16 @@ func TestValidateAgentInstanceVersionSpecRejectsUnknownConfigKeys(t *testing.T) 
 func TestValidateAgentInstanceVersionSpecAllowsKnownConfigKeys(t *testing.T) {
 	err := ValidateAgentInstanceVersionSpecForTest(AgentInstanceVersionSpec{
 		CustomerID: "c", AgentInstanceID: "a",
-		ModelConfig:    map[string]any{"primary": "mock/duraclaw", "fallbacks": []string{"mock/other"}, "options": map[string]any{"max_tokens": 256}},
-		ToolConfig:     map[string]any{"allowed_tools": []string{"echo"}, "max_iterations": 4, "max_tool_calls_per_run": 2, "tool_aliases": map[string]any{"duraclaw.ask_user": "duraclaw_ask_user"}},
+		ModelConfig: map[string]any{"primary": "mock/duraclaw", "fallbacks": []string{"mock/other"}, "options": map[string]any{"max_tokens": 256}},
+		ToolConfig: map[string]any{
+			"allowed_tools": []string{"echo"}, "max_iterations": 4, "max_tool_calls_per_run": 2,
+			"tool_aliases": map[string]any{"duraclaw.ask_user": "duraclaw_ask_user"},
+			"tool_metadata": map[string]any{"echo": map[string]any{
+				"tags":           []string{"debug"},
+				"side_effect":    "read",
+				"conflicts_with": []string{"remember"},
+			}},
+		},
 		MCPConfig:      map[string]any{"servers": []map[string]any{{"name": "srv", "transport": "http", "base_url": "http://example.test"}}},
 		WorkflowConfig: map[string]any{"disabled_workflows": []string{"wf"}},
 		PolicyConfig:   map[string]any{"instructions": []string{"be concise"}, "blocked_terms": []string{"secret"}, "policy_pack_ids": []string{"pack-1"}},
@@ -36,6 +44,13 @@ func TestValidateAgentInstanceVersionSpecAllowsKnownConfigKeys(t *testing.T) {
 				"max_candidates":   5,
 				"allow_sponsored":  true,
 				"disclosure_style": "soft",
+			},
+			"tool_selection": map[string]any{
+				"enabled":              true,
+				"mode":                 "hybrid",
+				"model":                "openrouter/openai/gpt-4.1-mini",
+				"max_tools":            6,
+				"confidence_threshold": 0.65,
 			},
 		},
 	})
@@ -91,6 +106,43 @@ func TestValidateAgentInstanceVersionSpecRejectsInvalidToolConfigValues(t *testi
 	})
 	if err == nil {
 		t.Fatal("expected validation error")
+	}
+}
+
+func TestValidateAgentInstanceVersionSpecRejectsInvalidToolSelectionValues(t *testing.T) {
+	cases := []map[string]any{
+		{"tool_selection": "bad"},
+		{"tool_selection": map[string]any{"enabled": "yes"}},
+		{"tool_selection": map[string]any{"mode": "always"}},
+		{"tool_selection": map[string]any{"max_tools": -1}},
+		{"tool_selection": map[string]any{"max_tools": 1.5}},
+		{"tool_selection": map[string]any{"confidence_threshold": 2}},
+	}
+	for _, profileConfig := range cases {
+		err := ValidateAgentInstanceVersionSpecForTest(AgentInstanceVersionSpec{
+			CustomerID: "c", AgentInstanceID: "a", ProfileConfig: profileConfig,
+		})
+		if err == nil {
+			t.Fatalf("expected validation error for %#v", profileConfig)
+		}
+	}
+}
+
+func TestValidateAgentInstanceVersionSpecRejectsInvalidToolMetadata(t *testing.T) {
+	cases := []map[string]any{
+		{"tool_metadata": "bad"},
+		{"tool_metadata": map[string]any{"": map[string]any{}}},
+		{"tool_metadata": map[string]any{"echo": "bad"}},
+		{"tool_metadata": map[string]any{"echo": map[string]any{"tags": "debug"}}},
+		{"tool_metadata": map[string]any{"echo": map[string]any{"side_effect": true}}},
+	}
+	for _, toolConfig := range cases {
+		err := ValidateAgentInstanceVersionSpecForTest(AgentInstanceVersionSpec{
+			CustomerID: "c", AgentInstanceID: "a", ToolConfig: toolConfig,
+		})
+		if err == nil {
+			t.Fatalf("expected validation error for %#v", toolConfig)
+		}
 	}
 }
 
