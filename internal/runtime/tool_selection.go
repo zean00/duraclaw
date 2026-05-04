@@ -145,7 +145,7 @@ func (w *Worker) toolSelectionMetadataForRun(ctx context.Context, run *db.Run) (
 
 func builtInToolSelectionMetadata() map[string]toolSelectionMetadata {
 	return map[string]toolSelectionMetadata{
-		"create_reminder":       {Tags: []string{"reminder", "schedule", "alarm", "future"}, SideEffect: "write", ConflictsWith: []string{"remember"}},
+		"create_reminder":       {Tags: []string{"reminder", "schedule", "alarm", "future"}, SideEffect: "write", ConflictsWith: []string{"remember", "update_reminder"}},
 		"update_reminder":       {Tags: []string{"reminder", "schedule", "alarm", "update"}, SideEffect: "write", ConflictsWith: []string{"create_reminder", "remember"}},
 		"remember":              {Tags: []string{"memory", "stable_fact", "profile"}, SideEffect: "write", ConflictsWith: []string{"create_reminder", "update_reminder"}},
 		"save_preference":       {Tags: []string{"preference", "style", "habit"}, SideEffect: "write"},
@@ -451,8 +451,20 @@ func reminderIntent(text string) bool {
 }
 
 func reminderUpdateIntent(text string) bool {
-	return containsAny(text, "reminder_reference", "update_reminder", "subscription_id", "instead", "change it", "ubah", "ganti", "koreksi") ||
-		(containsSpecificTime(text) && len(strings.Fields(text)) <= 8)
+	if containsAny(text, "reminder_reference", "update_reminder", "subscription_id", "instead", "change it", "ubah", "ganti", "koreksi") {
+		return true
+	}
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`\b(change|update|edit|modify|move|reschedule)\s+(my\s+|the\s+|this\s+|that\s+)?reminder\b`),
+		regexp.MustCompile(`\breminder\s+(to|for|at|into)\b`),
+		regexp.MustCompile(`\b(ubah|ganti|edit|jadwal\s+ulang)\s+(pengingat|reminder)\b`),
+	}
+	for _, pattern := range patterns {
+		if pattern.MatchString(text) {
+			return true
+		}
+	}
+	return false
 }
 
 func reminderTimeAmbiguous(text string) bool {

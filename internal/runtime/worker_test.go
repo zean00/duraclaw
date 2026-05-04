@@ -338,6 +338,23 @@ func TestHeuristicToolSelectionPrefersReminderOverMemory(t *testing.T) {
 	}
 }
 
+func TestHeuristicToolSelectionTreatsShortExplicitReminderAsCreate(t *testing.T) {
+	defs := []providers.ToolDefinition{
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "create_reminder", Description: "Create a reminder"}},
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "update_reminder", Description: "Update a reminder"}},
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "remember", Description: "Persist a memory"}},
+	}
+	decision := heuristicToolSelection("ingatkan saya besok jam 7 minum vitamin", scopeJudgement{Intent: "direct"}, defs, builtInToolSelectionMetadata(), toolSelectionProfileConfig{MaxTools: 2})
+	if len(decision.SelectedTools) == 0 || decision.SelectedTools[0] != "create_reminder" {
+		t.Fatalf("selected=%#v reason=%s", decision.SelectedTools, decision.Reason)
+	}
+	for _, name := range decision.SelectedTools {
+		if name == "update_reminder" || name == "remember" {
+			t.Fatalf("update/memory should be suppressed for direct reminder request: %#v", decision.SelectedTools)
+		}
+	}
+}
+
 func TestHeuristicToolSelectionAsksWhenReminderTimeAmbiguous(t *testing.T) {
 	defs := []providers.ToolDefinition{
 		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "create_reminder", Description: "Create a reminder"}},
@@ -361,6 +378,23 @@ func TestHeuristicToolSelectionPrefersUpdateForShortReminderFollowup(t *testing.
 		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "remember", Description: "Persist a memory"}},
 	}
 	decision := heuristicToolSelection("previous reminder_reference exists\nUser request: at 8am", scopeJudgement{Intent: "implicit"}, defs, builtInToolSelectionMetadata(), toolSelectionProfileConfig{MaxTools: 2})
+	if len(decision.SelectedTools) == 0 || decision.SelectedTools[0] != "update_reminder" {
+		t.Fatalf("selected=%#v reason=%s", decision.SelectedTools, decision.Reason)
+	}
+	for _, name := range decision.SelectedTools {
+		if name == "create_reminder" || name == "remember" {
+			t.Fatalf("duplicate/incorrect tool should be suppressed: %#v", decision.SelectedTools)
+		}
+	}
+}
+
+func TestHeuristicToolSelectionPrefersUpdateForExplicitReminderChange(t *testing.T) {
+	defs := []providers.ToolDefinition{
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "create_reminder", Description: "Create a reminder"}},
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "update_reminder", Description: "Update a reminder"}},
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "remember", Description: "Persist a memory"}},
+	}
+	decision := heuristicToolSelection("change reminder to 8am", scopeJudgement{Intent: "direct"}, defs, builtInToolSelectionMetadata(), toolSelectionProfileConfig{MaxTools: 2})
 	if len(decision.SelectedTools) == 0 || decision.SelectedTools[0] != "update_reminder" {
 		t.Fatalf("selected=%#v reason=%s", decision.SelectedTools, decision.Reason)
 	}
