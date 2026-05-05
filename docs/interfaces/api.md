@@ -135,6 +135,7 @@ Supported part types include `text`, `artifact_ref`, `location`, `structured_dat
 - Outbound intents, broadcasts, and delivery status.
 - Background runs.
 - Manual session compaction.
+- Agent delegation handles, access rules, and status.
 - Built-in tool access rules by customer, agent instance, and user.
 - MCP server discovery and notifications.
 - MCP tool access rules by customer, agent instance, user, and server.
@@ -303,6 +304,42 @@ If no rule exists, built-in tools follow the agent instance version `tool_config
 Agent versions may enable `profile_config.tool_selection` to shortlist authorized model-loop tools before the main model call. `tool_config.tool_metadata` can add ranking hints such as `tags`, `side_effect`, and `conflicts_with`; these hints do not override admin access rules or policy enforcement.
 
 Agent versions may set `tool_config.interleave_tool_calls: true` to experiment with reasoning between tool calls. When enabled, a model response containing multiple tool calls is not executed as a full batch; Duraclaw executes only the first call, sends that result back into the loop, and requires the model to choose the next tool after seeing the result. The default is `false`.
+
+Agent delegation routes:
+
+- `PUT /admin/agent-delegation/handles/{handle}`
+- `GET /admin/agent-delegation/handles?customer_id={customer_id}`
+- `DELETE /admin/agent-delegation/handles/{handle}?customer_id={customer_id}`
+- `PUT /admin/agent-delegation/access/customers/{customer_id}/agent-instances/{agent_instance_id}`
+- `GET /admin/agent-delegation/access/customers/{customer_id}/agent-instances/{agent_instance_id}`
+- `DELETE /admin/agent-delegation/access/customers/{customer_id}/agent-instances/{agent_instance_id}`
+- `PUT /admin/agent-delegation/access/customers/{customer_id}/agent-instances/{agent_instance_id}/users/{user_id}`
+- `GET /admin/agent-delegation/access/customers/{customer_id}/agent-instances/{agent_instance_id}/users/{user_id}`
+- `DELETE /admin/agent-delegation/access/customers/{customer_id}/agent-instances/{agent_instance_id}/users/{user_id}`
+- `GET /acp/agent-delegations/{delegation_id}`
+
+Handle payload:
+
+```json
+{
+  "customer_id": "customer-1",
+  "agent_instance_id": "specialist-agent",
+  "enabled": true,
+  "metadata": {"label": "Specialist"}
+}
+```
+
+Access payload:
+
+```json
+{
+  "allowed_agents": ["specialist", "specialist-agent"],
+  "denied_agents": [],
+  "metadata": {}
+}
+```
+
+Agent delegation is explicit and opt-in. The source agent version must set `profile_config.agent_delegation.enabled: true`. Users mention a configured same-customer handle such as `@specialist`; Duraclaw creates a new child session and background run for the target agent, returns an `agent_delegation_reference` artifact with `delegation_id`, `session_id`, and `run_id`, then pushes the delegated result back to the parent session when the child run completes. User-specific access rules replace the agent baseline; denied entries win; empty `allowed_agents` means all registered handles are allowed except denied entries.
 
 ## Outbound Status
 

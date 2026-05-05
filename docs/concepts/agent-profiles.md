@@ -160,6 +160,9 @@ profile_config:
     max_candidates: 5
     allow_sponsored: true
     disclosure_style: soft
+  agent_delegation:
+    enabled: true
+    max_mentions_per_message: 3
 activate_immediately: true
 ```
 

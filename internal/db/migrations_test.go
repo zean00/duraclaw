@@ -446,3 +446,23 @@ func TestEighteenthMigrationContainsSharedScheduler(t *testing.T) {
 		}
 	}
 }
+
+func TestTwentyFourthMigrationContainsAgentDelegations(t *testing.T) {
+	raw, err := migrationFS.ReadFile("migrations/0024_agent_delegations.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw)
+	for _, want := range []string{
+		"CREATE TABLE IF NOT EXISTS agent_delegation_handles",
+		"CREATE TABLE IF NOT EXISTS agent_delegation_access_rules",
+		"CREATE TABLE IF NOT EXISTS agent_delegations",
+		"agent_delegations_parent_run_idx",
+		"agent_delegations_child_run_idx",
+		"agent_delegations_parent_session_idx",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("migration missing %q", want)
+		}
+	}
+}

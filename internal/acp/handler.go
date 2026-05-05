@@ -1672,6 +1672,144 @@ func (h *Handler) cancelUserBackgroundRun(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]any{"id": r.PathValue("run_id"), "state": "cancelled"})
 }
 
+func (h *Handler) upsertAgentDelegationHandle(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		CustomerID      string         `json:"customer_id"`
+		AgentInstanceID string         `json:"agent_instance_id"`
+		Enabled         *bool          `json:"enabled"`
+		Metadata        map[string]any `json:"metadata"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	enabled := true
+	if payload.Enabled != nil {
+		enabled = *payload.Enabled
+	}
+	handle, err := h.store.UpsertAgentDelegationHandle(r.Context(), db.AgentDelegationHandle{
+		CustomerID: payload.CustomerID, Handle: r.PathValue("handle"), AgentInstanceID: payload.AgentInstanceID, Enabled: enabled, Metadata: rawJSON(payload.Metadata),
+	})
+	if err != nil {
+		writeError(w, statusForError(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, handle)
+}
+
+func (h *Handler) listAgentDelegationHandles(w http.ResponseWriter, r *http.Request) {
+	handles, err := h.store.ListAgentDelegationHandles(r.Context(), r.URL.Query().Get("customer_id"), queryLimit(r, 100))
+	if err != nil {
+		writeError(w, statusForError(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"handles": handles})
+}
+
+func (h *Handler) deleteAgentDelegationHandle(w http.ResponseWriter, r *http.Request) {
+	customerID := r.URL.Query().Get("customer_id")
+	if customerID == "" || r.PathValue("handle") == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id and handle are required"))
+		return
+	}
+	if err := h.store.DeleteAgentDelegationHandle(r.Context(), customerID, r.PathValue("handle")); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": true})
+}
+
+func (h *Handler) upsertCustomerAgentDelegationAccess(w http.ResponseWriter, r *http.Request) {
+	h.upsertAgentDelegationAccess(w, r, "")
+}
+
+func (h *Handler) upsertUserAgentDelegationAccess(w http.ResponseWriter, r *http.Request) {
+	h.upsertAgentDelegationAccess(w, r, r.PathValue("user_id"))
+}
+
+func (h *Handler) getCustomerAgentDelegationAccess(w http.ResponseWriter, r *http.Request) {
+	h.getAgentDelegationAccess(w, r, "")
+}
+
+func (h *Handler) getUserAgentDelegationAccess(w http.ResponseWriter, r *http.Request) {
+	h.getAgentDelegationAccess(w, r, r.PathValue("user_id"))
+}
+
+func (h *Handler) deleteCustomerAgentDelegationAccess(w http.ResponseWriter, r *http.Request) {
+	h.deleteAgentDelegationAccess(w, r, "")
+}
+
+func (h *Handler) deleteUserAgentDelegationAccess(w http.ResponseWriter, r *http.Request) {
+	h.deleteAgentDelegationAccess(w, r, r.PathValue("user_id"))
+}
+
+func (h *Handler) upsertAgentDelegationAccess(w http.ResponseWriter, r *http.Request, userID string) {
+	if h.store == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("store is not configured"))
+		return
+	}
+	var payload struct {
+		AllowedAgents []string       `json:"allowed_agents"`
+		DeniedAgents  []string       `json:"denied_agents"`
+		Metadata      map[string]any `json:"metadata"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	rule, err := h.store.UpsertAgentDelegationAccessRule(r.Context(), db.AgentDelegationAccessRule{
+		CustomerID: r.PathValue("customer_id"), AgentInstanceID: r.PathValue("agent_instance_id"), UserID: userID,
+		AllowedAgents: payload.AllowedAgents, DeniedAgents: payload.DeniedAgents, Metadata: rawJSON(payload.Metadata),
+	})
+	if err != nil {
+		writeError(w, statusForError(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rule)
+}
+
+func (h *Handler) getAgentDelegationAccess(w http.ResponseWriter, r *http.Request, userID string) {
+	if h.store == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("store is not configured"))
+		return
+	}
+	rule, err := h.store.AgentDelegationAccessRule(r.Context(), r.PathValue("customer_id"), r.PathValue("agent_instance_id"), userID)
+	if err != nil {
+		writeError(w, statusForError(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rule)
+}
+
+func (h *Handler) deleteAgentDelegationAccess(w http.ResponseWriter, r *http.Request, userID string) {
+	if h.store == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("store is not configured"))
+		return
+	}
+	if err := h.store.DeleteAgentDelegationAccessRule(r.Context(), r.PathValue("customer_id"), r.PathValue("agent_instance_id"), userID); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": true})
+}
+
+func (h *Handler) agentDelegationStatus(w http.ResponseWriter, r *http.Request) {
+	c, ok := requiredContext(w, r, false)
+	if !ok {
+		return
+	}
+	delegation, err := h.store.AgentDelegation(r.Context(), c.CustomerID, r.PathValue("delegation_id"))
+	if err != nil {
+		writeError(w, statusForError(err), err)
+		return
+	}
+	if delegation.UserID != c.UserID {
+		writeError(w, http.StatusForbidden, fmt.Errorf("delegation is not visible to this user"))
+		return
+	}
+	writeJSON(w, http.StatusOK, delegation)
+}
+
 func (h *Handler) upsertCustomerToolAccess(w http.ResponseWriter, r *http.Request) {
 	h.upsertToolAccess(w, r, "")
 }

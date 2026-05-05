@@ -93,3 +93,9 @@ agent or workflow asks user
 ## Background Runs
 
 Background jobs reuse the same durable run pipeline with `run_mode='background'`. They support progress storage, cancellation, status APIs, quotas, and completion outbound intents.
+
+## Agent Delegation
+
+When `profile_config.agent_delegation.enabled` is true, Duraclaw can detect explicit `@agent` mentions after scope approval. The handle must be registered for the same customer and allowed by the source agent/user delegation access rule.
+
+Each accepted mention creates a fresh child session and background durable run for the target agent. The child input contains a bounded summary/recent-history context plus the exact message containing the mention. The parent run returns an `agent_delegation_reference` artifact immediately, including the delegated `session_id` for explicit follow-up reuse. When the child run completes, Duraclaw pushes the target agent's response back to the original parent session with the same artifact.

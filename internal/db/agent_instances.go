@@ -225,7 +225,7 @@ func validateAgentInstanceVersionSpec(spec AgentInstanceVersionSpec) error {
 	if err := validatePolicyConfigValues(spec.PolicyConfig); err != nil {
 		return err
 	}
-	if err := validateObjectConfig("profile_config", spec.ProfileConfig, []string{"personality", "communication_style", "language_capabilities", "domain_scope", "recommendation", "tool_selection"}); err != nil {
+	if err := validateObjectConfig("profile_config", spec.ProfileConfig, []string{"personality", "communication_style", "language_capabilities", "domain_scope", "recommendation", "tool_selection", "agent_delegation"}); err != nil {
 		return err
 	}
 	if err := validateProfileConfigValues(spec.ProfileConfig); err != nil {
@@ -349,6 +349,22 @@ func validateProfileConfigValues(value any) error {
 			threshold, ok := numericValue(raw)
 			if !ok || threshold < 0 || threshold > 1 {
 				return fmt.Errorf("profile_config.tool_selection.confidence_threshold must be between 0 and 1")
+			}
+		}
+	}
+	if raw, ok := obj["agent_delegation"]; ok {
+		delegation, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("profile_config.agent_delegation must be an object")
+		}
+		if raw, ok := delegation["enabled"]; ok {
+			if _, ok := raw.(bool); !ok {
+				return fmt.Errorf("profile_config.agent_delegation.enabled must be a boolean")
+			}
+		}
+		if raw, ok := delegation["max_mentions_per_message"]; ok {
+			if err := validateNonNegativeInteger("profile_config.agent_delegation.max_mentions_per_message", raw); err != nil {
+				return err
 			}
 		}
 	}

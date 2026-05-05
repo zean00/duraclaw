@@ -191,9 +191,10 @@ type ToolCallRecord struct {
 }
 
 type Store struct {
-	pool            Pool
-	mcpAccessCache  sync.Map
-	toolAccessCache sync.Map
+	pool                       Pool
+	mcpAccessCache             sync.Map
+	toolAccessCache            sync.Map
+	agentDelegationAccessCache sync.Map
 }
 
 func NewStore(pool Pool) *Store { return &Store{pool: pool} }
@@ -673,6 +674,11 @@ func (s *Store) CreateRefinementRun(ctx context.Context, parent *Run, deferred [
 	if err != nil {
 		return nil, err
 	}
+	delegationArtifacts, err := s.AgentDelegationArtifactsForRun(ctx, parent.ID)
+	if err != nil {
+		return nil, err
+	}
+	artifacts = append(artifacts, delegationArtifacts...)
 	input := refinementInput(parent.Input, deferred, draft, artifacts)
 	inputJSON, _ := json.Marshal(input)
 	idempotencyKey := fmt.Sprintf("refine:%s:%d", parent.ID, parent.RefinementDepth+1)
