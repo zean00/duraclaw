@@ -344,6 +344,7 @@ func (w *Worker) routeToolSelection(ctx context.Context, run *db.Run, cfg toolSe
 		{Role: "user", Content: promptText},
 	}, nil, map[string]any{"response_format": "json_object", "purpose": "tool_selection"})
 	if err != nil {
+		w.enqueueAsyncRunEvent(ctx, run, "tool_selection.failed", fallbackErrorPayload(result, err))
 		return toolSelectionDecision{}, err
 	}
 	var decision toolSelectionDecision

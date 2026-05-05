@@ -1813,6 +1813,7 @@ Return only JSON with keys: intent string ("direct" or "implicit"), in_scope boo
 		{Role: "user", Content: promptText},
 	}, nil, map[string]any{"response_format": "json_object", "purpose": "scope_judge"})
 	if err != nil {
+		w.enqueueAsyncRunEvent(ctx, run, "scope_judge.failed", fallbackErrorPayload(result, err))
 		return scopeJudgement{}, nil, err
 	}
 	var judgement scopeJudgement
@@ -1823,6 +1824,32 @@ Return only JSON with keys: intent string ("direct" or "implicit"), in_scope boo
 		judgement.Intent = "direct"
 	}
 	return judgement, result, nil
+}
+
+func fallbackErrorPayload(result *providers.FallbackResult, err error) map[string]any {
+	payload := map[string]any{"error": ""}
+	if err != nil {
+		payload["error"] = err.Error()
+	}
+	if result == nil || len(result.Attempts) == 0 {
+		payload["attempts"] = []map[string]any{}
+		return payload
+	}
+	attempts := make([]map[string]any, 0, len(result.Attempts))
+	for _, attempt := range result.Attempts {
+		item := map[string]any{
+			"provider":    attempt.Provider,
+			"model":       attempt.Model,
+			"attempt":     attempt.Attempt,
+			"duration_ms": attempt.Duration.Milliseconds(),
+		}
+		if attempt.Error != nil {
+			item["error"] = attempt.Error.Error()
+		}
+		attempts = append(attempts, item)
+	}
+	payload["attempts"] = attempts
+	return payload
 }
 
 func normalizeInitialScopeJudgement(judgement scopeJudgement, threshold float64) scopeJudgement {

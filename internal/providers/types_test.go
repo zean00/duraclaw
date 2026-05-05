@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 )
 
 func TestResolveCandidatesDeduplicatesAndNormalizes(t *testing.T) {
@@ -179,11 +180,14 @@ func TestExecuteFallbackErrors(t *testing.T) {
 	if _, err := ExecuteFallback(context.Background(), nil, nil); err == nil {
 		t.Fatalf("expected empty candidates error")
 	}
-	_, err := ExecuteFallback(context.Background(), []FallbackCandidate{{Provider: "a", Model: "m"}}, func(context.Context, string, string) (*LLMResponse, error) {
+	res, err := ExecuteFallback(context.Background(), []FallbackCandidate{{Provider: "a", Model: "m"}}, func(context.Context, string, string) (*LLMResponse, error) {
 		return nil, errors.New("boom")
 	})
 	if err == nil {
 		t.Fatalf("expected all failed error")
+	}
+	if res == nil || len(res.Attempts) != 1 || res.Attempts[0].Error == nil {
+		t.Fatalf("expected failed attempt details, res=%#v", res)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -192,6 +196,52 @@ func TestExecuteFallbackErrors(t *testing.T) {
 	})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestExecuteFallbackRetriesTransientCandidate(t *testing.T) {
+	candidates := []FallbackCandidate{{Provider: "a", Model: "m"}}
+	calls := 0
+	res, err := ExecuteFallback(context.Background(), candidates, func(context.Context, string, string) (*LLMResponse, error) {
+		calls++
+		if calls == 1 {
+			return nil, errors.New("openai-compatible provider status 503: upstream overloaded")
+		}
+		return &LLMResponse{Content: "ok"}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || len(res.Attempts) != 1 || res.Attempts[0].Attempt != 1 {
+		t.Fatalf("unexpected retry result calls=%d res=%#v", calls, res)
+	}
+}
+
+func TestExecuteFallbackCancelsDuringTransientBackoff(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	calls := 0
+	firstAttempt := make(chan struct{})
+	go func() {
+		<-firstAttempt
+		time.Sleep(10 * time.Millisecond)
+		cancel()
+	}()
+	res, err := ExecuteFallback(ctx, []FallbackCandidate{{Provider: "a", Model: "m"}}, func(context.Context, string, string) (*LLMResponse, error) {
+		calls++
+		if calls == 1 {
+			close(firstAttempt)
+		}
+		return nil, errors.New("openai-compatible provider status 503: upstream overloaded")
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation, got %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("expected no retry after cancellation, calls=%d", calls)
+	}
+	if res == nil || len(res.Attempts) != 1 {
+		t.Fatalf("expected first attempt to be recorded, res=%#v", res)
 	}
 }
 

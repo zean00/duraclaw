@@ -538,6 +538,7 @@ type FallbackAttempt struct {
 	Model    string
 	Error    error
 	Duration time.Duration
+	Attempt  int
 }
 
 type FallbackResult struct {
@@ -553,17 +554,73 @@ func ExecuteFallback(ctx context.Context, candidates []FallbackCandidate, run fu
 	}
 	res := &FallbackResult{Attempts: make([]FallbackAttempt, 0, len(candidates))}
 	for _, c := range candidates {
-		start := time.Now()
-		resp, err := run(ctx, c.Provider, c.Model)
-		elapsed := time.Since(start)
-		if err == nil {
-			res.Response, res.Provider, res.Model = resp, c.Provider, c.Model
-			return res, nil
+		maxAttempts := 1
+		for attempt := 1; attempt <= maxAttempts; attempt++ {
+			start := time.Now()
+			resp, err := run(ctx, c.Provider, c.Model)
+			elapsed := time.Since(start)
+			if err == nil {
+				res.Response, res.Provider, res.Model = resp, c.Provider, c.Model
+				return res, nil
+			}
+			if ctx.Err() != nil {
+				return res, ctx.Err()
+			}
+			res.Attempts = append(res.Attempts, FallbackAttempt{Provider: c.Provider, Model: c.Model, Error: err, Duration: elapsed, Attempt: attempt})
+			if attempt == 1 && transientProviderError(err) {
+				maxAttempts = 2
+				if err := sleepWithContext(ctx, 250*time.Millisecond); err != nil {
+					return res, err
+				}
+			}
 		}
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		res.Attempts = append(res.Attempts, FallbackAttempt{Provider: c.Provider, Model: c.Model, Error: err, Duration: elapsed})
 	}
-	return nil, fmt.Errorf("fallback: all %d candidates failed", len(res.Attempts))
+	return res, fmt.Errorf("fallback: all %d attempts failed: %s", len(res.Attempts), fallbackAttemptSummary(res.Attempts))
+}
+
+func sleepWithContext(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func fallbackAttemptSummary(attempts []FallbackAttempt) string {
+	var parts []string
+	for _, attempt := range attempts {
+		if attempt.Error == nil {
+			continue
+		}
+		label := strings.TrimSpace(attempt.Provider + "/" + attempt.Model)
+		if label == "/" {
+			label = "unknown"
+		}
+		parts = append(parts, fmt.Sprintf("%s attempt %d: %v", label, attempt.Attempt, attempt.Error))
+	}
+	return strings.Join(parts, "; ")
+}
+
+func transientProviderError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	if strings.Contains(text, "status 408") || strings.Contains(text, "status 409") || strings.Contains(text, "status 429") {
+		return true
+	}
+	for _, status := range []string{"status 500", "status 502", "status 503", "status 504"} {
+		if strings.Contains(text, status) {
+			return true
+		}
+	}
+	return strings.Contains(text, "timeout") ||
+		strings.Contains(text, "temporary") ||
+		strings.Contains(text, "connection reset") ||
+		strings.Contains(text, "connection refused") ||
+		strings.Contains(text, "unexpected eof") ||
+		strings.Contains(text, "server disconnected")
 }
