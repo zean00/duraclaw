@@ -1974,11 +1974,11 @@ func recommendationSensitiveProductMix(content string, cfg recommendationProfile
 	}
 	sensitiveTerms := cfg.SensitiveContextTerms
 	if len(sensitiveTerms) == 0 {
-		sensitiveTerms = []string{"sedih", "sakit", "duka", "shalat", "salat", "quran", "al-quran", "curhat", "postpartum", "haid"}
+		return false
 	}
 	productTerms := cfg.ProductRequestTerms
 	if len(productTerms) == 0 {
-		productTerms = []string{"rekomendasi", "rekomendasikan", "produk", "hijab", "katalog", "belanja", "beli", "checkout"}
+		return false
 	}
 	return containsNormalizedTerm(text, sensitiveTerms) && containsNormalizedTerm(text, productTerms)
 }

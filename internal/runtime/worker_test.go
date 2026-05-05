@@ -342,13 +342,52 @@ func TestInternalToolDefinitionsAndPlanning(t *testing.T) {
 	}
 }
 
+func personalAssistantToolSelectionMetadata() map[string]toolSelectionMetadata {
+	out := builtInToolSelectionMetadata()
+	out["create_reminder"] = mergeToolSelectionMetadata(out["create_reminder"], toolSelectionMetadata{
+		TriggerPhrases:  []string{"remind me", "ingatkan", "notify me", "alarm", "besok", "tomorrow"},
+		NegativePhrases: []string{"reminder_reference", "change reminder", "update reminder", "ubah reminder", "ganti reminder", "preferensi"},
+		ConflictsWith:   []string{"remember", "update_reminder"},
+	})
+	out["update_reminder"] = mergeToolSelectionMetadata(out["update_reminder"], toolSelectionMetadata{
+		TriggerPhrases:  []string{"reminder_reference", "change reminder", "update reminder", "at 8am", "ubah", "ganti", "koreksi"},
+		NegativePhrases: []string{"preferensi"},
+		ConflictsWith:   []string{"create_reminder", "remember"},
+	})
+	out["duraclaw.ask_user"] = mergeToolSelectionMetadata(out["duraclaw.ask_user"], toolSelectionMetadata{
+		TriggerPhrases: []string{"tomorrow morning", "besok pagi", "nanti pagi", "besok", "pagi"},
+		ConflictsWith:  []string{"create_reminder"},
+	})
+	out["remember"] = mergeToolSelectionMetadata(out["remember"], toolSelectionMetadata{
+		TriggerPhrases:  []string{"remember that", "ingat bahwa", "my child", "anak saya", "alamat saya", "my name"},
+		NegativePhrases: []string{"ingatkan", "remind me", "preferensi"},
+		ConflictsWith:   []string{"create_reminder", "update_reminder"},
+	})
+	out["save_preference"] = mergeToolSelectionMetadata(out["save_preference"], toolSelectionMetadata{
+		TriggerPhrases:  []string{"preference", "prefer", "preferensi", "suka", "tidak suka", "call me", "panggil", "gaya bahasa", "format jawaban"},
+		NegativePhrases: []string{"ingatkan", "remind me"},
+	})
+	return out
+}
+
+func TestBuiltInToolSelectionMetadataIsDomainNeutral(t *testing.T) {
+	defs := []providers.ToolDefinition{
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "create_reminder", Description: "Create a reminder"}},
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "remember", Description: "Persist a memory"}},
+	}
+	decision := heuristicToolSelection("Bisa bantu ingatkan saya besok jam 7 untuk bawa tas hitam?", scopeJudgement{Intent: "direct"}, defs, builtInToolSelectionMetadata(), toolSelectionProfileConfig{MaxTools: 2})
+	if len(decision.SelectedTools) != 0 || decision.Confidence < 0.65 {
+		t.Fatalf("built-in metadata should not hardcode personal-assistant routing: %#v", decision)
+	}
+}
+
 func TestHeuristicToolSelectionPrefersReminderOverMemory(t *testing.T) {
 	defs := []providers.ToolDefinition{
 		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "create_reminder", Description: "Create a reminder"}},
 		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "remember", Description: "Persist a memory"}},
 		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "duraclaw.ask_user", Description: "Ask for clarification"}},
 	}
-	decision := heuristicToolSelection("Bisa bantu ingatkan saya besok jam 7 untuk bawa tas hitam?", scopeJudgement{Intent: "direct"}, defs, builtInToolSelectionMetadata(), toolSelectionProfileConfig{MaxTools: 3})
+	decision := heuristicToolSelection("Bisa bantu ingatkan saya besok jam 7 untuk bawa tas hitam?", scopeJudgement{Intent: "direct"}, defs, personalAssistantToolSelectionMetadata(), toolSelectionProfileConfig{MaxTools: 3})
 	if len(decision.SelectedTools) == 0 || decision.SelectedTools[0] != "create_reminder" {
 		t.Fatalf("selected=%#v reason=%s", decision.SelectedTools, decision.Reason)
 	}
@@ -365,7 +404,7 @@ func TestHeuristicToolSelectionTreatsShortExplicitReminderAsCreate(t *testing.T)
 		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "update_reminder", Description: "Update a reminder"}},
 		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "remember", Description: "Persist a memory"}},
 	}
-	decision := heuristicToolSelection("ingatkan saya besok jam 7 minum vitamin", scopeJudgement{Intent: "direct"}, defs, builtInToolSelectionMetadata(), toolSelectionProfileConfig{MaxTools: 2})
+	decision := heuristicToolSelection("ingatkan saya besok jam 7 minum vitamin", scopeJudgement{Intent: "direct"}, defs, personalAssistantToolSelectionMetadata(), toolSelectionProfileConfig{MaxTools: 2})
 	if len(decision.SelectedTools) == 0 || decision.SelectedTools[0] != "create_reminder" {
 		t.Fatalf("selected=%#v reason=%s", decision.SelectedTools, decision.Reason)
 	}
@@ -381,7 +420,7 @@ func TestHeuristicToolSelectionAsksWhenReminderTimeAmbiguous(t *testing.T) {
 		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "create_reminder", Description: "Create a reminder"}},
 		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "duraclaw.ask_user", Description: "Ask for clarification"}},
 	}
-	decision := heuristicToolSelection("ingatkan saya besok pagi untuk bawa tas", scopeJudgement{Intent: "direct"}, defs, builtInToolSelectionMetadata(), toolSelectionProfileConfig{MaxTools: 2})
+	decision := heuristicToolSelection("ingatkan saya besok pagi untuk bawa tas", scopeJudgement{Intent: "direct"}, defs, personalAssistantToolSelectionMetadata(), toolSelectionProfileConfig{MaxTools: 2})
 	if len(decision.SelectedTools) == 0 || decision.SelectedTools[0] != "duraclaw.ask_user" {
 		t.Fatalf("selected=%#v reason=%s", decision.SelectedTools, decision.Reason)
 	}
@@ -398,7 +437,7 @@ func TestHeuristicToolSelectionPrefersUpdateForShortReminderFollowup(t *testing.
 		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "update_reminder", Description: "Update a reminder"}},
 		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "remember", Description: "Persist a memory"}},
 	}
-	decision := heuristicToolSelection("previous reminder_reference exists\nUser request: at 8am", scopeJudgement{Intent: "implicit"}, defs, builtInToolSelectionMetadata(), toolSelectionProfileConfig{MaxTools: 2})
+	decision := heuristicToolSelection("previous reminder_reference exists\nUser request: at 8am", scopeJudgement{Intent: "implicit"}, defs, personalAssistantToolSelectionMetadata(), toolSelectionProfileConfig{MaxTools: 2})
 	if len(decision.SelectedTools) == 0 || decision.SelectedTools[0] != "update_reminder" {
 		t.Fatalf("selected=%#v reason=%s", decision.SelectedTools, decision.Reason)
 	}
@@ -415,7 +454,7 @@ func TestHeuristicToolSelectionPrefersUpdateForExplicitReminderChange(t *testing
 		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "update_reminder", Description: "Update a reminder"}},
 		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "remember", Description: "Persist a memory"}},
 	}
-	decision := heuristicToolSelection("change reminder to 8am", scopeJudgement{Intent: "direct"}, defs, builtInToolSelectionMetadata(), toolSelectionProfileConfig{MaxTools: 2})
+	decision := heuristicToolSelection("change reminder to 8am", scopeJudgement{Intent: "direct"}, defs, personalAssistantToolSelectionMetadata(), toolSelectionProfileConfig{MaxTools: 2})
 	if len(decision.SelectedTools) == 0 || decision.SelectedTools[0] != "update_reminder" {
 		t.Fatalf("selected=%#v reason=%s", decision.SelectedTools, decision.Reason)
 	}
@@ -431,7 +470,7 @@ func TestHeuristicToolSelectionPrefersPreferenceOverMemory(t *testing.T) {
 		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "remember", Description: "Persist a memory"}},
 		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "save_preference", Description: "Persist a preference"}},
 	}
-	decision := heuristicToolSelection("Tolong ingat preferensi saya: jawab singkat saja", scopeJudgement{Intent: "direct"}, defs, builtInToolSelectionMetadata(), toolSelectionProfileConfig{MaxTools: 2})
+	decision := heuristicToolSelection("Tolong ingat preferensi saya: jawab singkat saja", scopeJudgement{Intent: "direct"}, defs, personalAssistantToolSelectionMetadata(), toolSelectionProfileConfig{MaxTools: 2})
 	if len(decision.SelectedTools) == 0 || decision.SelectedTools[0] != "save_preference" {
 		t.Fatalf("selected=%#v reason=%s", decision.SelectedTools, decision.Reason)
 	}
@@ -453,7 +492,7 @@ func TestHeuristicToolSelectionUsesOriginalNamesBeforeAliases(t *testing.T) {
 		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "create_reminder", Description: "Create a reminder"}},
 		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "duraclaw.ask_user", Description: "Ask for clarification"}},
 	}
-	decision := heuristicToolSelection("ingatkan saya besok pagi untuk bawa tas", scopeJudgement{Intent: "direct"}, defs, builtInToolSelectionMetadata(), toolSelectionProfileConfig{MaxTools: 2})
+	decision := heuristicToolSelection("ingatkan saya besok pagi untuk bawa tas", scopeJudgement{Intent: "direct"}, defs, personalAssistantToolSelectionMetadata(), toolSelectionProfileConfig{MaxTools: 2})
 	selected := filterToolDefinitionsByNames(defs, decision.SelectedTools)
 	aliased, err := applyToolAliases(selected, toolAliasSet{
 		OriginalToAlias: map[string]string{"duraclaw.ask_user": "duraclaw_ask_user"},
@@ -766,7 +805,11 @@ func TestRecommendationArtifactIncludesSelectedItem(t *testing.T) {
 }
 
 func TestRecommendationSensitiveProductMix(t *testing.T) {
-	cfg := recommendationProfileConfig{BlockSensitiveProductMix: true}
+	cfg := recommendationProfileConfig{
+		BlockSensitiveProductMix: true,
+		SensitiveContextTerms:    []string{"sedih", "shalat"},
+		ProductRequestTerms:      []string{"rekomendasikan", "hijab"},
+	}
 	if !recommendationSensitiveProductMix("Aku sedih habis shalat, rekomendasikan hijab dong.", cfg) {
 		t.Fatal("expected sensitive product mix to be blocked")
 	}
@@ -775,6 +818,9 @@ func TestRecommendationSensitiveProductMix(t *testing.T) {
 	}
 	if recommendationSensitiveProductMix("Aku sedih habis shalat.", cfg) {
 		t.Fatal("support-only sensitive message should not be treated as product mix")
+	}
+	if recommendationSensitiveProductMix("Aku sedih habis shalat, rekomendasikan hijab dong.", recommendationProfileConfig{BlockSensitiveProductMix: true}) {
+		t.Fatal("domain-sensitive recommendation blocking should require configured term lists")
 	}
 }
 
@@ -801,7 +847,12 @@ func TestRecommendationSensitiveProductMixUsesImplicitContext(t *testing.T) {
 	if mode != "implicit_context" || !strings.Contains(recCtx, "Aku sedih habis shalat") || !strings.Contains(recCtx, "boleh rekomendasikan") {
 		t.Fatalf("mode=%q context=%q", mode, recCtx)
 	}
-	if !recommendationSensitiveProductMix(recCtx, recommendationProfileConfig{BlockSensitiveProductMix: true}) {
+	cfg := recommendationProfileConfig{
+		BlockSensitiveProductMix: true,
+		SensitiveContextTerms:    []string{"sedih", "shalat"},
+		ProductRequestTerms:      []string{"rekomendasikan", "hijab"},
+	}
+	if !recommendationSensitiveProductMix(recCtx, cfg) {
 		t.Fatalf("expanded implicit context should be blocked: %q", recCtx)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {

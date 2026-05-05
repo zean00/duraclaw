@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"math"
-	"regexp"
 	"sort"
 	"strings"
 
@@ -18,9 +17,11 @@ const (
 )
 
 type toolSelectionMetadata struct {
-	Tags          []string `json:"tags"`
-	SideEffect    string   `json:"side_effect"`
-	ConflictsWith []string `json:"conflicts_with"`
+	Tags            []string `json:"tags"`
+	TriggerPhrases  []string `json:"trigger_phrases"`
+	NegativePhrases []string `json:"negative_phrases"`
+	SideEffect      string   `json:"side_effect"`
+	ConflictsWith   []string `json:"conflicts_with"`
 }
 
 type toolSelectionDecision struct {
@@ -145,9 +146,9 @@ func (w *Worker) toolSelectionMetadataForRun(ctx context.Context, run *db.Run) (
 
 func builtInToolSelectionMetadata() map[string]toolSelectionMetadata {
 	return map[string]toolSelectionMetadata{
-		"create_reminder":       {Tags: []string{"reminder", "schedule", "alarm", "future"}, SideEffect: "write", ConflictsWith: []string{"remember", "update_reminder"}},
-		"update_reminder":       {Tags: []string{"reminder", "schedule", "alarm", "update"}, SideEffect: "write", ConflictsWith: []string{"create_reminder", "remember"}},
-		"remember":              {Tags: []string{"memory", "stable_fact", "profile"}, SideEffect: "write", ConflictsWith: []string{"create_reminder", "update_reminder"}},
+		"create_reminder":       {Tags: []string{"reminder", "schedule", "alarm", "future"}, SideEffect: "write"},
+		"update_reminder":       {Tags: []string{"reminder", "schedule", "alarm", "update"}, SideEffect: "write"},
+		"remember":              {Tags: []string{"memory", "stable_fact", "profile"}, SideEffect: "write"},
 		"save_preference":       {Tags: []string{"preference", "style", "habit"}, SideEffect: "write"},
 		"list_memories":         {Tags: []string{"memory", "read"}, SideEffect: "read"},
 		"list_preferences":      {Tags: []string{"preference", "read"}, SideEffect: "read"},
@@ -162,6 +163,8 @@ func builtInToolSelectionMetadata() map[string]toolSelectionMetadata {
 func normalizeToolSelectionMetadata(meta toolSelectionMetadata) toolSelectionMetadata {
 	meta.SideEffect = strings.ToLower(strings.TrimSpace(meta.SideEffect))
 	meta.Tags = cleanStringList(meta.Tags)
+	meta.TriggerPhrases = cleanStringList(meta.TriggerPhrases)
+	meta.NegativePhrases = cleanStringList(meta.NegativePhrases)
 	meta.ConflictsWith = cleanStringList(meta.ConflictsWith)
 	return meta
 }
@@ -169,6 +172,12 @@ func normalizeToolSelectionMetadata(meta toolSelectionMetadata) toolSelectionMet
 func mergeToolSelectionMetadata(base, override toolSelectionMetadata) toolSelectionMetadata {
 	if len(override.Tags) > 0 {
 		base.Tags = override.Tags
+	}
+	if len(override.TriggerPhrases) > 0 {
+		base.TriggerPhrases = override.TriggerPhrases
+	}
+	if len(override.NegativePhrases) > 0 {
+		base.NegativePhrases = override.NegativePhrases
 	}
 	if strings.TrimSpace(override.SideEffect) != "" {
 		base.SideEffect = override.SideEffect
@@ -184,76 +193,20 @@ func heuristicToolSelection(content string, scope scopeJudgement, defs []provide
 	if strings.EqualFold(strings.TrimSpace(scope.Intent), "implicit") {
 		text = strings.ToLower(strings.TrimSpace(content))
 	}
-	reminder := reminderIntent(text)
-	ambiguousReminder := reminder && reminderTimeAmbiguous(text)
-	updateReminder := reminder && reminderUpdateIntent(text)
-	preference := preferenceIntent(text)
-	memory := memoryIntent(text) && !reminder && !preference
-	media := mediaIntent(text)
-	workflow := containsAny(text, "workflow", "alur kerja", "jalankan proses", "run workflow")
 
 	var scored []scoredTool
 	for _, def := range defs {
 		name := def.Function.Name
 		meta := normalizeToolSelectionMetadata(metadata[name])
 		score := lexicalToolScore(text, def, meta)
-		reason := "lexical metadata match"
-		switch name {
-		case "create_reminder":
-			if reminder && !ambiguousReminder && !updateReminder {
-				score += 9
-				reason = "future reminder request"
-			}
-			if ambiguousReminder || updateReminder || preference || memory {
-				score -= 8
-			}
-		case "update_reminder":
-			if updateReminder {
-				score += 10
-				reason = "follow-up updates an existing reminder"
-			}
-			if reminder && !ambiguousReminder {
-				score += 2
-			}
-			if ambiguousReminder || preference || memory {
-				score -= 6
-			}
-		case "duraclaw.ask_user":
-			if ambiguousReminder {
-				score += 10
-				reason = "reminder has ambiguous missing time details"
-			}
-		case "remember":
-			if memory {
-				score += 8
-				reason = "stable user fact"
-			}
-			if reminder || preference {
-				score -= 10
-			}
-		case "save_preference":
-			if preference {
-				score += 8
-				reason = "user preference request"
-			}
-			if reminder {
-				score -= 7
-			}
-		case "list_memories", "list_preferences":
-			if containsAny(text, "what do you remember", "apa yang kamu ingat", "list", "daftar") {
-				score += 4
-				reason = "user asks to list stored context"
-			}
-		case "duraclaw.run_workflow":
-			if workflow {
-				score += 6
-				reason = "workflow request"
-			}
+		reason := toolSelectionReason(score)
+		phraseScore := phraseToolScore(text, meta)
+		if phraseScore > 0 {
+			reason = "configured trigger phrase match"
+		} else if phraseScore < 0 {
+			reason = "configured negative phrase match"
 		}
-		if strings.HasPrefix(name, "generate_") && media {
-			score += 5
-			reason = "media generation request"
-		}
+		score += phraseScore
 		if score > 0 {
 			scored = append(scored, scoredTool{Name: name, Score: score, Reason: reason})
 		}
@@ -280,6 +233,13 @@ func heuristicToolSelection(content string, scope scopeJudgement, defs []provide
 		reason = scored[0].Reason
 	}
 	return toolSelectionDecision{SelectedTools: selected, Confidence: confidence, Reason: reason}
+}
+
+func toolSelectionReason(score float64) string {
+	if score > 0 {
+		return "lexical metadata match"
+	}
+	return "no metadata match"
 }
 
 func selectedScoredTools(scored []scoredTool, metadata map[string]toolSelectionMetadata, maxTools int) []string {
@@ -339,6 +299,21 @@ func lexicalToolScore(text string, def providers.ToolDefinition, meta toolSelect
 	for _, tag := range meta.Tags {
 		if tag != "" && strings.Contains(text, strings.ReplaceAll(tag, "_", " ")) {
 			score += 1.5
+		}
+	}
+	return score
+}
+
+func phraseToolScore(text string, meta toolSelectionMetadata) float64 {
+	var score float64
+	for _, phrase := range meta.TriggerPhrases {
+		if phrase != "" && strings.Contains(text, phrase) {
+			score += 4
+		}
+	}
+	for _, phrase := range meta.NegativePhrases {
+		if phrase != "" && strings.Contains(text, phrase) {
+			score -= 5
 		}
 	}
 	return score
@@ -446,64 +421,8 @@ func uniqueAllowedToolNames(names []string, allowed map[string]bool, max int) []
 	return out
 }
 
-func reminderIntent(text string) bool {
-	return containsAny(text, "remind me", "reminder", "ingatkan", "alarm", "notify me", "notifikasi", "besok", "tomorrow")
-}
-
-func reminderUpdateIntent(text string) bool {
-	if containsAny(text, "reminder_reference", "update_reminder", "subscription_id", "instead", "change it", "ubah", "ganti", "koreksi") {
-		return true
-	}
-	patterns := []*regexp.Regexp{
-		regexp.MustCompile(`\b(change|update|edit|modify|move|reschedule)\s+(my\s+|the\s+|this\s+|that\s+)?reminder\b`),
-		regexp.MustCompile(`\breminder\s+(to|for|at|into)\b`),
-		regexp.MustCompile(`\b(ubah|ganti|edit|jadwal\s+ulang)\s+(pengingat|reminder)\b`),
-	}
-	for _, pattern := range patterns {
-		if pattern.MatchString(text) {
-			return true
-		}
-	}
-	return false
-}
-
-func reminderTimeAmbiguous(text string) bool {
-	if !containsAny(text, "later", "nanti", "tomorrow", "besok", "morning", "pagi", "afternoon", "sore", "evening", "malam") {
-		return false
-	}
-	return !containsSpecificTime(text)
-}
-
-func containsSpecificTime(text string) bool {
-	patterns := []*regexp.Regexp{
-		regexp.MustCompile(`\b\d{1,2}\s*(am|pm)\b`),
-		regexp.MustCompile(`\b\d{1,2}:\d{2}\b`),
-		regexp.MustCompile(`\b(jam|pukul)\s*\d{1,2}\b`),
-		regexp.MustCompile(`\b20\d{2}-\d{2}-\d{2}\b`),
-	}
-	for _, pattern := range patterns {
-		if pattern.MatchString(text) {
-			return true
-		}
-	}
-	return false
-}
-
-func preferenceIntent(text string) bool {
-	return containsAny(text, "preference", "prefer", "i like", "i dislike", "suka", "tidak suka", "call me", "panggil", "gaya bahasa", "format jawaban")
-}
-
-func memoryIntent(text string) bool {
-	return containsAny(text, "remember that", "ingat bahwa", "save this fact", "i live", "i work", "my child", "anak saya", "alamat saya", "my name")
-}
-
-func mediaIntent(text string) bool {
-	return containsAny(text, "generate image", "create image", "buat gambar", "generate audio", "buat audio", "generate video", "buat video")
-}
-
 func toolLikeIntent(text string) bool {
-	return reminderIntent(text) || preferenceIntent(text) || memoryIntent(text) || mediaIntent(text) ||
-		containsAny(text, "search", "lookup", "book", "schedule", "cancel", "update", "delete", "create", "find", "cari", "buat", "hapus", "ubah")
+	return containsAny(text, "search", "lookup", "book", "schedule", "cancel", "update", "delete", "create", "find", "cari", "buat", "hapus", "ubah")
 }
 
 func containsAny(text string, needles ...string) bool {

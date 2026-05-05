@@ -20,9 +20,11 @@ func TestValidateAgentInstanceVersionSpecAllowsKnownConfigKeys(t *testing.T) {
 			"interleave_tool_calls": true,
 			"tool_aliases":          map[string]any{"duraclaw.ask_user": "duraclaw_ask_user"},
 			"tool_metadata": map[string]any{"echo": map[string]any{
-				"tags":           []string{"debug"},
-				"side_effect":    "read",
-				"conflicts_with": []string{"remember"},
+				"tags":             []string{"debug"},
+				"trigger_phrases":  []string{"ping"},
+				"negative_phrases": []string{"ignore"},
+				"side_effect":      "read",
+				"conflicts_with":   []string{"remember"},
 			}},
 		},
 		MCPConfig:      map[string]any{"servers": []map[string]any{{"name": "srv", "transport": "http", "base_url": "http://example.test"}}},
@@ -141,6 +143,8 @@ func TestValidateAgentInstanceVersionSpecRejectsInvalidToolMetadata(t *testing.T
 		{"tool_metadata": map[string]any{"": map[string]any{}}},
 		{"tool_metadata": map[string]any{"echo": "bad"}},
 		{"tool_metadata": map[string]any{"echo": map[string]any{"tags": "debug"}}},
+		{"tool_metadata": map[string]any{"echo": map[string]any{"trigger_phrases": "ping"}}},
+		{"tool_metadata": map[string]any{"echo": map[string]any{"negative_phrases": "ignore"}}},
 		{"tool_metadata": map[string]any{"echo": map[string]any{"side_effect": true}}},
 	}
 	for _, toolConfig := range cases {

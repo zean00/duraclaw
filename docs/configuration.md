@@ -212,6 +212,8 @@ Agent instance versions may also define `mcp_config.servers`.
 
 Agent versions can enable a synchronous model-loop tool shortlist after scope judgement and before the main model call. Existing hard controls still apply first: `tool_config.allowed_tools`, `tool_config.disabled_tools`, admin tool-access rules, MCP tool-access rules, prompt-injection blocking, and `pre_tool` / `post_tool` policy checks.
 
+Duraclaw's built-in shortlist metadata is intentionally domain-neutral. Domain phrases such as personal-assistant reminder wording, commerce terms, or customer-specific process language should live in the agent version's `tool_config.tool_metadata`, not in runtime code.
+
 ```json
 {
   "profile_config": {
@@ -234,6 +236,35 @@ Modes:
 - `llm`: always use the configured router model after authorization.
 
 If `model` is empty, router fallback uses the run's normal `model_config`. Router failures are non-fatal; Duraclaw falls back to the deterministic shortlist and records a `tool_selection.completed` run event.
+
+Tool metadata can add deterministic domain hints without granting access:
+
+```json
+{
+  "tool_config": {
+    "tool_metadata": {
+      "create_reminder": {
+        "tags": ["reminder", "schedule", "alarm"],
+        "trigger_phrases": ["remind me", "ingatkan", "besok", "tomorrow"],
+        "negative_phrases": ["reminder_reference", "change reminder", "update reminder"],
+        "conflicts_with": ["remember", "update_reminder"]
+      },
+      "update_reminder": {
+        "tags": ["reminder", "schedule", "update"],
+        "trigger_phrases": ["reminder_reference", "change reminder", "update reminder", "ubah", "ganti"],
+        "conflicts_with": ["create_reminder", "remember"]
+      },
+      "duraclaw.ask_user": {
+        "tags": ["clarification", "missing_details"],
+        "trigger_phrases": ["tomorrow morning", "besok pagi"],
+        "conflicts_with": ["create_reminder"]
+      }
+    }
+  }
+}
+```
+
+Use this pattern for any domain preset. Keep the generic runtime neutral, then seed each agent with the phrases and conflicts that match its actual purpose.
 
 ## Tool Loop
 

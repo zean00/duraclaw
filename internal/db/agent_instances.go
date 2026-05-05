@@ -485,7 +485,7 @@ func validateToolConfigValues(value any) error {
 			if !ok {
 				return fmt.Errorf("tool_config.tool_metadata.%s must be an object", name)
 			}
-			for _, key := range []string{"tags", "conflicts_with"} {
+			for _, key := range []string{"tags", "trigger_phrases", "negative_phrases", "conflicts_with"} {
 				if raw, ok := meta[key]; ok {
 					if err := validateStringArray("tool_config.tool_metadata."+name+"."+key, raw); err != nil {
 						return err

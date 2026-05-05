@@ -97,6 +97,8 @@ The recommendation input reuses scope judgement context selection:
 - `direct` intent uses only the current user request.
 - `implicit` intent uses the summarized/recent conversation context plus the current request.
 
+Sensitive-product suppression is also profile-specific. `block_sensitive_product_mix` only blocks when both `sensitive_context_terms` and `product_request_terms` are configured; Duraclaw does not ship domain-specific sensitive or commerce keywords as runtime defaults.
+
 Recommendation catalog items and audit logs are customer-scoped through:
 
 - `POST /admin/recommendations/items`
