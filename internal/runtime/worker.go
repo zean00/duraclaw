@@ -713,11 +713,42 @@ func randomHex(bytesLen int) string {
 	return hex.EncodeToString(buf)
 }
 
-func toolCallsForExecution(calls []providers.ToolCall, interleave bool) ([]providers.ToolCall, int) {
-	if !interleave || len(calls) <= 1 {
-		return calls, 0
+func toolCallsForExecution(calls []providers.ToolCall, interleave bool, allowed map[string]bool) ([]providers.ToolCall, int) {
+	filtered := make([]providers.ToolCall, 0, len(calls))
+	suppressed := 0
+	for _, call := range calls {
+		if len(allowed) > 0 && !allowed[call.Function.Name] {
+			suppressed++
+			continue
+		}
+		filtered = append(filtered, call)
 	}
-	return append([]providers.ToolCall(nil), calls[:1]...), len(calls) - 1
+	if len(filtered) == 0 {
+		return nil, suppressed
+	}
+	if !interleave || len(calls) <= 1 {
+		return filtered, suppressed
+	}
+	return append([]providers.ToolCall(nil), filtered[:1]...), suppressed + len(filtered) - 1
+}
+
+func allowedToolCallNames(defs []providers.ToolDefinition, aliases toolAliasSet) map[string]bool {
+	if len(defs) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(defs)*2)
+	for _, def := range defs {
+		name := strings.TrimSpace(def.Function.Name)
+		if name == "" {
+			continue
+		}
+		out[name] = true
+		original := aliases.OriginalName(name)
+		if original != "" {
+			out[original] = true
+		}
+	}
+	return out
 }
 
 func (w *Worker) agentLoopPhase(ctx context.Context, run *db.Run, text string, messages []providers.Message, toolDefs []providers.ToolDefinition) (*providers.LLMResponse, error) {
@@ -764,7 +795,19 @@ func (w *Worker) agentLoopPhase(ctx context.Context, run *db.Run, text string, m
 		if len(resp.ToolCalls) == 0 {
 			break
 		}
-		toolCalls, suppressedToolCalls := toolCallsForExecution(resp.ToolCalls, interleaveToolCalls)
+		configuredAliases, err := w.toolAliasesForRun(ctx, run)
+		if err != nil {
+			return nil, err
+		}
+		toolCalls, suppressedToolCalls := toolCallsForExecution(resp.ToolCalls, interleaveToolCalls, allowedToolCallNames(toolDefs, configuredAliases))
+		if len(toolCalls) == 0 {
+			messages = append(messages, providers.Message{Role: "assistant", Content: resp.Content})
+			if err := w.store.Checkpoint(ctx, run.ID, "tools_suppressed", map[string]any{"model_tool_calls": len(resp.ToolCalls), "suppressed_tool_calls": suppressedToolCalls, "iteration": iteration}); err != nil {
+				return nil, err
+			}
+			w.emitAgentActivity(ctx, run, "tool", "suppressed", map[string]any{"iteration": iteration, "model_tool_calls": len(resp.ToolCalls), "suppressed_tool_calls": suppressedToolCalls})
+			break
+		}
 		toolStepID, err := w.store.StartRunStep(ctx, run.ID, "tool_execution", map[string]any{"tool_calls": len(toolCalls), "model_tool_calls": len(resp.ToolCalls), "suppressed_tool_calls": suppressedToolCalls, "interleaved": interleaveToolCalls && suppressedToolCalls > 0, "iteration": iteration})
 		if err != nil {
 			return nil, err

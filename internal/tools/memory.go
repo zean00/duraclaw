@@ -165,8 +165,9 @@ func (SavePreferenceTool) Parameters() map[string]any {
 			"category":  map[string]any{"type": "string"},
 			"content":   map[string]any{"type": "string"},
 			"condition": map[string]any{"type": "object"},
+			"key":       map[string]any{"type": "string"},
+			"value":     map[string]any{"type": "string"},
 		},
-		"required":             []any{"content"},
 		"additionalProperties": false,
 	}
 }
@@ -180,6 +181,16 @@ func (t SavePreferenceTool) Execute(ctx context.Context, exec ExecutionContext, 
 		category = "general"
 	}
 	content, _ := args["content"].(string)
+	if strings.TrimSpace(content) == "" {
+		content, _ = args["value"].(string)
+	}
+	if key, _ := args["key"].(string); strings.TrimSpace(key) != "" && strings.TrimSpace(category) == "general" {
+		category = normalizePreferenceCategory(key)
+	}
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return ErrorResult("preference content is required")
+	}
 	if isCaptureLikeMemory(category, content) {
 		return ErrorResult("save_preference is only for user preferences. Use the customer's notes/todo/capture tool for notes, ideas, bookmarks, todo lists, place notes, product notes, links, and unscheduled tasks when available.")
 	}
@@ -194,6 +205,22 @@ func (t SavePreferenceTool) Execute(ctx context.Context, exec ExecutionContext, 
 		"preference_reference": ref,
 	})
 	return &Result{ForLLM: string(raw), Artifacts: []Reference{ref}}
+}
+
+func normalizePreferenceCategory(raw string) string {
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	raw = strings.ReplaceAll(raw, "-", "_")
+	raw = strings.ReplaceAll(raw, " ", "_")
+	switch {
+	case raw == "":
+		return "general"
+	case strings.Contains(raw, "address") || strings.Contains(raw, "call") || strings.Contains(raw, "name") || strings.Contains(raw, "panggil"):
+		return "communication_style"
+	case strings.Contains(raw, "style") || strings.Contains(raw, "format") || strings.Contains(raw, "tone") || strings.Contains(raw, "communication"):
+		return "communication_style"
+	default:
+		return raw
+	}
 }
 
 func memoryReference(exec ExecutionContext, id, memoryType, content string) Reference {

@@ -10,6 +10,7 @@ import (
 
 type fakeMemoryStore struct {
 	addedContent    string
+	addedCategory   string
 	addedPreference string
 	addedCondition  map[string]any
 	memories        []db.Memory
@@ -25,7 +26,8 @@ func (s *fakeMemoryStore) ListMemories(context.Context, string, string, int) ([]
 	return s.memories, nil
 }
 
-func (s *fakeMemoryStore) AddPreference(_ context.Context, _, _, _, _ string, content string, condition, _ any) (string, error) {
+func (s *fakeMemoryStore) AddPreference(_ context.Context, _, _, _, category string, content string, condition, _ any) (string, error) {
+	s.addedCategory = category
 	s.addedPreference = content
 	s.addedCondition, _ = condition.(map[string]any)
 	return "pref-1", nil
@@ -77,6 +79,20 @@ func TestSavePreferenceTool(t *testing.T) {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("description missing %q: %s", want, desc)
 		}
+	}
+}
+
+func TestSavePreferenceToolAcceptsLegacyKeyValueArgs(t *testing.T) {
+	store := &fakeMemoryStore{}
+	res := (SavePreferenceTool{Store: store}).Execute(context.Background(), ExecutionContext{CustomerID: "c", UserID: "u"}, map[string]any{
+		"key":   "address_format",
+		"value": "panggil dengan \"Yang Mulia\"",
+	})
+	if res.IsError || store.addedPreference != "panggil dengan \"Yang Mulia\"" {
+		t.Fatalf("res=%#v store=%#v", res, store)
+	}
+	if store.addedCategory != "communication_style" {
+		t.Fatalf("category=%q", store.addedCategory)
 	}
 }
 

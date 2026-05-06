@@ -103,7 +103,7 @@ func TestToolCallsForExecutionInterleavesFirstCallOnly(t *testing.T) {
 		{ID: "call-3", Function: providers.FunctionCall{Name: "third"}},
 	}
 
-	got, suppressed := toolCallsForExecution(calls, true)
+	got, suppressed := toolCallsForExecution(calls, true, nil)
 	if suppressed != 2 {
 		t.Fatalf("suppressed=%d", suppressed)
 	}
@@ -111,9 +111,24 @@ func TestToolCallsForExecutionInterleavesFirstCallOnly(t *testing.T) {
 		t.Fatalf("got=%#v", got)
 	}
 
-	batched, suppressed := toolCallsForExecution(calls, false)
+	batched, suppressed := toolCallsForExecution(calls, false, nil)
 	if suppressed != 0 || len(batched) != len(calls) {
 		t.Fatalf("batched=%#v suppressed=%d", batched, suppressed)
+	}
+}
+
+func TestToolCallsForExecutionSuppressesUnavailableTools(t *testing.T) {
+	calls := []providers.ToolCall{
+		{ID: "call-1", Function: providers.FunctionCall{Name: "save_preference"}},
+		{ID: "call-2", Function: providers.FunctionCall{Name: "list_memories"}},
+	}
+
+	got, suppressed := toolCallsForExecution(calls, false, map[string]bool{"list_memories": true})
+	if suppressed != 1 {
+		t.Fatalf("suppressed=%d", suppressed)
+	}
+	if len(got) != 1 || got[0].Function.Name != "list_memories" {
+		t.Fatalf("got=%#v", got)
 	}
 }
 
