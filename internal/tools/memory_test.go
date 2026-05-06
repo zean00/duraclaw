@@ -80,6 +80,18 @@ func TestSavePreferenceTool(t *testing.T) {
 	}
 }
 
+func TestPersistenceToolsRejectCaptureLikeContent(t *testing.T) {
+	store := &fakeMemoryStore{}
+	mem := (RememberTool{Store: store}).Execute(context.Background(), ExecutionContext{CustomerID: "c", UserID: "u"}, map[string]any{"content": "catet ada bakso enak di Jalan Magelang"})
+	if !mem.IsError || store.addedContent != "" {
+		t.Fatalf("memory should reject capture-like content: res=%#v store=%#v", mem, store)
+	}
+	pref := (SavePreferenceTool{Store: store}).Execute(context.Background(), ExecutionContext{CustomerID: "c", UserID: "u"}, map[string]any{"content": "bookmark repo go-qris"})
+	if !pref.IsError || store.addedPreference != "" {
+		t.Fatalf("preference should reject capture-like content: res=%#v store=%#v", pref, store)
+	}
+}
+
 func TestListPreferencesTool(t *testing.T) {
 	store := &fakeMemoryStore{preferences: []db.Preference{{Category: "food", Content: "hot chocolate", Condition: []byte(`{"season":"winter"}`)}}}
 	res := (ListPreferencesTool{Store: store}).Execute(context.Background(), ExecutionContext{CustomerID: "c", UserID: "u"}, nil)

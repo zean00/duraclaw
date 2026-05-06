@@ -77,7 +77,7 @@ func isReminderLikeMemory(memoryType, content string) bool {
 func isCaptureLikeMemory(memoryType, content string) bool {
 	text := strings.TrimSpace(memoryType + " " + content)
 	lowerText := strings.ToLower(text)
-	for _, token := range []string{"note", "notes", "catatan", "catat", "bookmark", "todo", "idea"} {
+	for _, token := range []string{"note", "notes", "catatan", "catat", "catet", "bookmark", "todo", "idea"} {
 		if containsWholeWord(lowerText, token) {
 			return true
 		}
@@ -129,7 +129,7 @@ type SavePreferenceTool struct {
 
 func (SavePreferenceTool) Name() string { return "save_preference" }
 func (SavePreferenceTool) Description() string {
-	return "Persist a user preference and return a preference reference artifact. Use this when the user asks you to remember, save, store, note, or record their preferences, choices, response style, format, habits, likes/dislikes, or conditional preferences. Do not merely say the preference was saved; call this tool so the response can include a preference_reference artifact."
+	return "Persist a user preference and return a preference reference artifact. Use this only for preferences, choices, response style, format, habits, likes/dislikes, or conditional preferences about how the user wants to be helped. Do not use for generic notes, ideas, bookmarks, todo lists, unscheduled tasks, or place/product/link notes; use a customer notes/todo/capture tool when available. Do not merely say the preference was saved; call this tool so the response can include a preference_reference artifact."
 }
 func (SavePreferenceTool) Retryable() bool { return false }
 func (SavePreferenceTool) Parameters() map[string]any {
@@ -153,6 +153,9 @@ func (t SavePreferenceTool) Execute(ctx context.Context, exec ExecutionContext, 
 		category = "general"
 	}
 	content, _ := args["content"].(string)
+	if isCaptureLikeMemory(category, content) {
+		return ErrorResult("save_preference is only for user preferences. Use the customer's notes/todo/capture tool for notes, ideas, bookmarks, todo lists, place notes, product notes, links, and unscheduled tasks when available.")
+	}
 	condition, _ := args["condition"].(map[string]any)
 	id, err := t.Store.AddPreference(ctx, exec.CustomerID, exec.UserID, exec.SessionID, category, content, condition, map[string]any{"run_id": exec.RunID})
 	if err != nil {
