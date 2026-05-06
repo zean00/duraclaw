@@ -17,6 +17,13 @@ type fakeReminderStore struct {
 	updateSub *db.ReminderSubscription
 }
 
+func stringPtrValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
 func (s *fakeReminderStore) CreateReminderSubscription(_ context.Context, spec db.ReminderSubscriptionSpec) (*db.ReminderSubscription, error) {
 	s.spec = spec
 	return &db.ReminderSubscription{
@@ -25,6 +32,7 @@ func (s *fakeReminderStore) CreateReminderSubscription(_ context.Context, spec d
 		UserID:                spec.UserID,
 		SessionID:             spec.SessionID,
 		AgentInstanceID:       spec.AgentInstanceID,
+		ChannelType:           spec.ChannelType,
 		Title:                 spec.Title,
 		Schedule:              spec.Schedule,
 		Timezone:              "UTC",
@@ -64,6 +72,7 @@ func (s *fakeReminderStore) UpdateUserReminderSubscription(_ context.Context, id
 		UserID:          userID,
 		SessionID:       "s1",
 		AgentInstanceID: "a1",
+		ChannelType:     stringPtrValue(update.ChannelType),
 		Title:           title,
 		Schedule:        schedule,
 		Timezone:        timezone,
@@ -77,10 +86,11 @@ func TestCreateReminderToolReturnsReferenceArtifact(t *testing.T) {
 	result := (CreateReminderTool{Store: store}).Execute(context.Background(), ExecutionContext{
 		CustomerID: "c1", UserID: "u1", SessionID: "s1", AgentInstanceID: "a1", RunID: "run-1", RequestID: "req-1",
 	}, map[string]any{
-		"title":       "standup",
-		"schedule":    "@once",
-		"next_run_at": "2030-01-01T09:00:00Z",
-		"payload":     map[string]any{"message": "standup"},
+		"title":        "standup",
+		"schedule":     "@once",
+		"channel_type": "webchat",
+		"next_run_at":  "2030-01-01T09:00:00Z",
+		"payload":      map[string]any{"message": "standup"},
 	})
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.ForLLM)
@@ -92,13 +102,13 @@ func TestCreateReminderToolReturnsReferenceArtifact(t *testing.T) {
 	if ref.Type != "reminder_reference" || ref.ID != "rem-1" {
 		t.Fatalf("ref=%#v", ref)
 	}
-	if ref.Data["subscription_id"] != "rem-1" || !strings.Contains(ref.Data["delete_api"].(string), "/acp/reminders/rem-1") {
+	if ref.Data["subscription_id"] != "rem-1" || ref.Data["channel_type"] != "webchat" || !strings.Contains(ref.Data["delete_api"].(string), "/acp/reminders/rem-1") {
 		t.Fatalf("ref data=%#v", ref.Data)
 	}
 	if !strings.Contains(result.ForLLM, `"reminder_reference"`) || !strings.Contains(result.ForLLM, `"subscription_id":"rem-1"`) {
 		t.Fatalf("for_llm=%s", result.ForLLM)
 	}
-	if store.spec.CustomerID != "c1" || store.spec.UserID != "u1" || store.spec.NextRunAt.IsZero() {
+	if store.spec.CustomerID != "c1" || store.spec.UserID != "u1" || store.spec.ChannelType != "webchat" || store.spec.NextRunAt.IsZero() {
 		t.Fatalf("spec=%#v", store.spec)
 	}
 }
@@ -206,12 +216,13 @@ func TestUpdateReminderToolReturnsReferenceArtifact(t *testing.T) {
 		"title":           "buy eggs",
 		"schedule":        "@once",
 		"timezone":        "Asia/Jakarta",
+		"channel_type":    "telegram",
 		"next_run_at":     "2030-01-01T08:00:00+07:00",
 	})
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.ForLLM)
 	}
-	if store.updateID != "rem-1" || store.update.Title == nil || *store.update.Title != "buy eggs" || store.update.NextRunAt == nil {
+	if store.updateID != "rem-1" || store.update.Title == nil || *store.update.Title != "buy eggs" || store.update.ChannelType == nil || *store.update.ChannelType != "telegram" || store.update.NextRunAt == nil {
 		t.Fatalf("updateID=%q update=%#v", store.updateID, store.update)
 	}
 	if len(result.Artifacts) != 1 || result.Artifacts[0].Type != "reminder_reference" || result.Artifacts[0].ID != "rem-1" {

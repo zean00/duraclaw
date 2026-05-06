@@ -98,7 +98,7 @@ Outbound:
 
 - `POST /acp/outbound-intents/{intent_id}/status`
 
-See [Reminders, Scheduler Jobs, And Background Runs](../concepts/reminders-jobs.md) for payloads and user-scoping rules.
+Reminder create/update payloads accept optional `channel_type`. Omit it to let Nexus fan out due reminders to all active channel sessions mapped to the ACP session; set it to deliver only to that channel. See [Reminders, Scheduler Jobs, And Background Runs](../concepts/reminders-jobs.md) for full payloads and user-scoping rules.
 
 ## Run Input
 
@@ -369,7 +369,9 @@ Single endpoint payload is the stored outbound outbox payload:
   "outbound_intent_id": "intent-1",
   "customer_id": "customer-1",
   "user_id": "user-1",
+  "acp_session_id": "session-1",
   "session_id": "session-1",
+  "channel_type": "webchat",
   "run_id": "intent-1",
   "durable_run_id": "run-1",
   "intent_type": "assistant_message",
@@ -378,6 +380,8 @@ Single endpoint payload is the stored outbound outbox payload:
   }
 }
 ```
+
+`acp_session_id` is the Duraclaw session ID Nexus should resolve to one or more Nexus channel sessions. `session_id` is still sent as a temporary compatibility alias, but Nexus treats it as an ACP session ID rather than a Nexus internal session ID. By default Nexus fans out to all mapped Nexus sessions for that ACP session; when an outbound payload includes non-empty `channel_type`, Nexus should deliver only to mapped sessions for that channel and report channel availability in its response.
 
 `run_id` is intentionally unique per outbound intent for Nexus delivery idempotency. The original Duraclaw durable run is preserved as `durable_run_id`.
 
@@ -394,7 +398,9 @@ Bulk endpoint payload, enabled by `NEXUS_OUTBOUND_BULK_URL`:
         "outbound_intent_id": "intent-1",
         "customer_id": "customer-1",
         "user_id": "user-1",
+        "acp_session_id": "session-1",
         "session_id": "session-1",
+        "channel_type": "webchat",
         "intent_type": "broadcast",
         "payload": {}
       }

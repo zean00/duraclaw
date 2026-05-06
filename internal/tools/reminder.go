@@ -38,6 +38,7 @@ func (CreateReminderTool) Parameters() map[string]any {
 			"title":                   map[string]any{"type": "string", "description": "Human-readable reminder text, for example 'bawa tas hitam ke sekolah anak'."},
 			"schedule":                map[string]any{"type": "string", "description": "Cron expression, @once, or @interval. Use @once for a single future reminder. Use @interval with repeat_interval_seconds for fixed-interval recurring reminders."},
 			"timezone":                map[string]any{"type": "string", "description": "User timezone when known, for example Asia/Jakarta."},
+			"channel_type":            map[string]any{"type": "string", "description": "Optional preferred delivery channel, for example webchat, whatsapp, telegram, or email. Omit to deliver on all active channels for the same session."},
 			"payload":                 map[string]any{"type": "object", "description": "Optional run input for the future reminder. Omit when title is enough; the scheduler will use the title as reminder text."},
 			"next_run_at":             map[string]any{"type": "string", "description": "RFC3339 due time. Required for @once; optional for cron schedules. Example: tomorrow 7 AM converted to an absolute timestamp."},
 			"repeat_interval_seconds": map[string]any{"type": "integer", "description": "Optional fixed repeat interval in seconds for @interval reminders, for example 28800 for every 8 hours."},
@@ -86,6 +87,7 @@ func (t CreateReminderTool) Execute(ctx context.Context, exec ExecutionContext, 
 		UserID:                exec.UserID,
 		SessionID:             exec.SessionID,
 		AgentInstanceID:       exec.AgentInstanceID,
+		ChannelType:           stringArg(args, "channel_type"),
 		Title:                 stringArg(args, "title"),
 		Schedule:              scheduleText,
 		Timezone:              stringArg(args, "timezone"),
@@ -130,6 +132,7 @@ func (UpdateReminderTool) Parameters() map[string]any {
 			"title":                   map[string]any{"type": "string", "description": "Updated human-readable reminder text."},
 			"schedule":                map[string]any{"type": "string", "description": "Updated cron expression, @once, or @interval."},
 			"timezone":                map[string]any{"type": "string", "description": "Updated user timezone when known, for example Asia/Jakarta."},
+			"channel_type":            map[string]any{"type": "string", "description": "Updated preferred delivery channel. Use empty string to clear the channel preference and deliver on all active channels."},
 			"payload":                 map[string]any{"type": "object", "description": "Updated future reminder run input."},
 			"next_run_at":             map[string]any{"type": "string", "description": "Updated RFC3339 due time. Required when schedule is @once."},
 			"repeat_interval_seconds": map[string]any{"type": "integer", "description": "Updated fixed repeat interval in seconds for @interval reminders. Must be positive while schedule is @interval."},
@@ -201,6 +204,10 @@ func (t UpdateReminderTool) Execute(ctx context.Context, exec ExecutionContext, 
 	}
 	if value := strings.TrimSpace(stringArg(args, "timezone")); value != "" {
 		update.Timezone = &value
+	}
+	if _, ok := args["channel_type"]; ok {
+		value := strings.TrimSpace(stringArg(args, "channel_type"))
+		update.ChannelType = &value
 	}
 	if payload, ok := args["payload"]; ok {
 		update.Payload = payload
@@ -291,6 +298,9 @@ func reminderReference(exec ExecutionContext, sub *db.ReminderSubscription) Refe
 		"admin_pause_api":    "PATCH /admin/reminders/subscriptions/" + sub.ID,
 		"admin_resume_api":   "PATCH /admin/reminders/subscriptions/" + sub.ID,
 		"current_request_id": exec.RequestID,
+	}
+	if strings.TrimSpace(sub.ChannelType) != "" {
+		data["channel_type"] = sub.ChannelType
 	}
 	if sub.RepeatIntervalSeconds > 0 {
 		data["repeat_interval_seconds"] = sub.RepeatIntervalSeconds

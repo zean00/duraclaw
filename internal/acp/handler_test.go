@@ -476,6 +476,18 @@ func TestUpdateReminderSubscriptionRequiresEnabled(t *testing.T) {
 	}
 }
 
+func TestAdminUpdateReminderSubscriptionValidatesSchedule(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPatch, "/admin/reminders/subscriptions/sub-1", strings.NewReader(`{"customer_id":"c","user_id":"u","schedule":"not cron","next_run_at":"2030-01-01T00:00:00Z"}`))
+	rec := httptest.NewRecorder()
+	NewHandler(nil).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "expected exactly 5 fields") {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+}
+
 func TestListUserReminderSubscriptionsRequiresUserScope(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/acp/reminders?customer_id=c", nil)
 	rec := httptest.NewRecorder()

@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -36,7 +37,7 @@ func TestServiceReminderFanoutPostgres(t *testing.T) {
 	fireAt := time.Unix(1, 0).UTC()
 	_, err := store.CreateReminderSubscription(ctx, db.ReminderSubscriptionSpec{
 		CustomerID: customerID, UserID: "u", SessionID: "s", AgentInstanceID: "a", Title: "wake", Schedule: "@once", NextRunAt: fireAt,
-		Payload: map[string]any{"text": "scheduled wake"},
+		ChannelType: "webchat", Payload: map[string]any{"text": "scheduled wake"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -58,6 +59,9 @@ func TestServiceReminderFanoutPostgres(t *testing.T) {
 	}
 	if run.AgentInstanceID != "a" || run.State != "queued" {
 		t.Fatalf("run=%#v", run)
+	}
+	if !strings.Contains(string(run.Input), `"channel_type":"webchat"`) {
+		t.Fatalf("expected reminder channel preference in run input: %s", string(run.Input))
 	}
 	subs, err := store.ListReminderSubscriptions(ctx, customerID, "u", 10)
 	if err != nil {

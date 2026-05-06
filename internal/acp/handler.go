@@ -989,6 +989,7 @@ func (h *Handler) createReminderSubscription(w http.ResponseWriter, r *http.Requ
 		UserID                string         `json:"user_id"`
 		SessionID             string         `json:"session_id"`
 		AgentInstanceID       string         `json:"agent_instance_id"`
+		ChannelType           string         `json:"channel_type"`
 		Title                 string         `json:"title"`
 		Schedule              string         `json:"schedule"`
 		Timezone              string         `json:"timezone"`
@@ -1037,7 +1038,7 @@ func (h *Handler) createReminderSubscription(w http.ResponseWriter, r *http.Requ
 	}
 	sub, err := h.store.CreateReminderSubscription(r.Context(), db.ReminderSubscriptionSpec{
 		CustomerID: payload.CustomerID, UserID: payload.UserID, SessionID: payload.SessionID, AgentInstanceID: payload.AgentInstanceID,
-		Title: payload.Title, Schedule: payload.Schedule, Timezone: payload.Timezone, Payload: payload.Payload, NextRunAt: payload.NextRunAt,
+		ChannelType: payload.ChannelType, Title: payload.Title, Schedule: payload.Schedule, Timezone: payload.Timezone, Payload: payload.Payload, NextRunAt: payload.NextRunAt,
 		RepeatIntervalSeconds: payload.RepeatIntervalSeconds, RepeatUntil: payload.RepeatUntil, RepeatCount: payload.RepeatCount, Metadata: payload.Metadata,
 	})
 	if err != nil {
@@ -1063,15 +1064,70 @@ func (h *Handler) listReminderSubscriptions(w http.ResponseWriter, r *http.Reque
 
 func (h *Handler) updateReminderSubscription(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
-		CustomerID string `json:"customer_id"`
-		Enabled    *bool  `json:"enabled"`
+		CustomerID            string         `json:"customer_id"`
+		UserID                string         `json:"user_id"`
+		Title                 *string        `json:"title"`
+		Schedule              *string        `json:"schedule"`
+		Timezone              *string        `json:"timezone"`
+		ChannelType           *string        `json:"channel_type"`
+		Payload               map[string]any `json:"payload"`
+		NextRunAt             time.Time      `json:"next_run_at"`
+		RepeatIntervalSeconds *int           `json:"repeat_interval_seconds"`
+		RepeatUntil           *time.Time     `json:"repeat_until"`
+		RepeatCount           *int           `json:"repeat_count"`
+		FiredCount            *int           `json:"fired_count"`
+		Metadata              map[string]any `json:"metadata"`
+		Enabled               *bool          `json:"enabled"`
 	}
 	if err := decodeJSON(w, r, &payload); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if payload.CustomerID == "" || payload.Enabled == nil || r.PathValue("subscription_id") == "" {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("subscription_id, customer_id, and enabled are required"))
+	if payload.CustomerID == "" || r.PathValue("subscription_id") == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("subscription_id and customer_id are required"))
+		return
+	}
+	if payload.UserID != "" || payload.Title != nil || payload.Schedule != nil || payload.Timezone != nil || payload.ChannelType != nil || payload.Payload != nil || !payload.NextRunAt.IsZero() || payload.RepeatIntervalSeconds != nil || payload.RepeatUntil != nil || payload.RepeatCount != nil || payload.FiredCount != nil || payload.Metadata != nil {
+		if payload.UserID == "" {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("user_id is required when updating reminder fields"))
+			return
+		}
+		if !validateReminderScheduleUpdate(w, payload.Schedule, &payload.NextRunAt, payload.RepeatIntervalSeconds) {
+			return
+		}
+		if payload.RepeatIntervalSeconds != nil && *payload.RepeatIntervalSeconds < 0 {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("repeat_interval_seconds must be non-negative"))
+			return
+		}
+		if payload.RepeatCount != nil && *payload.RepeatCount < 0 {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("repeat_count must be non-negative"))
+			return
+		}
+		if payload.FiredCount != nil && *payload.FiredCount < 0 {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("fired_count must be non-negative"))
+			return
+		}
+		if payload.RepeatUntil != nil && !payload.NextRunAt.IsZero() && !payload.RepeatUntil.After(payload.NextRunAt) {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("repeat_until must be after next_run_at"))
+			return
+		}
+		var nextRunAt *time.Time
+		if !payload.NextRunAt.IsZero() {
+			nextRunAt = &payload.NextRunAt
+		}
+		sub, err := h.store.UpdateUserReminderSubscription(r.Context(), r.PathValue("subscription_id"), payload.CustomerID, payload.UserID, db.ReminderSubscriptionUpdate{
+			Title: payload.Title, Schedule: payload.Schedule, Timezone: payload.Timezone, ChannelType: payload.ChannelType,
+			Payload: payload.Payload, NextRunAt: nextRunAt, RepeatIntervalSeconds: payload.RepeatIntervalSeconds, RepeatUntil: payload.RepeatUntil, RepeatCount: payload.RepeatCount, FiredCount: payload.FiredCount, Metadata: payload.Metadata, Enabled: payload.Enabled,
+		})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, sub)
+		return
+	}
+	if payload.Enabled == nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("enabled is required when no reminder fields are updated"))
 		return
 	}
 	if err := h.store.SetReminderSubscriptionEnabled(r.Context(), r.PathValue("subscription_id"), payload.CustomerID, *payload.Enabled); err != nil {
@@ -1106,6 +1162,7 @@ func (h *Handler) updateUserReminderSubscription(w http.ResponseWriter, r *http.
 		Title                 *string        `json:"title"`
 		Schedule              *string        `json:"schedule"`
 		Timezone              *string        `json:"timezone"`
+		ChannelType           *string        `json:"channel_type"`
 		Payload               map[string]any `json:"payload"`
 		NextRunAt             time.Time      `json:"next_run_at"`
 		RepeatIntervalSeconds *int           `json:"repeat_interval_seconds"`
@@ -1127,25 +1184,8 @@ func (h *Handler) updateUserReminderSubscription(w http.ResponseWriter, r *http.
 		return
 	}
 	if payload.Schedule != nil {
-		schedule := strings.TrimSpace(*payload.Schedule)
-		if schedule == "" {
-			writeError(w, http.StatusBadRequest, fmt.Errorf("schedule cannot be empty"))
+		if !validateReminderScheduleUpdate(w, payload.Schedule, &payload.NextRunAt, payload.RepeatIntervalSeconds) {
 			return
-		}
-		payload.Schedule = &schedule
-		if schedule != "@interval" {
-			if _, err := scheduler.Next(schedule, time.Now().UTC()); err != nil {
-				writeError(w, http.StatusBadRequest, err)
-				return
-			}
-		}
-		if schedule == "@interval" && (payload.RepeatIntervalSeconds == nil || *payload.RepeatIntervalSeconds <= 0) {
-			writeError(w, http.StatusBadRequest, fmt.Errorf("repeat_interval_seconds is required for @interval reminders"))
-			return
-		}
-		if schedule != "@interval" && payload.NextRunAt.IsZero() {
-			next, _ := scheduler.Next(schedule, time.Now().UTC())
-			payload.NextRunAt = next
 		}
 	}
 	if payload.RepeatIntervalSeconds != nil && *payload.RepeatIntervalSeconds < 0 {
@@ -1170,13 +1210,41 @@ func (h *Handler) updateUserReminderSubscription(w http.ResponseWriter, r *http.
 	}
 	sub, err := h.store.UpdateUserReminderSubscription(r.Context(), r.PathValue("subscription_id"), payload.CustomerID, payload.UserID, db.ReminderSubscriptionUpdate{
 		Title: payload.Title, Schedule: payload.Schedule, Timezone: payload.Timezone,
-		Payload: payload.Payload, NextRunAt: nextRunAt, RepeatIntervalSeconds: payload.RepeatIntervalSeconds, RepeatUntil: payload.RepeatUntil, RepeatCount: payload.RepeatCount, FiredCount: payload.FiredCount, Metadata: payload.Metadata, Enabled: payload.Enabled,
+		ChannelType: payload.ChannelType, Payload: payload.Payload, NextRunAt: nextRunAt, RepeatIntervalSeconds: payload.RepeatIntervalSeconds, RepeatUntil: payload.RepeatUntil, RepeatCount: payload.RepeatCount, FiredCount: payload.FiredCount, Metadata: payload.Metadata, Enabled: payload.Enabled,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, sub)
+}
+
+func validateReminderScheduleUpdate(w http.ResponseWriter, schedule *string, nextRunAt *time.Time, repeatIntervalSeconds *int) bool {
+	if schedule == nil {
+		return true
+	}
+	value := strings.TrimSpace(*schedule)
+	if value == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("schedule cannot be empty"))
+		return false
+	}
+	*schedule = value
+	if value == "@interval" {
+		if repeatIntervalSeconds == nil || *repeatIntervalSeconds <= 0 {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("repeat_interval_seconds is required for @interval reminders"))
+			return false
+		}
+		return true
+	}
+	next, err := scheduler.Next(value, time.Now().UTC())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return false
+	}
+	if nextRunAt != nil && nextRunAt.IsZero() {
+		*nextRunAt = next
+	}
+	return true
 }
 
 func (h *Handler) deleteUserReminderSubscription(w http.ResponseWriter, r *http.Request) {

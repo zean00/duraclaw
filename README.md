@@ -104,6 +104,8 @@ NEXUS_OUTBOUND_URL=http://nexus.internal/acp/outbound
 NEXUS_TOKEN=...
 ```
 
+Outbound payloads include `acp_session_id` plus a legacy `session_id` alias. Nexus should resolve that ACP session to all mapped channel sessions by default. Duraclaw only includes `channel_type` when a specific channel is requested.
+
 `/readyz` reports `outbox_pending`, `outbox_unclaimed`, `outbox_claimed`, and `outbox_stale`. If local validation creates outbound rows but Nexus does not receive them, check these fields and the `outbox delivery failed` logs to confirm the outbox worker is running with the Nexus sink and not waiting on a claim lease.
 
 Artifact processing defaults to the built-in mock processor. To use an HTTP processor for transcription, OCR, document extraction, or other media representation work:
@@ -325,10 +327,12 @@ Duraclaw exposes both admin-scoped and ACP user-scoped APIs for reminders, cron/
 
 Reminder subscriptions are durable cron-like subscriptions. Use `schedule` with a cron expression, `@once`, or `@interval`; when `next_run_at` is omitted for cron schedules, Duraclaw computes the next fire time from `schedule`. Bounded `@interval` reminders require positive `repeat_interval_seconds` and can stop with `repeat_until` or `repeat_count`.
 
-- `POST /acp/reminders` creates a user reminder subscription. Body fields: `customer_id`, `user_id`, `session_id`, `agent_instance_id`, `title`, `schedule`, `timezone`, `payload`, optional `next_run_at`, `repeat_interval_seconds`, `repeat_until`, `repeat_count`, and `metadata`.
+- `POST /acp/reminders` creates a user reminder subscription. Body fields: `customer_id`, `user_id`, `session_id`, `agent_instance_id`, `title`, `schedule`, `timezone`, `payload`, optional `channel_type`, `next_run_at`, `repeat_interval_seconds`, `repeat_until`, `repeat_count`, and `metadata`.
 - `GET /acp/reminders?customer_id={customer_id}&user_id={user_id}&limit=100` lists that user's reminders.
-- `PATCH /acp/reminders/{subscription_id}` updates user-owned reminder fields: `title`, `schedule`, `timezone`, `payload`, `next_run_at`, `repeat_interval_seconds`, `repeat_until`, `repeat_count`, `fired_count`, `metadata`, and `enabled`.
+- `PATCH /acp/reminders/{subscription_id}` updates user-owned reminder fields: `title`, `schedule`, `timezone`, `channel_type`, `payload`, `next_run_at`, `repeat_interval_seconds`, `repeat_until`, `repeat_count`, `fired_count`, `metadata`, and `enabled`.
 - `DELETE /acp/reminders/{subscription_id}?customer_id={customer_id}&user_id={user_id}` deletes a user-owned reminder.
+
+When `channel_type` is omitted, a due reminder is delivered to every active Nexus channel mapped to the same ACP session. When `channel_type` is set, Duraclaw includes it in the outbound intent so Nexus delivers only to that channel and reports whether that channel is available. Empty `channel_type` is treated as omitted.
 
 Scheduler jobs are lower-level durable run triggers for one-time or recurring work, including research/background jobs. The scheduler creates runs from the stored `input` when the job fires.
 
@@ -349,7 +353,7 @@ Background runs are durable runs created for long-running or asynchronous work. 
 
 Admin routes provide customer-wide management for the same primitives:
 
-- `POST /admin/reminders/subscriptions`, `GET /admin/reminders/subscriptions`, `PATCH /admin/reminders/subscriptions/{subscription_id}`
+- `POST /admin/reminders/subscriptions`, `GET /admin/reminders/subscriptions`, `PATCH /admin/reminders/subscriptions/{subscription_id}`. Admin patch still supports simple pause/resume with `customer_id` plus `enabled`; updating fields such as `channel_type` also requires `user_id`.
 - `POST /admin/scheduler/jobs`, `GET /admin/scheduler/jobs`, `PATCH /admin/scheduler/jobs/{job_id}`
 - `POST /admin/shared-scheduler/jobs`, `GET /admin/shared-scheduler/jobs`, `PATCH /admin/shared-scheduler/jobs/{job_id}`, `DELETE /admin/shared-scheduler/jobs/{job_id}`
 - `GET /admin/background-runs`

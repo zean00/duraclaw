@@ -885,11 +885,12 @@ func (w *Worker) emitFinalOutbound(ctx context.Context, run *db.Run, messageID, 
 		artifacts = append(artifacts, delegationArtifacts...)
 	}
 	_, _, err := w.outbound.Emit(ctx, outbound.Intent{
-		CustomerID: run.CustomerID,
-		UserID:     run.UserID,
-		SessionID:  run.SessionID,
-		RunID:      run.ID,
-		Type:       "message",
+		CustomerID:  run.CustomerID,
+		UserID:      run.UserID,
+		SessionID:   run.SessionID,
+		RunID:       run.ID,
+		Type:        "message",
+		ChannelType: outboundChannelTypeFromRunInput(run.Input),
 		Payload: map[string]any{
 			"message_id": messageID,
 			"text":       text,
@@ -898,6 +899,25 @@ func (w *Worker) emitFinalOutbound(ctx context.Context, run *db.Run, messageID, 
 		},
 	})
 	return err
+}
+
+func outboundChannelTypeFromRunInput(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return ""
+	}
+	if channel, _ := payload["channel_type"].(string); strings.TrimSpace(channel) != "" {
+		return strings.ToLower(strings.TrimSpace(channel))
+	}
+	if delivery, _ := payload["delivery"].(map[string]any); delivery != nil {
+		if channel, _ := delivery["channel_type"].(string); strings.TrimSpace(channel) != "" {
+			return strings.ToLower(strings.TrimSpace(channel))
+		}
+	}
+	return ""
 }
 
 func (w *Worker) emitTypingOutbound(ctx context.Context, run *db.Run, reason string) {

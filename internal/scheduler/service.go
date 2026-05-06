@@ -420,6 +420,9 @@ func (s *Service) runReminderSubscriptions(ctx context.Context, now time.Time) (
 			"schedule":        sub.Schedule,
 			"timezone":        sub.Timezone,
 		}
+		if strings.TrimSpace(sub.ChannelType) != "" {
+			input["channel_type"] = strings.ToLower(strings.TrimSpace(sub.ChannelType))
+		}
 		input["instruction"] = instruction
 		input["text"] = dueReminderPromptText(instruction, reminderText, sub, fireAt)
 		if _, err := s.store.CreateRun(ctx, db.ACPContext{

@@ -9,12 +9,13 @@ import (
 )
 
 type Intent struct {
-	CustomerID string         `json:"customer_id"`
-	UserID     string         `json:"user_id"`
-	SessionID  string         `json:"session_id"`
-	RunID      string         `json:"run_id,omitempty"`
-	Type       string         `json:"intent_type"`
-	Payload    map[string]any `json:"payload"`
+	CustomerID  string         `json:"customer_id"`
+	UserID      string         `json:"user_id"`
+	SessionID   string         `json:"session_id"`
+	RunID       string         `json:"run_id,omitempty"`
+	Type        string         `json:"intent_type"`
+	ChannelType string         `json:"channel_type,omitempty"`
+	Payload     map[string]any `json:"payload"`
 }
 
 type Store interface {
@@ -43,11 +44,12 @@ func (s *Service) Emit(ctx context.Context, intent Intent) (string, int64, error
 		runID = &intent.RunID
 	}
 	return s.store.CreateOutboundIntent(ctx, db.OutboundIntent{
-		CustomerID: intent.CustomerID,
-		UserID:     intent.UserID,
-		SessionID:  intent.SessionID,
-		RunID:      runID,
-		Type:       intent.Type,
-		Payload:    payload,
+		CustomerID:  intent.CustomerID,
+		UserID:      intent.UserID,
+		SessionID:   intent.SessionID,
+		RunID:       runID,
+		Type:        intent.Type,
+		ChannelType: intent.ChannelType,
+		Payload:     payload,
 	})
 }

@@ -293,6 +293,8 @@ NEXUS_TOKEN=...
 
 If `NEXUS_OUTBOUND_BULK_URL` is configured, the outbox worker groups claimed outbound rows by topic and posts a batch payload. Without it, Duraclaw posts one outbound intent per request to `NEXUS_OUTBOUND_URL`.
 
+Outbound payloads include `acp_session_id` and a legacy `session_id` alias for compatibility. Nexus should treat both as the Duraclaw ACP session ID, fan out to every mapped Nexus channel session by default, and honor `channel_type` only when Duraclaw or an external caller needs channel-specific delivery. Duraclaw omits `channel_type` for channel-neutral outbound intents; empty channel values should be treated as omitted. Reminder subscriptions use the same mechanism: omit `channel_type` for all active channels on the ACP session, or set it for a channel-specific reminder.
+
 Delivery failures are logged by the outbox worker and released for retry. `/readyz` exposes `outbox_pending`, `outbox_unclaimed`, `outbox_claimed`, and `outbox_stale`; use these fields to detect a stopped worker, stuck sink call, or expired claim lease during local Nexus validation.
 
 ## Session Monitor

@@ -25,7 +25,8 @@ func (outboxPayloadMatcher) Match(v any) bool {
 	}
 	return payload["outbound_intent_id"] == "intent-1" &&
 		payload["run_id"] == "intent-1" &&
-		payload["durable_run_id"] == "run-1"
+		payload["durable_run_id"] == "run-1" &&
+		payload["channel_type"] == nil
 }
 
 func newMockStore(t *testing.T) (*Store, pgxmock.PgxPoolIface) {

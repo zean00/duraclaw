@@ -10,17 +10,18 @@ import (
 )
 
 type OutboundIntent struct {
-	ID         string          `json:"id"`
-	CustomerID string          `json:"customer_id"`
-	UserID     string          `json:"user_id"`
-	SessionID  string          `json:"session_id"`
-	RunID      *string         `json:"run_id,omitempty"`
-	Type       string          `json:"intent_type"`
-	Payload    json.RawMessage `json:"payload"`
-	Status     string          `json:"status"`
-	OutboxID   *int64          `json:"outbox_id,omitempty"`
-	CreatedAt  time.Time       `json:"created_at"`
-	UpdatedAt  time.Time       `json:"updated_at"`
+	ID          string          `json:"id"`
+	CustomerID  string          `json:"customer_id"`
+	UserID      string          `json:"user_id"`
+	SessionID   string          `json:"session_id"`
+	RunID       *string         `json:"run_id,omitempty"`
+	Type        string          `json:"intent_type"`
+	ChannelType string          `json:"channel_type,omitempty"`
+	Payload     json.RawMessage `json:"payload"`
+	Status      string          `json:"status"`
+	OutboxID    *int64          `json:"outbox_id,omitempty"`
+	CreatedAt   time.Time       `json:"created_at"`
+	UpdatedAt   time.Time       `json:"updated_at"`
 }
 
 func (s *Store) CreateOutboundIntent(ctx context.Context, intent OutboundIntent) (string, int64, error) {
@@ -54,11 +55,15 @@ func createOutboundIntentTx(ctx context.Context, tx pgx.Tx, intent OutboundInten
 		"outbound_intent_id": id,
 		"customer_id":        intent.CustomerID,
 		"user_id":            intent.UserID,
+		"acp_session_id":     intent.SessionID,
 		"session_id":         intent.SessionID,
 		"run_id":             id,
 		"durable_run_id":     runID,
 		"intent_type":        intent.Type,
 		"payload":            json.RawMessage(payload),
+	}
+	if intent.ChannelType != "" {
+		outboxPayload["channel_type"] = intent.ChannelType
 	}
 	outboxJSON, _ := json.Marshal(outboxPayload)
 	var outboxID int64

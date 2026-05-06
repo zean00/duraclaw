@@ -32,6 +32,8 @@ Bounded recurring reminders use `@interval` with a positive `repeat_interval_sec
 
 Reminder workers are multi-instance safe. Due subscriptions are claimed with PostgreSQL row locks and expiring leases. Each fire creates a durable run with a deterministic idempotency key derived from the subscription and scheduled fire time, so a retry after worker crash reuses the same run instead of creating a duplicate.
 
+Reminder subscriptions can optionally set `channel_type`. If it is omitted, the due reminder outbound intent is channel-neutral and Nexus fans it out to every active channel session mapped to the same ACP session. If it is set, Duraclaw propagates that channel preference through the reminder run and outbound intent, and Nexus delivers only to mapped sessions for that channel.
+
 Agents can manage reminders from the model loop through built-in tools. `create_reminder` persists a reminder subscription for the current customer/user/session and returns a typed `reminder_reference` artifact in the tool result. `update_reminder` accepts the `subscription_id` from a recent `reminder_reference` and updates the existing reminder instead of creating a duplicate.
 
 Reminder tools are intentionally conservative. The agent should ask for clarification before creating a reminder when the date/time is ambiguous, and rapid follow-ups such as "at 8am" should update the recent reminder reference when one exists. In rapid-follow-up refinement, the suppressed first response is only an internal draft; if the tool updates that draft-side reminder, the final response should still tell the user the reminder was set with the latest details. The reference contains the `subscription_id`, schedule metadata, and the ACP/admin management routes needed to pause, resume, update, or delete that specific reminder.
@@ -214,6 +216,8 @@ Admin routes are customer-wide and are intended for internal tooling:
 - `POST /admin/reminders/subscriptions`
 - `GET /admin/reminders/subscriptions?customer_id={customer_id}`
 - `PATCH /admin/reminders/subscriptions/{subscription_id}`
+
+Admin patch accepts `customer_id` plus `enabled` for pause/resume. To update user-owned fields such as `channel_type`, include `user_id` and the same mutable fields supported by the ACP user-scoped patch route.
 - `POST /admin/scheduler/jobs`
 - `GET /admin/scheduler/jobs?customer_id={customer_id}`
 - `PATCH /admin/scheduler/jobs/{job_id}`

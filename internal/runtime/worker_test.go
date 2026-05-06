@@ -838,6 +838,21 @@ func TestEmitFinalOutbound(t *testing.T) {
 	}
 }
 
+func TestEmitFinalOutboundUsesRunChannelPreference(t *testing.T) {
+	store := &fakeOutboundStore{}
+	w := (&Worker{}).WithOutbound(outbound.NewService(store))
+	err := w.emitFinalOutbound(context.Background(), &db.Run{
+		ID: "run-1", CustomerID: "c", UserID: "u", SessionID: "s",
+		Input: json.RawMessage(`{"event_type":"reminder_due","channel_type":"webchat","text":"reminder"}`),
+	}, "msg-1", "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.intent.ChannelType != "webchat" {
+		t.Fatalf("expected webchat channel preference, got intent=%#v", store.intent)
+	}
+}
+
 func TestRecommendationArtifactIncludesSelectedItem(t *testing.T) {
 	itemID := "item-1"
 	decision := &db.RecommendationDecision{
