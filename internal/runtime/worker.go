@@ -4038,7 +4038,7 @@ func sanitizeReminderDueResponse(content string, raw json.RawMessage) string {
 	if reminder := reminderTextFromInput(raw); reminder != "" {
 		return "Jangan lupa " + strings.TrimRight(reminder, ".!?") + "."
 	}
-	return "Ini pengingat dari Wulan."
+	return "Ini pengingat untuk Anda."
 }
 
 func stripReasoningBlocks(content string) string {

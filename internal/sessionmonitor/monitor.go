@@ -381,6 +381,9 @@ func skipProfileExtraction(content string) bool {
 	if text == "" {
 		return true
 	}
+	if looksLikeOneOffCaptureNote(text) {
+		return true
+	}
 	// Avoid storing unsupported inferences as profile.
 	if strings.Contains(text, "masih hidup") || strings.Contains(text, "still alive") {
 		return true
@@ -392,6 +395,26 @@ func skipProfileExtraction(content string) bool {
 		return true
 	}
 	return false
+}
+
+func looksLikeOneOffCaptureNote(text string) bool {
+	if strings.Contains(text, "http://") || strings.Contains(text, "https://") || strings.Contains(text, "github.com") {
+		return true
+	}
+	if strings.Contains(text, " repo ") || strings.Contains(text, " link ") {
+		return true
+	}
+	placeOrProduct := false
+	for _, token := range []string{" bakso ", " restoran ", " restaurant ", " warung ", " kedai ", " cafe ", " kafe ", " toko ", " salon ", " masjid ", " mushalla ", " mushola ", " tempat "} {
+		if strings.Contains(" "+text+" ", token) {
+			placeOrProduct = true
+			break
+		}
+	}
+	if !placeOrProduct {
+		return false
+	}
+	return strings.Contains(text, " namanya ") || strings.Contains(text, " nama ") || strings.Contains(text, " jalan ") || strings.Contains(text, " jl.")
 }
 
 func seenProfileSemantic(seen map[string]bool, content, category string) bool {

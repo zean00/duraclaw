@@ -82,13 +82,29 @@ func TestSavePreferenceTool(t *testing.T) {
 
 func TestPersistenceToolsRejectCaptureLikeContent(t *testing.T) {
 	store := &fakeMemoryStore{}
-	mem := (RememberTool{Store: store}).Execute(context.Background(), ExecutionContext{CustomerID: "c", UserID: "u"}, map[string]any{"content": "catet ada bakso enak di Jalan Magelang"})
+	mem := (RememberTool{Store: store}).Execute(context.Background(), ExecutionContext{CustomerID: "c", UserID: "u"}, map[string]any{"content": "catet tempat makan enak di Jalan Merdeka"})
 	if !mem.IsError || store.addedContent != "" {
 		t.Fatalf("memory should reject capture-like content: res=%#v store=%#v", mem, store)
 	}
-	pref := (SavePreferenceTool{Store: store}).Execute(context.Background(), ExecutionContext{CustomerID: "c", UserID: "u"}, map[string]any{"content": "bookmark repo go-qris"})
+	place := (RememberTool{Store: store}).Execute(context.Background(), ExecutionContext{CustomerID: "c", UserID: "u"}, map[string]any{"content": "Ada tempat makan enak di Jalan Merdeka namanya Kedai Contoh"})
+	if !place.IsError || store.addedContent != "" {
+		t.Fatalf("memory should reject stripped place note: res=%#v store=%#v", place, store)
+	}
+	idea := (RememberTool{Store: store}).Execute(context.Background(), ExecutionContext{CustomerID: "c", UserID: "u"}, map[string]any{"content": "Ide untuk artikel harian"})
+	if !idea.IsError || store.addedContent != "" {
+		t.Fatalf("memory should reject capitalized idea note: res=%#v store=%#v", idea, store)
+	}
+	pref := (SavePreferenceTool{Store: store}).Execute(context.Background(), ExecutionContext{CustomerID: "c", UserID: "u"}, map[string]any{"content": "bookmark repo example-client"})
 	if !pref.IsError || store.addedPreference != "" {
 		t.Fatalf("preference should reject capture-like content: res=%#v store=%#v", pref, store)
+	}
+	link := (SavePreferenceTool{Store: store}).Execute(context.Background(), ExecutionContext{CustomerID: "c", UserID: "u"}, map[string]any{"content": "save https://example.com/docs for later"})
+	if !link.IsError || store.addedPreference != "" {
+		t.Fatalf("preference should reject link captures: res=%#v store=%#v", link, store)
+	}
+	product := (RememberTool{Store: store}).Execute(context.Background(), ExecutionContext{CustomerID: "c", UserID: "u"}, map[string]any{"content": "save product ABC-123 for later"})
+	if !product.IsError || store.addedContent != "" {
+		t.Fatalf("memory should reject product captures: res=%#v store=%#v", product, store)
 	}
 }
 

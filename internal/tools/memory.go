@@ -85,8 +85,35 @@ func isCaptureLikeMemory(memoryType, content string) bool {
 	if containsWholeWord(lowerText, "to-do") || strings.Contains(lowerText, "daftar tugas") {
 		return true
 	}
-	if containsWholeWord(text, "ide") {
+	if containsWholeWord(lowerText, "ide") && !containsWholeWord(text, "IDE") {
 		return true
+	}
+	if isOneOffCaptureLikeContent(lowerText) {
+		return true
+	}
+	return false
+}
+
+func isOneOffCaptureLikeContent(lowerText string) bool {
+	if strings.Contains(lowerText, "http://") || strings.Contains(lowerText, "https://") || strings.Contains(lowerText, "www.") || strings.Contains(lowerText, "github.com") {
+		return true
+	}
+	for _, token := range []string{"repo", "repository", "link", "url", "product", "produk"} {
+		if containsWholeWord(lowerText, token) {
+			return true
+		}
+	}
+	if !containsAnyWholeWord(lowerText, []string{"place", "places", "tempat", "location", "lokasi", "address", "alamat"}) {
+		return false
+	}
+	return strings.Contains(lowerText, "namanya") || strings.Contains(lowerText, "nama ") || strings.Contains(lowerText, "jalan ") || strings.Contains(lowerText, "jl.")
+}
+
+func containsAnyWholeWord(text string, words []string) bool {
+	for _, word := range words {
+		if containsWholeWord(text, word) {
+			return true
+		}
 	}
 	return false
 }

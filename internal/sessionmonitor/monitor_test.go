@@ -248,6 +248,9 @@ func TestProfileExtractionSemanticKeysAndSkips(t *testing.T) {
 	if !skipProfileExtraction("User memiliki seorang ibu") {
 		t.Fatal("expected trivial inferred parent fact to be skipped")
 	}
+	if !skipProfileExtraction("Ada bakso enak di Jalan Magelang namanya Bakso Pak Marno") {
+		t.Fatal("expected one-off place note to be skipped")
+	}
 	if !seenProfileSemantic(map[string]bool{"profile:child:luqman": true}, "Pengguna memiliki anak bernama Luqman", "fact") {
 		t.Fatal("expected child semantic duplicate")
 	}
