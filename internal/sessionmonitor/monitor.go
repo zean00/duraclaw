@@ -398,20 +398,22 @@ func skipProfileExtraction(content string) bool {
 }
 
 func looksLikeOneOffCaptureNote(text string) bool {
-	if strings.Contains(text, "http://") || strings.Contains(text, "https://") || strings.Contains(text, "github.com") {
+	if strings.Contains(text, "http://") || strings.Contains(text, "https://") || strings.Contains(text, "www.") || strings.Contains(text, "github.com") {
 		return true
 	}
-	if strings.Contains(text, " repo ") || strings.Contains(text, " link ") {
-		return true
+	for _, token := range []string{"repo", "repository", "link", "url", "product", "produk"} {
+		if strings.Contains(" "+text+" ", " "+token+" ") {
+			return true
+		}
 	}
-	placeOrProduct := false
-	for _, token := range []string{" bakso ", " restoran ", " restaurant ", " warung ", " kedai ", " cafe ", " kafe ", " toko ", " salon ", " masjid ", " mushalla ", " mushola ", " tempat "} {
-		if strings.Contains(" "+text+" ", token) {
-			placeOrProduct = true
+	placeOrLocation := false
+	for _, token := range []string{"place", "places", "tempat", "location", "lokasi", "address", "alamat"} {
+		if strings.Contains(" "+text+" ", " "+token+" ") {
+			placeOrLocation = true
 			break
 		}
 	}
-	if !placeOrProduct {
+	if !placeOrLocation {
 		return false
 	}
 	return strings.Contains(text, " namanya ") || strings.Contains(text, " nama ") || strings.Contains(text, " jalan ") || strings.Contains(text, " jl.")
