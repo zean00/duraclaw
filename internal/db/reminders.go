@@ -57,6 +57,7 @@ type ReminderSubscriptionUpdate struct {
 	NextRunAt             *time.Time
 	RepeatIntervalSeconds *int
 	RepeatUntil           *time.Time
+	RepeatUntilSet        bool
 	RepeatCount           *int
 	FiredCount            *int
 	Metadata              any
@@ -195,6 +196,9 @@ func (s *Store) UpdateUserReminderSubscription(ctx context.Context, id, customer
 	if id == "" || customerID == "" || userID == "" {
 		return nil, fmt.Errorf("subscription_id, customer_id, and user_id are required")
 	}
+	if update.RepeatUntil != nil {
+		update.RepeatUntilSet = true
+	}
 	if update.RepeatIntervalSeconds != nil && *update.RepeatIntervalSeconds < 0 {
 		return nil, fmt.Errorf("repeat_interval_seconds must be non-negative")
 	}
@@ -204,7 +208,7 @@ func (s *Store) UpdateUserReminderSubscription(ctx context.Context, id, customer
 	if update.FiredCount != nil && *update.FiredCount < 0 {
 		return nil, fmt.Errorf("fired_count must be non-negative")
 	}
-	if update.Title == nil && update.Schedule == nil && update.Timezone == nil && update.ChannelType == nil && update.Payload == nil && update.NextRunAt == nil && update.RepeatIntervalSeconds == nil && update.RepeatUntil == nil && update.RepeatCount == nil && update.FiredCount == nil && update.Metadata == nil && update.Enabled == nil {
+	if update.Title == nil && update.Schedule == nil && update.Timezone == nil && update.ChannelType == nil && update.Payload == nil && update.NextRunAt == nil && update.RepeatIntervalSeconds == nil && !update.RepeatUntilSet && update.RepeatCount == nil && update.FiredCount == nil && update.Metadata == nil && update.Enabled == nil {
 		return nil, fmt.Errorf("at least one reminder field is required")
 	}
 	if err := s.validateReminderUpdateBounds(ctx, id, customerID, userID, update); err != nil {
@@ -245,7 +249,7 @@ func (s *Store) UpdateUserReminderSubscription(ctx context.Context, id, customer
 			payload=COALESCE($9::jsonb, payload),
 			next_run_at=COALESCE($10::timestamptz, next_run_at),
 			repeat_interval_seconds=COALESCE($11::integer, repeat_interval_seconds),
-			repeat_until=COALESCE($12::timestamptz, repeat_until),
+			repeat_until=CASE WHEN $17::boolean THEN $12::timestamptz ELSE repeat_until END,
 			repeat_count=COALESCE($13::integer, repeat_count),
 			fired_count=COALESCE($14::integer, fired_count),
 			metadata=COALESCE($15::jsonb, metadata),
@@ -255,7 +259,7 @@ func (s *Store) UpdateUserReminderSubscription(ctx context.Context, id, customer
 			updated_at=now()
 		WHERE id=$1 AND customer_id=$2 AND user_id=$3
 		RETURNING id::text, customer_id, user_id, session_id, agent_instance_id, coalesce(channel_type,''), title, schedule, timezone, payload, enabled, next_run_at, last_fired_at, repeat_interval_seconds, repeat_until, repeat_count, fired_count, metadata`,
-		id, customerID, userID, title, schedule, timezone, channelTypeSet, channelType, nullableBytes(payload), nextRunAt, repeatIntervalSeconds, repeatUntil, repeatCount, firedCount, nullableBytes(metadata), enabled).
+		id, customerID, userID, title, schedule, timezone, channelTypeSet, channelType, nullableBytes(payload), nextRunAt, repeatIntervalSeconds, repeatUntil, repeatCount, firedCount, nullableBytes(metadata), enabled, update.RepeatUntilSet).
 		Scan(&sub.ID, &sub.CustomerID, &sub.UserID, &sub.SessionID, &sub.AgentInstanceID, &sub.ChannelType, &sub.Title, &sub.Schedule, &sub.Timezone, &sub.Payload, &sub.Enabled, &sub.NextRunAt, &sub.LastFiredAt, &sub.RepeatIntervalSeconds, &sub.RepeatUntil, &sub.RepeatCount, &sub.FiredCount, &sub.Metadata)
 	if err != nil {
 		return nil, err
@@ -264,7 +268,7 @@ func (s *Store) UpdateUserReminderSubscription(ctx context.Context, id, customer
 }
 
 func (s *Store) validateReminderUpdateBounds(ctx context.Context, id, customerID, userID string, update ReminderSubscriptionUpdate) error {
-	if update.Schedule == nil && update.NextRunAt == nil && update.RepeatIntervalSeconds == nil && update.RepeatUntil == nil {
+	if update.Schedule == nil && update.NextRunAt == nil && update.RepeatIntervalSeconds == nil && !update.RepeatUntilSet {
 		return nil
 	}
 	var current ReminderSubscription
@@ -292,7 +296,7 @@ func (s *Store) validateReminderUpdateBounds(ctx context.Context, id, customerID
 		nextRunAt = *update.NextRunAt
 	}
 	repeatUntil := current.RepeatUntil
-	if update.RepeatUntil != nil {
+	if update.RepeatUntilSet {
 		repeatUntil = update.RepeatUntil
 	}
 	if repeatUntil != nil && !nextRunAt.IsZero() && !repeatUntil.After(nextRunAt) {

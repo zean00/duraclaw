@@ -55,7 +55,7 @@ func TestStoreReminderSubscriptionMethodsWithPgxMock(t *testing.T) {
 	title := "updated"
 	enabled := false
 	mock.ExpectQuery("UPDATE reminder_subscriptions").
-		WithArgs("sub-1", "c1", "u1", title, nil, nil, false, nil, nil, nil, nil, nil, nil, nil, nil, enabled).
+		WithArgs("sub-1", "c1", "u1", title, nil, nil, false, nil, nil, nil, nil, nil, nil, nil, nil, enabled, false).
 		WillReturnRows(reminderRows().AddRow("sub-1", "c1", "u1", "s1", "a1", "", title, "* * * * *", "UTC", []byte(`{}`), false, later, nil, 0, nil, 0, 0, []byte(`{}`)))
 	updated, err := store.UpdateUserReminderSubscription(ctx, "sub-1", "c1", "u1", ReminderSubscriptionUpdate{Title: &title, Enabled: &enabled})
 	if err != nil || updated.Title != title || updated.Enabled {
@@ -66,6 +66,30 @@ func TestStoreReminderSubscriptionMethodsWithPgxMock(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestUpdateUserReminderSubscriptionClearsRepeatUntil(t *testing.T) {
+	store, mock := newMockStore(t)
+	ctx := context.Background()
+	later := time.Now().UTC().Add(time.Hour)
+
+	mock.ExpectQuery("SELECT schedule, next_run_at, repeat_interval_seconds, repeat_until").
+		WithArgs("sub-1", "c1", "u1").
+		WillReturnRows(pgxmock.NewRows([]string{"schedule", "next_run_at", "repeat_interval_seconds", "repeat_until"}).
+			AddRow("@interval", later, 3600, nil))
+	mock.ExpectQuery("UPDATE reminder_subscriptions").
+		WithArgs("sub-1", "c1", "u1", nil, nil, nil, false, nil, nil, nil, nil, nil, nil, nil, nil, nil, true).
+		WillReturnRows(reminderRows().AddRow("sub-1", "c1", "u1", "s1", "a1", "", "title", "@interval", "UTC", []byte(`{}`), true, later, nil, 3600, nil, 0, 0, []byte(`{}`)))
+	updated, err := store.UpdateUserReminderSubscription(ctx, "sub-1", "c1", "u1", ReminderSubscriptionUpdate{RepeatUntilSet: true})
+	if err != nil {
+		t.Fatalf("update failed: %v", err)
+	}
+	if updated.RepeatUntil != nil {
+		t.Fatalf("repeat_until should be cleared, got %v", updated.RepeatUntil)
+	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
 	}

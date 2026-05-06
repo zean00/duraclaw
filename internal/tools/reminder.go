@@ -175,6 +175,7 @@ func (t UpdateReminderTool) Execute(ctx context.Context, exec ExecutionContext, 
 			return ErrorResult(err.Error())
 		}
 		update.RepeatUntil = repeatUntil
+		update.RepeatUntilSet = true
 	}
 	if value := strings.TrimSpace(stringArg(args, "title")); value != "" {
 		update.Title = &value
