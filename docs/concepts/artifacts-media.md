@@ -50,7 +50,7 @@ Duraclaw supports:
 
 - Mock processor for local development.
 - HTTP processor for OCR/transcription/document extraction services.
-- Provider-backed processor through OpenAI, OpenRouter, or OpenAI-compatible multimodal chat.
+- Provider-backed processor through OpenAI, OpenRouter, Together AI, or OpenAI-compatible multimodal chat.
 
 Processor calls persist intent before processing and result/error after processing.
 

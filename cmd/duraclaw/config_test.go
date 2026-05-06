@@ -64,6 +64,11 @@ func TestLoadConfigFailsClosedInProduction(t *testing.T) {
 	if _, err := loadConfig(); err != nil {
 		t.Fatalf("unexpected production config error: %v", err)
 	}
+
+	t.Setenv("DURACLAW_PROVIDER", "together")
+	if _, err := loadConfig(); err != nil {
+		t.Fatalf("unexpected together production config error: %v", err)
+	}
 }
 
 func TestLoadConfigAllowsExplicitProductionMock(t *testing.T) {
@@ -108,6 +113,7 @@ func TestBuildProviderSupportsConcreteProviderTypes(t *testing.T) {
 		{name: "openai", cfg: config{Provider: "openai", ProviderAPIKey: "key"}, wantType: providers.OpenAIProvider{}},
 		{name: "openrouter", cfg: config{Provider: "openrouter", ProviderAPIKey: "key", ProviderReferer: "https://duraclaw.test", ProviderTitle: "Duraclaw"}, wantType: providers.OpenRouterProvider{}},
 		{name: "openai-compatible", cfg: config{Provider: "openai-compatible", ProviderBaseURL: "http://localhost:11434/v1"}, wantType: providers.OpenAICompatibleProvider{}},
+		{name: "together", cfg: config{Provider: "together", ProviderAPIKey: "key"}, wantType: providers.TogetherProvider{}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -139,13 +145,13 @@ func TestBuildArtifactRegistryAddsHTTPProcessor(t *testing.T) {
 
 func TestBuildArtifactRegistryAddsProviderProcessor(t *testing.T) {
 	registry := buildArtifactRegistry(config{
-		ArtifactProcessorProvider:   "openrouter",
-		ArtifactProcessorModel:      "openai/gpt-4.1-mini",
+		ArtifactProcessorProvider:   "together",
+		ArtifactProcessorModel:      "moonshotai/Kimi-K2.5",
 		ArtifactProcessorAPIKey:     "key",
 		ArtifactProcessorModalities: []string{"image"},
 	})
 	processor, ok := registry.ProcessorFor(artifacts.Artifact{Modality: "image", MediaType: "image/png", StorageRef: "https://example.test/image.png"})
-	if !ok || !strings.Contains(processor.Name(), "openrouter") {
+	if !ok || !strings.Contains(processor.Name(), "together") {
 		t.Fatalf("processor=%#v ok=%v", processor, ok)
 	}
 }
@@ -212,6 +218,10 @@ func TestBuildModelConfigPrefixesProvider(t *testing.T) {
 	if cfg.Primary != "openai-compatible/meta-llama/llama-3.1" {
 		t.Fatalf("cfg=%#v", cfg)
 	}
+	cfg = buildModelConfig(config{Provider: "together", ProviderModel: "moonshotai/Kimi-K2.5"})
+	if cfg.Primary != "together/moonshotai/Kimi-K2.5" {
+		t.Fatalf("cfg=%#v", cfg)
+	}
 	cfg = buildModelConfig(config{})
 	if cfg.Primary != "mock/duraclaw" {
 		t.Fatalf("cfg=%#v", cfg)
@@ -220,6 +230,9 @@ func TestBuildModelConfigPrefixesProvider(t *testing.T) {
 
 func TestBuildProviderRegistryUsesProviderIdentity(t *testing.T) {
 	if got := buildProviderRegistry(config{Provider: "openrouter"}).DefaultProvider(); got != "openrouter" {
+		t.Fatalf("default=%s", got)
+	}
+	if got := buildProviderRegistry(config{Provider: "together"}).DefaultProvider(); got != "together" {
 		t.Fatalf("default=%s", got)
 	}
 	if got := buildProviderRegistry(config{Provider: "local"}).DefaultProvider(); got != "openai-compatible" {

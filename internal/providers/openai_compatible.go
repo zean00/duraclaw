@@ -737,3 +737,43 @@ func (p OpenRouterProvider) compatible() OpenAICompatibleProvider {
 		HTTPClient:   p.HTTPClient,
 	}
 }
+
+type TogetherProvider struct {
+	APIKey       string
+	BaseURL      string
+	DefaultModel string
+	HTTPClient   *http.Client
+}
+
+func (p TogetherProvider) GetDefaultModel() string {
+	return p.compatible().GetDefaultModel()
+}
+
+func (p TogetherProvider) Chat(ctx context.Context, messages []Message, tools []ToolDefinition, model string, options map[string]any) (*LLMResponse, error) {
+	return p.compatible().Chat(ctx, messages, tools, model, options)
+}
+
+func (p TogetherProvider) ChatDurable(ctx context.Context, meta CallMetadata, messages []Message, tools []ToolDefinition, model string, options map[string]any) (*LLMResponse, error) {
+	return p.compatible().ChatDurable(ctx, meta, messages, tools, model, options)
+}
+
+func (p TogetherProvider) ChatStream(ctx context.Context, messages []Message, tools []ToolDefinition, model string, options map[string]any) (<-chan StreamDelta, error) {
+	return p.compatible().ChatStream(ctx, messages, tools, model, options)
+}
+
+func (p TogetherProvider) compatible() OpenAICompatibleProvider {
+	baseURL := p.BaseURL
+	if strings.TrimSpace(baseURL) == "" {
+		baseURL = "https://api.together.xyz/v1"
+	}
+	defaultModel := p.DefaultModel
+	if strings.TrimSpace(defaultModel) == "" {
+		defaultModel = "moonshotai/Kimi-K2.5"
+	}
+	return OpenAICompatibleProvider{
+		BaseURL:      baseURL,
+		APIKey:       p.APIKey,
+		DefaultModel: defaultModel,
+		HTTPClient:   p.HTTPClient,
+	}
+}

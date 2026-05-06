@@ -112,6 +112,14 @@ func TestOpenRouterProviderUsesHeadersAndDefaultBaseURL(t *testing.T) {
 	}
 }
 
+func TestTogetherProviderUsesTogetherDefaultBaseURLAndModel(t *testing.T) {
+	p := TogetherProvider{APIKey: "key"}
+	compatible := p.compatible()
+	if compatible.BaseURL != "https://api.together.xyz/v1" || compatible.DefaultModel != "moonshotai/Kimi-K2.5" {
+		t.Fatalf("compatible=%#v", compatible)
+	}
+}
+
 func TestResponseContentTextHandlesArrayContent(t *testing.T) {
 	got := responseContentText([]any{
 		map[string]any{"type": "text", "text": "hello"},

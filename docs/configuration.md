@@ -51,6 +51,15 @@ DURACLAW_PROVIDER_TITLE=Duraclaw
 DURACLAW_PROVIDER_FALLBACKS=mock/duraclaw
 ```
 
+Together AI:
+
+```bash
+DURACLAW_PROVIDER=together
+DURACLAW_PROVIDER_API_KEY=...
+DURACLAW_PROVIDER_MODEL=moonshotai/Kimi-K2.5
+DURACLAW_PROVIDER_FALLBACKS=mock/duraclaw
+```
+
 OpenAI-compatible or local LLM:
 
 ```bash
@@ -61,7 +70,7 @@ DURACLAW_PROVIDER_MODEL=llama3.1
 DURACLAW_PROVIDER_FALLBACKS=mock/duraclaw
 ```
 
-OpenAI and OpenRouter chat requests support multimodal message content arrays. ACP run parts can include `text`, `image_url`, `file`, `input_audio`, and `video_url`.
+OpenAI, OpenRouter, and Together chat requests support multimodal message content arrays when the selected model supports those modalities. ACP run parts can include `text`, `image_url`, `file`, `input_audio`, and `video_url`.
 
 ### OpenRouter model guidance
 

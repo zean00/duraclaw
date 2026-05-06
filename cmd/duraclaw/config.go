@@ -179,7 +179,7 @@ func (cfg config) isProduction() bool {
 
 func isProductionProvider(provider string) bool {
 	switch providers.NormalizeProvider(provider) {
-	case "openai", "openrouter", "openai-compatible":
+	case "openai", "openrouter", "openai-compatible", "together":
 		return true
 	default:
 		return false

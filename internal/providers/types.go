@@ -490,6 +490,8 @@ func NormalizeProvider(provider string) string {
 		return "gemini"
 	case "openai_compatible", "openai-compatible", "local", "local-llm":
 		return "openai-compatible"
+	case "togetherai", "together-ai":
+		return "together"
 	}
 	return p
 }

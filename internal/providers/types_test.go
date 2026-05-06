@@ -150,6 +150,9 @@ func TestModelRefAndCandidateHelpers(t *testing.T) {
 	if got := NormalizeProvider(" GOOGLE "); got != "gemini" {
 		t.Fatalf("provider=%q", got)
 	}
+	if got := NormalizeProvider(" together-ai "); got != "together" {
+		t.Fatalf("provider=%q", got)
+	}
 	if got := (FallbackCandidate{Provider: "OpenAI", Model: " GPT-5 "}).StableKey(); got != "openai/gpt-5" {
 		t.Fatalf("stable=%q", got)
 	}
