@@ -2645,9 +2645,10 @@ func (h *Handler) reassignSession(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) compactSession(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
-		CustomerID   string `json:"customer_id"`
-		Force        bool   `json:"force"`
-		MessageLimit int    `json:"message_limit"`
+		CustomerID     string `json:"customer_id"`
+		Force          bool   `json:"force"`
+		ExtractProfile bool   `json:"extract_profile"`
+		MessageLimit   int    `json:"message_limit"`
 	}
 	if err := decodeJSON(w, r, &payload); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -2666,10 +2667,11 @@ func (h *Handler) compactSession(w http.ResponseWriter, r *http.Request) {
 		service = sessionmonitor.NewService(h.store, h.providers, h.modelConfig, "duraclaw-manual-session-compaction")
 	}
 	result, err := service.CompactSession(r.Context(), sessionmonitor.CompactRequest{
-		CustomerID:   payload.CustomerID,
-		SessionID:    r.PathValue("session_id"),
-		Force:        payload.Force,
-		MessageLimit: payload.MessageLimit,
+		CustomerID:     payload.CustomerID,
+		SessionID:      r.PathValue("session_id"),
+		Force:          payload.Force,
+		ExtractProfile: payload.ExtractProfile,
+		MessageLimit:   payload.MessageLimit,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)

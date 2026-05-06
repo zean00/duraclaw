@@ -19,6 +19,20 @@ type MonitoredSession struct {
 	LastMessageAt   *time.Time      `json:"last_message_at,omitempty"`
 }
 
+func (s *Store) MonitoredSession(ctx context.Context, customerID, sessionID string) (*MonitoredSession, error) {
+	var session MonitoredSession
+	err := s.pool.QueryRow(ctx, `
+		SELECT s.customer_id, s.user_id, s.agent_instance_id, s.id, s.metadata, s.active_pattern, s.updated_at, s.last_monitored_at,
+			(SELECT max(created_at) FROM messages m WHERE m.customer_id=s.customer_id AND m.session_id=s.id)
+		FROM sessions s
+		WHERE s.customer_id=$1 AND s.id=$2`, customerID, sessionID).
+		Scan(&session.CustomerID, &session.UserID, &session.AgentInstanceID, &session.SessionID, &session.Metadata, &session.ActivePattern, &session.UpdatedAt, &session.LastMonitoredAt, &session.LastMessageAt)
+	if err != nil {
+		return nil, err
+	}
+	return &session, nil
+}
+
 func (s *Store) ClaimIdleSessions(ctx context.Context, owner string, idleFor, leaseFor time.Duration, limit int) ([]MonitoredSession, error) {
 	if owner == "" {
 		owner = "duraclaw-session-monitor"

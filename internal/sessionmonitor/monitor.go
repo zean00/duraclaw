@@ -18,6 +18,7 @@ type Store interface {
 	ReleaseSessionMonitor(ctx context.Context, customerID, sessionID string) error
 	RecentMessages(ctx context.Context, customerID, sessionID string, limit int) ([]db.Message, error)
 	RecentUserMessages(ctx context.Context, customerID, sessionID string, limit int) ([]db.Message, error)
+	MonitoredSession(ctx context.Context, customerID, sessionID string) (*db.MonitoredSession, error)
 	UpsertSessionSummary(ctx context.Context, customerID, sessionID, sourceRunID, summary string, metadata any) error
 	ListMemories(ctx context.Context, customerID, userID string, limit int) ([]db.Memory, error)
 	AddMemory(ctx context.Context, customerID, userID, sessionID, memoryType, content string, metadata any) (string, error)
@@ -42,10 +43,11 @@ type Service struct {
 }
 
 type CompactRequest struct {
-	CustomerID   string `json:"customer_id"`
-	SessionID    string `json:"session_id"`
-	Force        bool   `json:"force"`
-	MessageLimit int    `json:"message_limit,omitempty"`
+	CustomerID     string `json:"customer_id"`
+	SessionID      string `json:"session_id"`
+	Force          bool   `json:"force"`
+	ExtractProfile bool   `json:"extract_profile,omitempty"`
+	MessageLimit   int    `json:"message_limit,omitempty"`
 }
 
 type CompactResult struct {
@@ -146,10 +148,11 @@ func (s *Service) CompactSession(ctx context.Context, req CompactRequest) (*Comp
 		MessageCount:  len(messages),
 		TranscriptLen: len(transcript),
 		Metadata: map[string]any{
-			"strategy":      "manual_llm_compaction",
-			"message_count": len(messages),
-			"requested_at":  time.Now().UTC().Format(time.RFC3339),
-			"forced":        req.Force,
+			"strategy":        "manual_llm_compaction",
+			"message_count":   len(messages),
+			"requested_at":    time.Now().UTC().Format(time.RFC3339),
+			"forced":          req.Force,
+			"extract_profile": req.ExtractProfile,
 		},
 	}
 	if strings.TrimSpace(transcript) == "" {
@@ -175,6 +178,17 @@ func (s *Service) CompactSession(ctx context.Context, req CompactRequest) (*Comp
 		return nil, err
 	}
 	_ = s.store.AddObservabilityEvent(ctx, req.CustomerID, "", "session_context_compacted", map[string]any{"session_id": req.SessionID, "messages": len(messages), "summary_chars": len(summary), "manual": true})
+	if req.ExtractProfile {
+		session, err := s.store.MonitoredSession(ctx, req.CustomerID, req.SessionID)
+		if err != nil {
+			return nil, err
+		}
+		memories, preferences, err := s.extractMemoryAndPreferences(ctx, time.Now().UTC(), *session, transcript)
+		if err != nil {
+			return nil, err
+		}
+		result.Metadata["profile_extraction"] = map[string]any{"memories": memories, "preferences": preferences}
+	}
 	return result, nil
 }
 
@@ -204,7 +218,7 @@ func (s *Service) processSession(ctx context.Context, now time.Time, session db.
 		}
 	}
 	if transcript != "" {
-		if err := s.extractMemoryAndPreferences(ctx, now, session, transcript); err != nil {
+		if _, _, err := s.extractMemoryAndPreferences(ctx, now, session, transcript); err != nil {
 			return err
 		}
 	}
@@ -261,17 +275,17 @@ type extractionResult struct {
 	} `json:"preferences"`
 }
 
-func (s *Service) extractMemoryAndPreferences(ctx context.Context, now time.Time, session db.MonitoredSession, transcript string) error {
+func (s *Service) extractMemoryAndPreferences(ctx context.Context, now time.Time, session db.MonitoredSession, transcript string) (int, int, error) {
 	resp, err := s.providers.ChatWithFallback(ctx, s.modelConfig, []providers.Message{
 		{Role: "system", Content: "Extract stable user memories and conditional preferences. Return JSON only with arrays: memories[{type,content}], preferences[{category,content,condition}]. Stable memories are facts that rarely change. Preferences may be conditional."},
 		{Role: "user", Content: transcript},
 	}, nil, map[string]any{"response_format": "json_object", "purpose": "idle_memory_preference_extraction"})
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 	var result extractionResult
 	if err := json.Unmarshal([]byte(extractJSONObject(resp.Response.Content)), &result); err != nil {
-		return nil
+		return 0, 0, nil
 	}
 	existingMemories, _ := s.store.ListMemories(ctx, session.CustomerID, session.UserID, 200)
 	existingPreferences, _ := s.store.ListPreferences(ctx, session.CustomerID, session.UserID, 200)
@@ -284,6 +298,7 @@ func (s *Service) extractMemoryAndPreferences(ctx context.Context, now time.Time
 		seenPreferences[normalize(p.Category+" "+p.Content+" "+string(p.Condition))] = true
 	}
 	writtenMemories := 0
+	writtenPreferences := 0
 	for _, m := range result.Memories {
 		content := strings.TrimSpace(m.Content)
 		if content == "" || seenMemories[normalize(content)] {
@@ -297,11 +312,10 @@ func (s *Service) extractMemoryAndPreferences(ctx context.Context, now time.Time
 			memoryType = "fact"
 		}
 		if _, err := s.store.AddMemory(ctx, session.CustomerID, session.UserID, session.SessionID, memoryType, content, map[string]any{"source": "session_monitor", "extracted_at": now.Format(time.RFC3339), "provider": resp.Provider, "model": resp.Model}); err != nil {
-			return err
+			return writtenMemories, writtenPreferences, err
 		}
 		writtenMemories++
 	}
-	writtenPreferences := 0
 	for _, p := range result.Preferences {
 		content := strings.TrimSpace(p.Content)
 		category := strings.TrimSpace(p.Category)
@@ -317,12 +331,12 @@ func (s *Service) extractMemoryAndPreferences(ctx context.Context, now time.Time
 			continue
 		}
 		if _, err := s.store.AddPreference(ctx, session.CustomerID, session.UserID, session.SessionID, category, content, p.Condition, map[string]any{"source": "session_monitor", "extracted_at": now.Format(time.RFC3339), "provider": resp.Provider, "model": resp.Model}); err != nil {
-			return err
+			return writtenMemories, writtenPreferences, err
 		}
 		writtenPreferences++
 	}
 	_ = s.store.AddObservabilityEvent(ctx, session.CustomerID, "", "session_memory_extracted", map[string]any{"session_id": session.SessionID, "memories": writtenMemories, "preferences": writtenPreferences})
-	return nil
+	return writtenMemories, writtenPreferences, nil
 }
 
 func transcript(messages []db.Message) string {
