@@ -93,6 +93,25 @@ func TestOpenAICompatibleProviderChatErrors(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleProviderChatFallsBackToReasoningContent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{
+				"message":       map[string]any{"content": "", "reasoning": "partial reasoning text"},
+				"finish_reason": "length",
+			}},
+		})
+	}))
+	defer server.Close()
+	resp, err := (OpenAICompatibleProvider{BaseURL: server.URL}).Chat(t.Context(), []Message{{Role: "user", Content: "hi"}}, nil, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Content != "partial reasoning text" || resp.FinishReason != "length" {
+		t.Fatalf("resp=%#v", resp)
+	}
+}
+
 func TestOpenAIProviderUsesOpenAIDefaultBaseURL(t *testing.T) {
 	p := OpenAIProvider{APIKey: "key", DefaultModel: "gpt-test"}
 	compatible := p.compatible()
