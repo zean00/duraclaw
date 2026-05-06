@@ -132,6 +132,19 @@ func TestToolCallsForExecutionSuppressesUnavailableTools(t *testing.T) {
 	}
 }
 
+func TestAllowedToolCallNamesOnlyIncludesExposedProviderNames(t *testing.T) {
+	defs := []providers.ToolDefinition{
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "echo"}},
+	}
+	allowed := allowedToolCallNames(defs)
+	if !allowed["echo"] {
+		t.Fatalf("allowed=%#v", allowed)
+	}
+	if allowed["duraclaw.ask_user"] {
+		t.Fatalf("hidden original tool should not be allowed: %#v", allowed)
+	}
+}
+
 func TestLocationPromptContextFromContentParts(t *testing.T) {
 	raw, _ := json.Marshal(map[string]any{
 		"parts": []map[string]any{

@@ -732,21 +732,17 @@ func toolCallsForExecution(calls []providers.ToolCall, interleave bool, allowed 
 	return append([]providers.ToolCall(nil), filtered[:1]...), suppressed + len(filtered) - 1
 }
 
-func allowedToolCallNames(defs []providers.ToolDefinition, aliases toolAliasSet) map[string]bool {
+func allowedToolCallNames(defs []providers.ToolDefinition) map[string]bool {
 	if len(defs) == 0 {
 		return nil
 	}
-	out := make(map[string]bool, len(defs)*2)
+	out := make(map[string]bool, len(defs))
 	for _, def := range defs {
 		name := strings.TrimSpace(def.Function.Name)
 		if name == "" {
 			continue
 		}
 		out[name] = true
-		original := aliases.OriginalName(name)
-		if original != "" {
-			out[original] = true
-		}
 	}
 	return out
 }
@@ -795,11 +791,7 @@ func (w *Worker) agentLoopPhase(ctx context.Context, run *db.Run, text string, m
 		if len(resp.ToolCalls) == 0 {
 			break
 		}
-		configuredAliases, err := w.toolAliasesForRun(ctx, run)
-		if err != nil {
-			return nil, err
-		}
-		toolCalls, suppressedToolCalls := toolCallsForExecution(resp.ToolCalls, interleaveToolCalls, allowedToolCallNames(toolDefs, configuredAliases))
+		toolCalls, suppressedToolCalls := toolCallsForExecution(resp.ToolCalls, interleaveToolCalls, allowedToolCallNames(toolDefs))
 		if len(toolCalls) == 0 {
 			messages = append(messages, providers.Message{Role: "assistant", Content: resp.Content})
 			if err := w.store.Checkpoint(ctx, run.ID, "tools_suppressed", map[string]any{"model_tool_calls": len(resp.ToolCalls), "suppressed_tool_calls": suppressedToolCalls, "iteration": iteration}); err != nil {
