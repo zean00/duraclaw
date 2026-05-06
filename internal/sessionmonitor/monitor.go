@@ -557,12 +557,48 @@ func preview(text string, limit int) string {
 func transcript(messages []db.Message) string {
 	var lines []string
 	for _, msg := range messages {
+		if messageExcludedFromTranscript(msg.Content) {
+			continue
+		}
 		text := messageText(msg.Content)
 		if strings.TrimSpace(text) != "" {
 			lines = append(lines, msg.Role+": "+strings.TrimSpace(text))
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+func messageExcludedFromTranscript(raw json.RawMessage) bool {
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return false
+	}
+	if boolMapValue(payload, "context_excluded", "contextExcluded") {
+		return true
+	}
+	if boolMapValue(mapValue(payload, "metadata"), "context_excluded", "contextExcluded") {
+		return true
+	}
+	if _, ok := payload["agent_delegation"]; ok {
+		return true
+	}
+	return false
+}
+
+func boolMapValue(data map[string]any, keys ...string) bool {
+	for _, key := range keys {
+		if value, ok := data[key].(bool); ok && value {
+			return true
+		}
+	}
+	return false
+}
+
+func mapValue(data map[string]any, key string) map[string]any {
+	if value, ok := data[key].(map[string]any); ok {
+		return value
+	}
+	return nil
 }
 
 func messageText(raw json.RawMessage) string {

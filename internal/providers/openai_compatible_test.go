@@ -63,6 +63,29 @@ func TestOpenAICompatibleProviderChat(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleProviderDoesNotPromoteReasoning(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{
+				"message": map[string]any{
+					"content":           nil,
+					"reasoning":         "hidden reasoning",
+					"reasoning_content": "hidden reasoning content",
+				},
+				"finish_reason": "stop",
+			}},
+		})
+	}))
+	defer server.Close()
+	resp, err := (OpenAICompatibleProvider{BaseURL: server.URL}).Chat(t.Context(), []Message{{Role: "user", Content: "hi"}}, nil, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Content != "" {
+		t.Fatalf("content leaked reasoning: %q", resp.Content)
+	}
+}
+
 func TestUsageInfoParsesCostAliases(t *testing.T) {
 	var usage UsageInfo
 	if err := json.Unmarshal([]byte(`{"prompt_tokens":2,"completion_tokens":3,"total_cost":"0.000007"}`), &usage); err != nil {
@@ -93,7 +116,7 @@ func TestOpenAICompatibleProviderChatErrors(t *testing.T) {
 	}
 }
 
-func TestOpenAICompatibleProviderChatFallsBackToReasoningContent(t *testing.T) {
+func TestOpenAICompatibleProviderChatDoesNotFallbackToReasoningContent(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"choices": []map[string]any{{
@@ -107,7 +130,7 @@ func TestOpenAICompatibleProviderChatFallsBackToReasoningContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Content != "partial reasoning text" || resp.FinishReason != "length" {
+	if resp.Content != "" || resp.FinishReason != "length" {
 		t.Fatalf("resp=%#v", resp)
 	}
 }

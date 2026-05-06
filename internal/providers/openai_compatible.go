@@ -42,7 +42,6 @@ func (p OpenAICompatibleProvider) Chat(ctx context.Context, messages []Message, 
 		Choices []struct {
 			Message struct {
 				Content   any        `json:"content"`
-				Reasoning string     `json:"reasoning"`
 				ToolCalls []ToolCall `json:"tool_calls"`
 			} `json:"message"`
 			FinishReason string `json:"finish_reason"`
@@ -57,9 +56,6 @@ func (p OpenAICompatibleProvider) Chat(ctx context.Context, messages []Message, 
 	}
 	choice := payload.Choices[0]
 	content := responseContentText(choice.Message.Content)
-	if strings.TrimSpace(content) == "" && strings.TrimSpace(choice.Message.Reasoning) != "" {
-		content = choice.Message.Reasoning
-	}
 	return &LLMResponse{
 		Content:      content,
 		ToolCalls:    choice.Message.ToolCalls,
@@ -563,6 +559,8 @@ func audioTranscriptionFormat(mediaType, filename string) string {
 
 func responseContentText(raw any) string {
 	switch v := raw.(type) {
+	case nil:
+		return ""
 	case string:
 		return v
 	case []any:

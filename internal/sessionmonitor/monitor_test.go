@@ -146,6 +146,20 @@ func TestTranscriptExtractsTextParts(t *testing.T) {
 	}
 }
 
+func TestTranscriptSkipsContextExcludedMessages(t *testing.T) {
+	visible, _ := json.Marshal(map[string]any{"parts": []map[string]any{{"type": "text", "text": "visible"}}})
+	excluded, _ := json.Marshal(map[string]any{"metadata": map[string]any{"context_excluded": true}, "parts": []map[string]any{{"type": "text", "text": "delegated result"}}})
+	legacyDelegation, _ := json.Marshal(map[string]any{"agent_delegation": map[string]any{"delegation_id": "d1"}, "parts": []map[string]any{{"type": "text", "text": "legacy delegated result"}}})
+	got := transcript([]db.Message{
+		{Role: "user", Content: visible},
+		{Role: "assistant", Content: excluded},
+		{Role: "assistant", Content: legacyDelegation},
+	})
+	if got != "user: visible" {
+		t.Fatalf("transcript=%q", got)
+	}
+}
+
 func TestMessageTextPrefersTopLevelText(t *testing.T) {
 	raw, _ := json.Marshal(map[string]any{
 		"text":  "top",

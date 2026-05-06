@@ -128,6 +128,18 @@ func TestOpenRouterAgentDelegationE2E(t *testing.T) {
 	if parentDelegatedMessages != 1 {
 		t.Fatalf("parent delegated messages=%d", parentDelegatedMessages)
 	}
+	var contextExcluded bool
+	if err := pool.QueryRow(ctx, `
+		SELECT COALESCE(content->>'context_excluded','false')::boolean
+		FROM messages
+		WHERE customer_id=$1 AND session_id=$2 AND role='assistant' AND content ? 'agent_delegation'
+		ORDER BY created_at DESC LIMIT 1`,
+		customerID, parentSession).Scan(&contextExcluded); err != nil {
+		t.Fatal(err)
+	}
+	if !contextExcluded {
+		t.Fatal("parent delegated result should be marked context_excluded")
+	}
 	var payloadRaw []byte
 	if err := pool.QueryRow(ctx, `
 		SELECT payload FROM outbound_intents

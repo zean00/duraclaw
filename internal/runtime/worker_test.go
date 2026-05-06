@@ -79,6 +79,51 @@ func TestSanitizeReminderDueResponseFallsBackToReminderText(t *testing.T) {
 	}
 }
 
+func TestSanitizeAssistantVisibleContentDropsTrailingReasoning(t *testing.T) {
+	input := "Siap, Yang Mulia 😊\n\nThe conversation: We need to produce a response to user.\nI need to formulate the final reply."
+	if got := sanitizeAssistantVisibleContent(input); got != "Siap, Yang Mulia 😊" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestSanitizeAssistantVisibleContentPreservesOrdinaryParagraphs(t *testing.T) {
+	cases := []string{
+		"Sure.\n\nLet's walk through it step by step so the plan is easy to follow.",
+		"Here is the short answer.\n\nAnalysis: the tradeoff is mostly latency versus accuracy.",
+		"Done.\n\nThe task can be split into three practical steps.",
+	}
+	for _, input := range cases {
+		if got := sanitizeAssistantVisibleContent(input); got != input {
+			t.Fatalf("got %q want %q", got, input)
+		}
+	}
+}
+
+func TestSanitizeAssistantVisibleContentExtractsFinalAnswer(t *testing.T) {
+	input := "I need to answer briefly.\nDraft: maybe too long.\nFinal Answer: Jangan lupa bawain bekal buat Luqman."
+	if got := sanitizeAssistantVisibleContent(input); got != "Jangan lupa bawain bekal buat Luqman." {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestMessageExcludedFromContext(t *testing.T) {
+	cases := []map[string]any{
+		{"context_excluded": true, "parts": []map[string]any{{"type": "text", "text": "hidden"}}},
+		{"metadata": map[string]any{"context_excluded": true}, "parts": []map[string]any{{"type": "text", "text": "hidden"}}},
+		{"agent_delegation": map[string]any{"delegation_id": "d1"}, "parts": []map[string]any{{"type": "text", "text": "hidden"}}},
+	}
+	for _, payload := range cases {
+		raw, _ := json.Marshal(payload)
+		if !messageExcludedFromContext(raw) {
+			t.Fatalf("expected excluded for %#v", payload)
+		}
+	}
+	visible, _ := json.Marshal(map[string]any{"parts": []map[string]any{{"type": "text", "text": "visible"}}})
+	if messageExcludedFromContext(visible) {
+		t.Fatal("ordinary message should not be excluded")
+	}
+}
+
 func TestExtractTextForReminderDueRunUsesReminderMessageFromTrustedPrompt(t *testing.T) {
 	raw, _ := json.Marshal(map[string]any{
 		"event_type": "reminder_due",

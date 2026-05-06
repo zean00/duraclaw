@@ -802,6 +802,7 @@ func (w *Worker) agentLoopPhase(ctx context.Context, run *db.Run, text string, m
 			w.emitAgentActivity(ctx, run, "model", "failed", map[string]any{"iteration": iteration, "error": err.Error()})
 			return nil, err
 		}
+		resp.Content = sanitizeAssistantVisibleContent(resp.Content)
 		if _, err := w.policyEngine().Enforce(ctx, "post_model", w.policyContext(run, modelStepID, "", resp.Content)); err != nil {
 			msg := err.Error()
 			_ = w.store.CompleteRunStep(context.Background(), run.ID, modelStepID, "failed", nil, &msg)
@@ -1166,7 +1167,14 @@ func (w *Worker) completeDelegationChildRun(ctx context.Context, run *db.Run, fi
 	delegation.Status = "completed"
 	delegation.ResultText = finalContent
 	parentMessageID, err := w.store.InsertMessage(ctx, delegation.CustomerID, delegation.ParentSessionID, run.ID, "assistant", map[string]any{
-		"parts": []map[string]any{{"type": "text", "text": finalContent}},
+		"context_excluded": true,
+		"parts":            []map[string]any{{"type": "text", "text": finalContent}},
+		"metadata": map[string]any{
+			"context_excluded":         true,
+			"source":                   "agent_delegation_result",
+			"target_agent_instance_id": delegation.TargetAgentInstanceID,
+			"target_handle":            delegation.TargetHandle,
+		},
 		"agent_delegation": map[string]any{
 			"delegation_id":    delegation.ID,
 			"target_handle":    delegation.TargetHandle,
@@ -1192,6 +1200,12 @@ func (w *Worker) completeDelegationChildRun(ctx context.Context, run *db.Run, fi
 			"parts":      []map[string]any{{"type": "text", "text": finalContent}},
 			"artifacts":  []map[string]any{db.AgentDelegationArtifact(*delegation)},
 			"source":     "agent_delegation",
+			"metadata": map[string]any{
+				"context_excluded":         true,
+				"source":                   "agent_delegation_result",
+				"target_agent_instance_id": delegation.TargetAgentInstanceID,
+				"target_handle":            delegation.TargetHandle,
+			},
 		},
 	})
 	return err
@@ -1241,7 +1255,14 @@ func (w *Worker) emitDelegationStopped(ctx context.Context, run *db.Run, delegat
 		return nil
 	}
 	parentMessageID, err := w.store.InsertMessage(ctx, delegation.CustomerID, delegation.ParentSessionID, run.ID, "assistant", map[string]any{
-		"parts": []map[string]any{{"type": "text", "text": text}},
+		"context_excluded": true,
+		"parts":            []map[string]any{{"type": "text", "text": text}},
+		"metadata": map[string]any{
+			"context_excluded":         true,
+			"source":                   "agent_delegation_result",
+			"target_agent_instance_id": delegation.TargetAgentInstanceID,
+			"target_handle":            delegation.TargetHandle,
+		},
 		"agent_delegation": map[string]any{
 			"delegation_id":    delegation.ID,
 			"target_handle":    delegation.TargetHandle,
@@ -1268,6 +1289,12 @@ func (w *Worker) emitDelegationStopped(ctx context.Context, run *db.Run, delegat
 			"parts":      []map[string]any{{"type": "text", "text": text}},
 			"artifacts":  []map[string]any{db.AgentDelegationArtifact(*delegation)},
 			"source":     "agent_delegation",
+			"metadata": map[string]any{
+				"context_excluded":         true,
+				"source":                   "agent_delegation_result",
+				"target_agent_instance_id": delegation.TargetAgentInstanceID,
+				"target_handle":            delegation.TargetHandle,
+			},
 		},
 	})
 	return err
@@ -1426,6 +1453,92 @@ func (w *Worker) chatStream(ctx context.Context, run *db.Run, provider providers
 		calls = append(calls, finishStreamToolCalls(partials)...)
 	}
 	return &providers.LLMResponse{Content: content.String(), ToolCalls: calls, FinishReason: finish, Usage: usage}, nil
+}
+
+func sanitizeAssistantVisibleContent(content string) string {
+	cleaned := stripReasoningBlocks(strings.TrimSpace(content))
+	if cleaned == "" {
+		return cleaned
+	}
+	if final := extractFinalAnswerFromReasoningLeak(cleaned); final != "" {
+		return final
+	}
+	return truncateTrailingReasoningLeak(cleaned)
+}
+
+func extractFinalAnswerFromReasoningLeak(content string) string {
+	lower := strings.ToLower(content)
+	if !looksLikeInternalReasoning(content) {
+		return ""
+	}
+	for _, marker := range []string{"final answer:", "jawaban akhir:", "final:", "result:", "hasil:"} {
+		idx := strings.LastIndex(lower, marker)
+		if idx < 0 {
+			continue
+		}
+		answer := trimAnswerQuotes(strings.TrimSpace(content[idx+len(marker):]))
+		if answer != "" && !looksLikeInternalReasoning(answer) {
+			return answer
+		}
+	}
+	return ""
+}
+
+func truncateTrailingReasoningLeak(content string) string {
+	lower := strings.ToLower(content)
+	markers := []string{
+		"\n\nthe conversation:",
+		"\n\nconversation:",
+		"\n\nanalysis:",
+		"\n\nreasoning:",
+		"\n\nwe need to",
+		"\n\ni need to",
+		"\n\nthe task",
+		"\n\nlet's",
+	}
+	cut := -1
+	for _, marker := range markers {
+		if idx := strings.Index(lower, marker); idx > 0 && trailingBlockLooksLikeReasoningLeak(content[idx:]) && (cut == -1 || idx < cut) {
+			cut = idx
+		}
+	}
+	if cut > 0 {
+		prefix := strings.TrimSpace(content[:cut])
+		if prefix != "" {
+			return prefix
+		}
+	}
+	return content
+}
+
+func trailingBlockLooksLikeReasoningLeak(block string) bool {
+	lower := strings.ToLower(strings.TrimSpace(block))
+	if lower == "" {
+		return false
+	}
+	strongMarkers := []string{
+		"the conversation:",
+		"trusted reminder runtime instruction",
+		"the user is sending",
+		"the instruction explicitly",
+		"the prompt asks",
+		"adhering to the persona",
+		"final check",
+		"draft:",
+		"i need to",
+		"we need to",
+		"i will output",
+		"i will use",
+	}
+	for _, marker := range strongMarkers {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	if strings.HasPrefix(lower, "analysis:") || strings.HasPrefix(lower, "reasoning:") || strings.HasPrefix(lower, "the task") || strings.HasPrefix(lower, "let's") {
+		return strings.Contains(lower, "system") || strings.Contains(lower, "prompt") || strings.Contains(lower, "instruction") || strings.Contains(lower, "constraint") || strings.Contains(lower, "final reply")
+	}
+	return false
 }
 
 type streamToolCall struct {
@@ -1590,6 +1703,9 @@ func (w *Worker) providerMessages(ctx context.Context, run *db.Run, currentText 
 		promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: strings.Join(instructions, "\n")})
 	}
 	for _, msg := range history {
+		if messageExcludedFromContext(msg.Content) {
+			continue
+		}
 		content := messageText(msg.Content)
 		if strings.TrimSpace(content) == "" {
 			continue
@@ -1610,6 +1726,39 @@ func (w *Worker) providerMessages(ctx context.Context, run *db.Run, currentText 
 		}
 	}
 	return messages, nil
+}
+
+func messageExcludedFromContext(raw json.RawMessage) bool {
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return false
+	}
+	if boolMapValue(payload, "context_excluded", "contextExcluded") {
+		return true
+	}
+	if boolMapValue(mapValue(payload, "metadata"), "context_excluded", "contextExcluded") {
+		return true
+	}
+	if _, ok := payload["agent_delegation"]; ok {
+		return true
+	}
+	return false
+}
+
+func boolMapValue(data map[string]any, keys ...string) bool {
+	for _, key := range keys {
+		if value, ok := data[key].(bool); ok && value {
+			return true
+		}
+	}
+	return false
+}
+
+func mapValue(data map[string]any, key string) map[string]any {
+	if value, ok := data[key].(map[string]any); ok {
+		return value
+	}
+	return nil
 }
 
 func persistenceToolPromptContext() string {
