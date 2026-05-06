@@ -492,6 +492,8 @@ func NormalizeProvider(provider string) string {
 		return "openai-compatible"
 	case "togetherai", "together-ai":
 		return "together"
+	case "deepseek-ai", "deepseekai":
+		return "deepseek"
 	}
 	return p
 }

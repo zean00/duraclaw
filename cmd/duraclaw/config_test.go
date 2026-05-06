@@ -69,6 +69,11 @@ func TestLoadConfigFailsClosedInProduction(t *testing.T) {
 	if _, err := loadConfig(); err != nil {
 		t.Fatalf("unexpected together production config error: %v", err)
 	}
+
+	t.Setenv("DURACLAW_PROVIDER", "deepseek")
+	if _, err := loadConfig(); err != nil {
+		t.Fatalf("unexpected deepseek production config error: %v", err)
+	}
 }
 
 func TestLoadConfigAllowsExplicitProductionMock(t *testing.T) {
@@ -114,6 +119,7 @@ func TestBuildProviderSupportsConcreteProviderTypes(t *testing.T) {
 		{name: "openrouter", cfg: config{Provider: "openrouter", ProviderAPIKey: "key", ProviderReferer: "https://duraclaw.test", ProviderTitle: "Duraclaw"}, wantType: providers.OpenRouterProvider{}},
 		{name: "openai-compatible", cfg: config{Provider: "openai-compatible", ProviderBaseURL: "http://localhost:11434/v1"}, wantType: providers.OpenAICompatibleProvider{}},
 		{name: "together", cfg: config{Provider: "together", ProviderAPIKey: "key"}, wantType: providers.TogetherProvider{}},
+		{name: "deepseek", cfg: config{Provider: "deepseek", ProviderAPIKey: "key"}, wantType: providers.DeepSeekProvider{}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -222,6 +228,10 @@ func TestBuildModelConfigPrefixesProvider(t *testing.T) {
 	if cfg.Primary != "together/moonshotai/Kimi-K2.5" {
 		t.Fatalf("cfg=%#v", cfg)
 	}
+	cfg = buildModelConfig(config{Provider: "deepseek", ProviderModel: "deepseek-chat"})
+	if cfg.Primary != "deepseek/deepseek-chat" {
+		t.Fatalf("cfg=%#v", cfg)
+	}
 	cfg = buildModelConfig(config{})
 	if cfg.Primary != "mock/duraclaw" {
 		t.Fatalf("cfg=%#v", cfg)
@@ -233,6 +243,9 @@ func TestBuildProviderRegistryUsesProviderIdentity(t *testing.T) {
 		t.Fatalf("default=%s", got)
 	}
 	if got := buildProviderRegistry(config{Provider: "together"}).DefaultProvider(); got != "together" {
+		t.Fatalf("default=%s", got)
+	}
+	if got := buildProviderRegistry(config{Provider: "deepseek"}).DefaultProvider(); got != "deepseek" {
 		t.Fatalf("default=%s", got)
 	}
 	if got := buildProviderRegistry(config{Provider: "local"}).DefaultProvider(); got != "openai-compatible" {

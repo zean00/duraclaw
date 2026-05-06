@@ -139,6 +139,38 @@ func TestTogetherProviderUsesTogetherDefaultBaseURLAndModel(t *testing.T) {
 	}
 }
 
+func TestDeepSeekProviderUsesDeepSeekDefaultBaseURLAndModel(t *testing.T) {
+	p := DeepSeekProvider{APIKey: "key"}
+	compatible := p.compatible()
+	if compatible.BaseURL != "https://api.deepseek.com" || compatible.DefaultModel != "deepseek-chat" {
+		t.Fatalf("compatible=%#v", compatible)
+	}
+}
+
+func TestDeepSeekProviderNormalizesJSONResponseFormat(t *testing.T) {
+	var sawResponseFormat any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		sawResponseFormat = body["response_format"]
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{
+				"message":       map[string]any{"content": `{"ok":true}`},
+				"finish_reason": "stop",
+			}},
+		})
+	}))
+	defer server.Close()
+	_, err := (DeepSeekProvider{BaseURL: server.URL, APIKey: "key"}).Chat(t.Context(), []Message{{Role: "user", Content: "json"}}, nil, "", map[string]any{"response_format": "json_object"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := sawResponseFormat.(map[string]any)
+	if !ok || got["type"] != "json_object" {
+		t.Fatalf("response_format=%#v", sawResponseFormat)
+	}
+}
+
 func TestResponseContentTextHandlesArrayContent(t *testing.T) {
 	got := responseContentText([]any{
 		map[string]any{"type": "text", "text": "hello"},

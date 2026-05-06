@@ -351,6 +351,11 @@ func validateProfileConfigValues(value any) error {
 				return fmt.Errorf("profile_config.tool_selection.confidence_threshold must be between 0 and 1")
 			}
 		}
+		if raw, ok := selection["options"]; ok {
+			if _, ok := raw.(map[string]any); !ok {
+				return fmt.Errorf("profile_config.tool_selection.options must be an object")
+			}
+		}
 	}
 	if raw, ok := obj["agent_delegation"]; ok {
 		delegation, ok := raw.(map[string]any)

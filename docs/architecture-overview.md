@@ -30,7 +30,7 @@ Same-session runs are serialized by the worker claim query. Different sessions m
 | --- | --- |
 | ACP handlers | Nexus-facing sessions, runs, artifacts, events, resume/cancel, outbound status, and admin APIs. |
 | Runtime worker | Durable run execution, provider calls, tool loop, workflow handoff, checkpoints, cancellation, and final messages. |
-| Providers | OpenAI, OpenRouter, Together AI, OpenAI-compatible chat, multimodal content, embeddings, streaming contracts, and media generation capabilities. |
+| Providers | OpenAI, OpenRouter, Together AI, DeepSeek, OpenAI-compatible chat, multimodal content, embeddings, streaming contracts, and media generation capabilities. |
 | Tools | Local durable tool contracts, argument validation, panic recovery, media generation, memory, preferences, workflow launch, and user clarification. |
 | MCP manager | HTTP, SSE, stdio JSON-RPC, persistent stdio, tool/resource/prompt discovery, context propagation, and call persistence. |
 | Workflow executor | Durable DAG execution with node states, edge activations, model/tool/MCP/retrieval/memory/artifact/timer/background nodes. |

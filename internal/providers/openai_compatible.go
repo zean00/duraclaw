@@ -782,3 +782,60 @@ func (p TogetherProvider) compatible() OpenAICompatibleProvider {
 		HTTPClient:   p.HTTPClient,
 	}
 }
+
+type DeepSeekProvider struct {
+	APIKey       string
+	BaseURL      string
+	DefaultModel string
+	HTTPClient   *http.Client
+}
+
+func (p DeepSeekProvider) GetDefaultModel() string {
+	return p.compatible().GetDefaultModel()
+}
+
+func (p DeepSeekProvider) Chat(ctx context.Context, messages []Message, tools []ToolDefinition, model string, options map[string]any) (*LLMResponse, error) {
+	return p.compatible().Chat(ctx, messages, tools, model, normalizeDeepSeekOptions(options))
+}
+
+func (p DeepSeekProvider) ChatDurable(ctx context.Context, meta CallMetadata, messages []Message, tools []ToolDefinition, model string, options map[string]any) (*LLMResponse, error) {
+	return p.compatible().ChatDurable(ctx, meta, messages, tools, model, normalizeDeepSeekOptions(options))
+}
+
+func (p DeepSeekProvider) ChatStream(ctx context.Context, messages []Message, tools []ToolDefinition, model string, options map[string]any) (<-chan StreamDelta, error) {
+	return p.compatible().ChatStream(ctx, messages, tools, model, normalizeDeepSeekOptions(options))
+}
+
+func (p DeepSeekProvider) compatible() OpenAICompatibleProvider {
+	baseURL := p.BaseURL
+	if strings.TrimSpace(baseURL) == "" {
+		baseURL = "https://api.deepseek.com"
+	}
+	defaultModel := p.DefaultModel
+	if strings.TrimSpace(defaultModel) == "" {
+		defaultModel = "deepseek-chat"
+	}
+	return OpenAICompatibleProvider{
+		BaseURL:      baseURL,
+		APIKey:       p.APIKey,
+		DefaultModel: defaultModel,
+		HTTPClient:   p.HTTPClient,
+	}
+}
+
+func normalizeDeepSeekOptions(options map[string]any) map[string]any {
+	if len(options) == 0 {
+		return options
+	}
+	out := make(map[string]any, len(options))
+	for key, value := range options {
+		if key == "response_format" {
+			if raw, ok := value.(string); ok && strings.TrimSpace(raw) == "json_object" {
+				out[key] = map[string]any{"type": "json_object"}
+				continue
+			}
+		}
+		out[key] = value
+	}
+	return out
+}

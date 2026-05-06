@@ -44,7 +44,7 @@ The service applies embedded SQL migrations on startup, starts the durable run w
 It also starts an async outbox worker with a placeholder sink; Nexus delivery can replace that sink without changing runtime persistence.
 `/readyz` verifies database connectivity and returns queue counts for queued/active runs, pending outbox rows, queued async writes, and due scheduler jobs.
 
-Provider configuration defaults to the built-in mock provider. Duraclaw supports OpenAI, OpenRouter, Together AI, and generic OpenAI-compatible `/chat/completions` endpoints for local LLM servers.
+Provider configuration defaults to the built-in mock provider. Duraclaw supports OpenAI, OpenRouter, Together AI, DeepSeek, and generic OpenAI-compatible `/chat/completions` endpoints for local LLM servers.
 
 OpenAI:
 
@@ -75,6 +75,15 @@ DURACLAW_PROVIDER_MODEL=moonshotai/Kimi-K2.5
 DURACLAW_PROVIDER_FALLBACKS=mock/duraclaw
 ```
 
+DeepSeek:
+
+```bash
+DURACLAW_PROVIDER=deepseek
+DURACLAW_PROVIDER_API_KEY=...
+DURACLAW_PROVIDER_MODEL=deepseek-chat
+DURACLAW_PROVIDER_FALLBACKS=mock/duraclaw
+```
+
 Generic OpenAI-compatible or local LLM:
 
 ```bash
@@ -85,7 +94,7 @@ DURACLAW_PROVIDER_MODEL=llama3.1
 DURACLAW_PROVIDER_FALLBACKS=mock/duraclaw
 ```
 
-OpenAI, OpenRouter, and Together chat requests support provider message content arrays for multimodal inputs when the selected model supports those modalities. ACP run parts can include `text`, `image_url`, `file`, `input_audio`, and `video_url`; Duraclaw maps those to OpenAI-compatible content part shapes. Use URL/data URI fields for images/files/videos and base64 `data` plus `format` for audio.
+OpenAI, OpenRouter, Together, and DeepSeek chat requests use OpenAI-compatible message shapes. Multimodal content parts are passed through when the selected provider/model supports those modalities. ACP run parts can include `text`, `image_url`, `file`, `input_audio`, and `video_url`; Duraclaw maps those to OpenAI-compatible content part shapes. Use URL/data URI fields for images/files/videos and base64 `data` plus `format` for audio.
 
 Knowledge ingestion and workflow retrieval default to a deterministic local hash embedder. To use an OpenAI-compatible `/embeddings` endpoint:
 
@@ -132,7 +141,7 @@ DURACLAW_ARTIFACT_PROCESSOR_RAW_MEDIA_ALLOWED=false
 DURACLAW_ARTIFACT_PROCESSOR_MAX_RETRIES=0
 ```
 
-To use a built-in provider-backed processor through OpenAI, OpenRouter, Together AI, or an OpenAI-compatible/local multimodal endpoint:
+To use a built-in provider-backed processor through OpenAI, OpenRouter, Together AI, DeepSeek, or an OpenAI-compatible/local multimodal endpoint:
 
 ```bash
 DURACLAW_ARTIFACT_PROCESSOR_PROVIDER=openai
@@ -160,6 +169,17 @@ DURACLAW_ARTIFACT_PROCESSOR_MODALITIES=image,document
 ```
 
 OpenRouter audio transcription uses OpenRouter's `/audio/transcriptions` STT endpoint, defaults to `openai/whisper-large-v3` unless artifact metadata supplies `transcription_model` or `model`, and persists a `transcript` representation. Provider processors use multimodal chat input parts for other modalities and persist standard artifact representations such as `vision_summary`, `document_text`, `transcript`, and `video_summary`.
+
+To compare models on Duraclaw's pre-response decisions:
+
+```bash
+DURACLAW_EVAL_PROVIDER=together \
+DURACLAW_EVAL_API_KEY=... \
+DURACLAW_EVAL_MODEL=MiniMaxAI/MiniMax-M2.7 \
+go run ./cmd/duraclaw-eval -mode all
+```
+
+The eval emits JSON lines for scope judgement and tool-selection cases and exits non-zero if any case fails.
 
 Admin endpoints are open by default for local development. Set this in shared or production environments:
 

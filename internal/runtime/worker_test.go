@@ -96,6 +96,17 @@ func TestExtractTextForReminderDueRunUsesReminderMessageFromTrustedPrompt(t *tes
 	}
 }
 
+func TestSessionGreetingRunDetected(t *testing.T) {
+	raw, _ := json.Marshal(map[string]any{
+		"system_event":       "session_greeting",
+		"nickname":           "Sahal",
+		"preferred_language": "id",
+	})
+	if !isSessionGreetingRun(raw) {
+		t.Fatal("expected session greeting run")
+	}
+}
+
 func TestToolCallsForExecutionInterleavesFirstCallOnly(t *testing.T) {
 	calls := []providers.ToolCall{
 		{ID: "call-1", Function: providers.FunctionCall{Name: "first"}},

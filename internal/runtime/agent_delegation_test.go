@@ -43,3 +43,10 @@ func TestRefinementRunsDoNotCreateMentionDelegations(t *testing.T) {
 		t.Fatal("normal run should scan mentions")
 	}
 }
+
+func TestDelegationAckFollowsIndonesianSourceText(t *testing.T) {
+	got := delegationAckText([]db.AgentDelegation{{TargetHandle: "shop"}}, "@shop carikan jilbab yang bagus")
+	if !strings.Contains(got, "Aku teruskan ke @shop") {
+		t.Fatalf("ack=%q", got)
+	}
+}

@@ -211,6 +211,12 @@ func buildProvider(cfg config) providers.LLMProvider {
 			APIKey:       cfg.ProviderAPIKey,
 			DefaultModel: cfg.ProviderModel,
 		}
+	case "deepseek":
+		return providers.DeepSeekProvider{
+			BaseURL:      cfg.ProviderBaseURL,
+			APIKey:       cfg.ProviderAPIKey,
+			DefaultModel: cfg.ProviderModel,
+		}
 	case "openai-compatible":
 		return providers.OpenAICompatibleProvider{
 			BaseURL:      cfg.ProviderBaseURL,
@@ -284,6 +290,8 @@ func buildProviderArtifactProcessor(cfg config) artifacts.Processor {
 		provider = providers.OpenRouterProvider{BaseURL: baseURL, APIKey: apiKey, DefaultModel: model, Referer: cfg.ProviderReferer, Title: cfg.ProviderTitle}
 	case "together":
 		provider = providers.TogetherProvider{BaseURL: baseURL, APIKey: apiKey, DefaultModel: model}
+	case "deepseek":
+		provider = providers.DeepSeekProvider{BaseURL: baseURL, APIKey: apiKey, DefaultModel: model}
 	case "openai-compatible":
 		provider = providers.OpenAICompatibleProvider{BaseURL: baseURL, APIKey: apiKey, DefaultModel: model}
 	default:
@@ -339,7 +347,7 @@ func stringSet(values []string) map[string]bool {
 func buildProviderRegistry(cfg config) *providers.Registry {
 	defaultProvider := providers.NormalizeProvider(cfg.Provider)
 	switch defaultProvider {
-	case "openai", "openrouter", "openai-compatible", "together":
+	case "openai", "openrouter", "openai-compatible", "together", "deepseek":
 	default:
 		defaultProvider = "mock"
 	}
@@ -377,7 +385,7 @@ func buildProfileRetriever(cfg config) profiles.Retriever {
 func buildModelConfig(cfg config) providers.ModelConfig {
 	defaultProvider := providers.NormalizeProvider(cfg.Provider)
 	switch defaultProvider {
-	case "openai", "openrouter", "openai-compatible", "together":
+	case "openai", "openrouter", "openai-compatible", "together", "deepseek":
 	default:
 		defaultProvider = "mock"
 	}
@@ -390,6 +398,8 @@ func buildModelConfig(cfg config) providers.ModelConfig {
 			primary = "openrouter/" + providers.OpenRouterProvider{DefaultModel: cfg.ProviderModel}.GetDefaultModel()
 		case "together":
 			primary = "together/" + providers.TogetherProvider{DefaultModel: cfg.ProviderModel}.GetDefaultModel()
+		case "deepseek":
+			primary = "deepseek/" + providers.DeepSeekProvider{DefaultModel: cfg.ProviderModel}.GetDefaultModel()
 		case "openai-compatible":
 			primary = "openai-compatible/" + providers.OpenAICompatibleProvider{DefaultModel: cfg.ProviderModel}.GetDefaultModel()
 		default:
@@ -407,7 +417,7 @@ func shouldPrefixModelRef(defaultProvider, primary string) bool {
 		return true
 	}
 	switch defaultProvider {
-	case "openrouter", "openai-compatible", "together":
+	case "openrouter", "openai-compatible", "together", "deepseek":
 		return ref.Provider != defaultProvider
 	default:
 		return false

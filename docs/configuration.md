@@ -60,6 +60,15 @@ DURACLAW_PROVIDER_MODEL=moonshotai/Kimi-K2.5
 DURACLAW_PROVIDER_FALLBACKS=mock/duraclaw
 ```
 
+DeepSeek:
+
+```bash
+DURACLAW_PROVIDER=deepseek
+DURACLAW_PROVIDER_API_KEY=...
+DURACLAW_PROVIDER_MODEL=deepseek-chat
+DURACLAW_PROVIDER_FALLBACKS=mock/duraclaw
+```
+
 OpenAI-compatible or local LLM:
 
 ```bash
@@ -70,7 +79,7 @@ DURACLAW_PROVIDER_MODEL=llama3.1
 DURACLAW_PROVIDER_FALLBACKS=mock/duraclaw
 ```
 
-OpenAI, OpenRouter, and Together chat requests support multimodal message content arrays when the selected model supports those modalities. ACP run parts can include `text`, `image_url`, `file`, `input_audio`, and `video_url`.
+OpenAI, OpenRouter, Together, and DeepSeek chat requests use OpenAI-compatible message shapes. Multimodal content parts are passed through when the selected provider/model supports those modalities. ACP run parts can include `text`, `image_url`, `file`, `input_audio`, and `video_url`.
 
 ### OpenRouter model guidance
 
@@ -245,6 +254,24 @@ Modes:
 - `llm`: always use the configured router model after authorization.
 
 If `model` is empty, router fallback uses the run's normal `model_config`. Router failures are non-fatal; Duraclaw falls back to the deterministic shortlist and records a `tool_selection.completed` run event.
+
+## Decision Eval CLI
+
+Use `cmd/duraclaw-eval` to compare models on the two pre-response decisions that most affect runtime behavior:
+
+- Scope judgement: direct versus implicit intent, in-scope versus out-of-scope classification, and second-pass implicit context handling.
+- Tool selection: selecting the smallest useful tool set for reminders, reminder updates, preferences, and plain chat.
+
+Example with Together AI:
+
+```bash
+DURACLAW_EVAL_PROVIDER=together \
+DURACLAW_EVAL_API_KEY=... \
+DURACLAW_EVAL_MODEL=MiniMaxAI/MiniMax-M2.7 \
+go run ./cmd/duraclaw-eval -mode all
+```
+
+The command prints one JSON object per case plus a final `summary` object. It exits non-zero when any case fails, which makes it suitable for CI or manual model comparison. Use `-mode scope` or `-mode tools` to run only one slice.
 
 Tool metadata can add deterministic domain hints without granting access:
 

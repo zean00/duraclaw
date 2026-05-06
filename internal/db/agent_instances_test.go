@@ -54,6 +54,10 @@ func TestValidateAgentInstanceVersionSpecAllowsKnownConfigKeys(t *testing.T) {
 				"model":                "openrouter/openai/gpt-4.1-mini",
 				"max_tools":            6,
 				"confidence_threshold": 0.65,
+				"options": map[string]any{
+					"max_tokens": 128,
+					"reasoning":  map[string]any{"max_tokens": 64},
+				},
 			},
 		},
 	})
@@ -126,6 +130,7 @@ func TestValidateAgentInstanceVersionSpecRejectsInvalidToolSelectionValues(t *te
 		{"tool_selection": map[string]any{"max_tools": -1}},
 		{"tool_selection": map[string]any{"max_tools": 1.5}},
 		{"tool_selection": map[string]any{"confidence_threshold": 2}},
+		{"tool_selection": map[string]any{"options": "bad"}},
 	}
 	for _, profileConfig := range cases {
 		err := ValidateAgentInstanceVersionSpecForTest(AgentInstanceVersionSpec{

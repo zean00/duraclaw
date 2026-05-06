@@ -360,7 +360,7 @@ func (w *Worker) process(ctx context.Context, run *db.Run) (err error) {
 			return err
 		}
 		if len(delegations) > 0 {
-			return w.finalizeAssistantResponse(ctx, run, delegationAckText(delegations))
+			return w.finalizeAssistantResponse(ctx, run, delegationAckText(delegations, initialText))
 		}
 	}
 	workflowContext, err := w.runWorkflowPhase(ctx, run)
@@ -385,8 +385,11 @@ func (w *Worker) process(ctx context.Context, run *db.Run) (err error) {
 	}
 	scope = mergePromptInjectionRisk(scope, detectPromptInjectionRisk(text))
 	var recommendations <-chan recommendationSidecarResult
+	sessionGreeting := isSessionGreetingRun(run.Input)
 	if broadcastGeneration {
 		w.enqueueAsyncRunEvent(ctx, run, "broadcast_generation.recommendations_blocked", map[string]any{"reason": "system broadcast generation"})
+	} else if sessionGreeting {
+		w.enqueueAsyncRunEvent(ctx, run, "session_greeting.recommendations_blocked", map[string]any{"reason": "session greeting must only generate greeting copy"})
 	} else if !scope.InjectionRisk {
 		recommendations = w.startRecommendationSidecar(ctx, run, scope, text)
 	} else {
@@ -399,6 +402,8 @@ func (w *Worker) process(ctx context.Context, run *db.Run) (err error) {
 	var toolDefs []providers.ToolDefinition
 	if broadcastGeneration {
 		w.enqueueAsyncRunEvent(ctx, run, "broadcast_generation.tools_blocked", map[string]any{"reason": "system broadcast generation must only produce message copy"})
+	} else if sessionGreeting {
+		w.enqueueAsyncRunEvent(ctx, run, "session_greeting.tools_blocked", map[string]any{"reason": "session greeting must not call tools"})
 	} else if isReminderDueRun(run.Input) {
 		w.enqueueAsyncRunEvent(ctx, run, "reminder_due.tools_blocked", map[string]any{"reason": "due reminder notification must not create or update reminders"})
 	} else if !scope.InjectionRisk {
@@ -691,7 +696,17 @@ func isAgentDelegationChildRun(input json.RawMessage) bool {
 	return ok
 }
 
-func delegationAckText(delegations []db.AgentDelegation) string {
+func delegationAckText(delegations []db.AgentDelegation, sourceText string) string {
+	if looksIndonesian(sourceText) {
+		if len(delegations) == 1 {
+			return "Aku teruskan ke @" + delegations[0].TargetHandle + ". Hasilnya akan muncul di sini saat sudah siap."
+		}
+		var handles []string
+		for _, delegation := range delegations {
+			handles = append(handles, "@"+delegation.TargetHandle)
+		}
+		return "Aku teruskan ke " + strings.Join(handles, ", ") + ". Hasilnya akan muncul di sini saat sudah siap."
+	}
 	if len(delegations) == 1 {
 		return "I delegated that to @" + delegations[0].TargetHandle + ". I will send the result here when it is ready."
 	}
@@ -700,6 +715,17 @@ func delegationAckText(delegations []db.AgentDelegation) string {
 		handles = append(handles, "@"+delegation.TargetHandle)
 	}
 	return "I delegated that to " + strings.Join(handles, ", ") + ". I will send the results here when they are ready."
+}
+
+func looksIndonesian(text string) bool {
+	lower := strings.ToLower(text)
+	markers := []string{"aku", "saya", "tolong", "bantu", "carikan", "buat", "untuk", "yang", "dong", "donk", "jilbab", "produk", "rekomendasi"}
+	for _, marker := range markers {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func randomHex(bytesLen int) string {
@@ -1729,11 +1755,12 @@ type recommendationProfileConfig struct {
 }
 
 type toolSelectionProfileConfig struct {
-	Enabled             bool    `json:"enabled"`
-	Mode                string  `json:"mode"`
-	Model               string  `json:"model"`
-	MaxTools            int     `json:"max_tools"`
-	ConfidenceThreshold float64 `json:"confidence_threshold"`
+	Enabled             bool           `json:"enabled"`
+	Mode                string         `json:"mode"`
+	Model               string         `json:"model"`
+	MaxTools            int            `json:"max_tools"`
+	ConfidenceThreshold float64        `json:"confidence_threshold"`
+	Options             map[string]any `json:"options"`
 }
 
 type agentDelegationProfileConfig struct {
@@ -4045,6 +4072,12 @@ func isBroadcastGenerationRun(raw json.RawMessage) bool {
 	payload := inputMap(raw)
 	eventType, _ := payload["event_type"].(string)
 	return strings.EqualFold(strings.TrimSpace(eventType), "broadcast_generation")
+}
+
+func isSessionGreetingRun(raw json.RawMessage) bool {
+	payload := inputMap(raw)
+	eventType, _ := payload["system_event"].(string)
+	return strings.EqualFold(strings.TrimSpace(eventType), "session_greeting")
 }
 
 func reminderDuePromptText(raw json.RawMessage) string {
