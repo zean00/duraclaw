@@ -396,6 +396,12 @@ func (s *Service) runReminderSubscriptions(ctx context.Context, now time.Time) (
 	created := 0
 	for _, sub := range subs {
 		fireAt := sub.NextRunAt
+		if reminderStoppedBeforeFire(sub, fireAt) {
+			if err := s.store.CompleteReminderSubscription(ctx, sub.ID, fireAt, time.Time{}); err != nil {
+				return created, err
+			}
+			continue
+		}
 		input := map[string]any{}
 		_ = json.Unmarshal(sub.Payload, &input)
 		if len(input) == 0 {
@@ -422,7 +428,7 @@ func (s *Service) runReminderSubscriptions(ctx context.Context, now time.Time) (
 		}, input); err != nil {
 			return created, err
 		}
-		next, err := Next(sub.Schedule, maxTime(now, fireAt))
+		next, err := nextReminderRunAt(sub, now, fireAt)
 		if err != nil {
 			return created, err
 		}
@@ -432,6 +438,40 @@ func (s *Service) runReminderSubscriptions(ctx context.Context, now time.Time) (
 		created++
 	}
 	return created, nil
+}
+
+func reminderStoppedBeforeFire(sub db.ReminderSubscription, fireAt time.Time) bool {
+	if sub.RepeatUntil != nil && !fireAt.Before(*sub.RepeatUntil) {
+		return true
+	}
+	if sub.RepeatCount > 0 && sub.FiredCount >= sub.RepeatCount {
+		return true
+	}
+	return false
+}
+
+func nextReminderRunAt(sub db.ReminderSubscription, now, fireAt time.Time) (time.Time, error) {
+	completedCount := sub.FiredCount + 1
+	if sub.RepeatCount > 0 && completedCount >= sub.RepeatCount {
+		return time.Time{}, nil
+	}
+	var next time.Time
+	if sub.RepeatIntervalSeconds > 0 {
+		next = fireAt.Add(time.Duration(sub.RepeatIntervalSeconds) * time.Second)
+	} else {
+		calculated, err := Next(sub.Schedule, maxTime(now, fireAt))
+		if err != nil {
+			return time.Time{}, err
+		}
+		next = calculated
+	}
+	if next.IsZero() {
+		return time.Time{}, nil
+	}
+	if sub.RepeatUntil != nil && next.After(*sub.RepeatUntil) {
+		return time.Time{}, nil
+	}
+	return next, nil
 }
 
 func dueReminderPromptText(instruction, reminderText string, sub db.ReminderSubscription, fireAt time.Time) string {

@@ -146,12 +146,13 @@ func (w *Worker) toolSelectionMetadataForRun(ctx context.Context, run *db.Run) (
 
 func builtInToolSelectionMetadata() map[string]toolSelectionMetadata {
 	return map[string]toolSelectionMetadata{
-		"create_reminder":       {Tags: []string{"reminder", "schedule", "alarm", "future"}, SideEffect: "write"},
-		"update_reminder":       {Tags: []string{"reminder", "schedule", "alarm", "update"}, SideEffect: "write"},
+		"create_reminder":       {Tags: []string{"reminder", "schedule", "alarm", "future", "recurring", "repeat"}, SideEffect: "write"},
+		"update_reminder":       {Tags: []string{"reminder", "schedule", "alarm", "update", "recurring", "repeat"}, SideEffect: "write"},
 		"remember":              {Tags: []string{"memory", "stable_fact", "profile"}, SideEffect: "write"},
 		"save_preference":       {Tags: []string{"preference", "style", "habit"}, SideEffect: "write"},
 		"list_memories":         {Tags: []string{"memory", "read"}, SideEffect: "read"},
 		"list_preferences":      {Tags: []string{"preference", "read"}, SideEffect: "read"},
+		"duraclaw.current_time": {Tags: []string{"time", "date", "timezone", "relative_time", "schedule", "reminder", "calendar"}, TriggerPhrases: []string{"today", "tomorrow", "tonight", "next week", "besok", "lusa", "nanti", "pagi", "malam", "jam"}, SideEffect: "read"},
 		"duraclaw.ask_user":     {Tags: []string{"clarification", "missing_details"}, SideEffect: "control"},
 		"duraclaw.run_workflow": {Tags: []string{"workflow", "process"}, SideEffect: "write"},
 		"generate_image":        {Tags: []string{"media", "image", "generate"}, SideEffect: "write"},

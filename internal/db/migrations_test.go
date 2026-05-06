@@ -466,3 +466,22 @@ func TestTwentyFourthMigrationContainsAgentDelegations(t *testing.T) {
 		}
 	}
 }
+
+func TestTwentyFifthMigrationContainsBoundedReminderFields(t *testing.T) {
+	raw, err := migrationFS.ReadFile("migrations/0025_bounded_reminders.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw)
+	for _, want := range []string{
+		"repeat_interval_seconds",
+		"repeat_until",
+		"repeat_count",
+		"fired_count",
+		"reminder_repeat_interval_non_negative",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("migration missing %q", want)
+		}
+	}
+}

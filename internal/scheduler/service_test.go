@@ -21,6 +21,7 @@ type fakeSchedulerStore struct {
 	sharedCompleted          bool
 	runCreated               bool
 	runCreatedCount          int
+	completedNextRunAt       time.Time
 	outboundCreated          int
 	runDeliveryCount         int
 	completedDeliveries      []db.SharedSchedulerRunDelivery
@@ -48,8 +49,9 @@ func (s *fakeSchedulerStore) CompleteSchedulerJob(_ context.Context, _ string, _
 	return nil
 }
 
-func (s *fakeSchedulerStore) CompleteReminderSubscription(_ context.Context, _ string, _, _ time.Time) error {
+func (s *fakeSchedulerStore) CompleteReminderSubscription(_ context.Context, _ string, _, nextRunAt time.Time) error {
 	s.completed = true
+	s.completedNextRunAt = nextRunAt
 	return nil
 }
 
@@ -200,6 +202,63 @@ func TestServiceFansOutReminderSubscriptions(t *testing.T) {
 	reminder, ok := input["reminder"].(map[string]any)
 	if !ok || reminder["title"] != "bawa tas hitam" || reminder["subscription_id"] != "sub-1" || reminder["timezone"] != "Asia/Jakarta" {
 		t.Fatalf("reminder=%#v", input["reminder"])
+	}
+}
+
+func TestServiceAdvancesBoundedIntervalReminder(t *testing.T) {
+	payload, _ := json.Marshal(map[string]any{"text": "minum obat"})
+	fireAt := time.Date(2026, 4, 28, 8, 0, 0, 0, time.UTC)
+	repeatUntil := fireAt.Add(24 * time.Hour)
+	store := &fakeSchedulerStore{subs: []db.ReminderSubscription{{
+		ID: "sub-1", CustomerID: "c", UserID: "u", AgentInstanceID: "a", SessionID: "s", Title: "minum obat", Schedule: "@interval", Timezone: "Asia/Jakarta", NextRunAt: fireAt, Payload: payload,
+		RepeatIntervalSeconds: int((8 * time.Hour).Seconds()),
+		RepeatUntil:           &repeatUntil,
+	}}}
+	count, err := NewService(store, "owner").RunOnce(context.Background(), fireAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || !store.completed || !store.completedNextRunAt.Equal(fireAt.Add(8*time.Hour)) {
+		t.Fatalf("count=%d completed=%v next=%s", count, store.completed, store.completedNextRunAt)
+	}
+}
+
+func TestServiceStopsBoundedReminderAtRepeatCount(t *testing.T) {
+	payload, _ := json.Marshal(map[string]any{"text": "minum obat"})
+	fireAt := time.Date(2026, 4, 28, 8, 0, 0, 0, time.UTC)
+	store := &fakeSchedulerStore{subs: []db.ReminderSubscription{{
+		ID: "sub-1", CustomerID: "c", UserID: "u", AgentInstanceID: "a", SessionID: "s", Title: "minum obat", Schedule: "@interval", Timezone: "Asia/Jakarta", NextRunAt: fireAt, Payload: payload,
+		RepeatIntervalSeconds: int((8 * time.Hour).Seconds()),
+		RepeatCount:           3,
+		FiredCount:            2,
+	}}}
+	count, err := NewService(store, "owner").RunOnce(context.Background(), fireAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || !store.completed || !store.completedNextRunAt.IsZero() {
+		t.Fatalf("count=%d completed=%v next=%s", count, store.completed, store.completedNextRunAt)
+	}
+}
+
+func TestServiceSkipsReminderPastRepeatUntil(t *testing.T) {
+	payload, _ := json.Marshal(map[string]any{"text": "minum obat"})
+	fireAt := time.Date(2026, 4, 28, 8, 0, 0, 0, time.UTC)
+	repeatUntil := fireAt.Add(-time.Minute)
+	store := &fakeSchedulerStore{subs: []db.ReminderSubscription{{
+		ID: "sub-1", CustomerID: "c", UserID: "u", AgentInstanceID: "a", SessionID: "s", Title: "minum obat", Schedule: "@interval", Timezone: "Asia/Jakarta", NextRunAt: fireAt, Payload: payload,
+		RepeatIntervalSeconds: int((8 * time.Hour).Seconds()),
+		RepeatUntil:           &repeatUntil,
+	}}}
+	count, err := NewService(store, "owner").RunOnce(context.Background(), fireAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 || !store.completed || store.runCreated {
+		t.Fatalf("count=%d completed=%v runCreated=%v", count, store.completed, store.runCreated)
+	}
+	if !store.completedNextRunAt.IsZero() {
+		t.Fatalf("expired bounded reminder should be disabled, next=%s", store.completedNextRunAt)
 	}
 }
 

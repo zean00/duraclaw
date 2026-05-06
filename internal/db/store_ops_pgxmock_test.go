@@ -10,7 +10,7 @@ import (
 )
 
 func reminderRows() *pgxmock.Rows {
-	return pgxmock.NewRows([]string{"id", "customer_id", "user_id", "session_id", "agent_instance_id", "title", "schedule", "timezone", "payload", "enabled", "next_run_at", "last_fired_at", "metadata"})
+	return pgxmock.NewRows([]string{"id", "customer_id", "user_id", "session_id", "agent_instance_id", "title", "schedule", "timezone", "payload", "enabled", "next_run_at", "last_fired_at", "repeat_interval_seconds", "repeat_until", "repeat_count", "fired_count", "metadata"})
 }
 
 func TestStoreReminderSubscriptionMethodsWithPgxMock(t *testing.T) {
@@ -25,7 +25,7 @@ func TestStoreReminderSubscriptionMethodsWithPgxMock(t *testing.T) {
 	}
 
 	mock.ExpectQuery("SELECT id").WithArgs("c1", 100, "u1").
-		WillReturnRows(reminderRows().AddRow("sub-1", "c1", "u1", "s1", "a1", "title", "* * * * *", "UTC", []byte(`{}`), true, later, nil, []byte(`{}`)))
+		WillReturnRows(reminderRows().AddRow("sub-1", "c1", "u1", "s1", "a1", "title", "* * * * *", "UTC", []byte(`{}`), true, later, nil, 0, nil, 0, 0, []byte(`{}`)))
 	subs, err := store.ListReminderSubscriptions(ctx, "c1", "u1", 0)
 	if err != nil || len(subs) != 1 || subs[0].ID != "sub-1" {
 		t.Fatalf("subs=%#v err=%v", subs, err)
@@ -33,8 +33,8 @@ func TestStoreReminderSubscriptionMethodsWithPgxMock(t *testing.T) {
 
 	mock.ExpectQuery("UPDATE reminder_subscriptions").
 		WithArgs(1, owner, "60.000000 seconds").
-		WillReturnRows(pgxmock.NewRows([]string{"id", "customer_id", "user_id", "session_id", "agent_instance_id", "title", "schedule", "timezone", "payload", "enabled", "next_run_at", "last_fired_at", "metadata", "lease_owner", "lease_expires_at"}).
-			AddRow("sub-1", "c1", "u1", "s1", "a1", "title", "* * * * *", "UTC", []byte(`{}`), true, later, nil, []byte(`{}`), &owner, &later))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "customer_id", "user_id", "session_id", "agent_instance_id", "title", "schedule", "timezone", "payload", "enabled", "next_run_at", "last_fired_at", "repeat_interval_seconds", "repeat_until", "repeat_count", "fired_count", "metadata", "lease_owner", "lease_expires_at"}).
+			AddRow("sub-1", "c1", "u1", "s1", "a1", "title", "* * * * *", "UTC", []byte(`{}`), true, later, nil, 0, nil, 0, 0, []byte(`{}`), &owner, &later))
 	claimed, err := store.ClaimDueReminderSubscriptions(ctx, owner, 1, time.Minute)
 	if err != nil || len(claimed) != 1 || claimed[0].LeaseOwner == nil {
 		t.Fatalf("claimed=%#v err=%v", claimed, err)
@@ -55,8 +55,8 @@ func TestStoreReminderSubscriptionMethodsWithPgxMock(t *testing.T) {
 	title := "updated"
 	enabled := false
 	mock.ExpectQuery("UPDATE reminder_subscriptions").
-		WithArgs("sub-1", "c1", "u1", title, nil, nil, nil, nil, nil, enabled).
-		WillReturnRows(reminderRows().AddRow("sub-1", "c1", "u1", "s1", "a1", title, "* * * * *", "UTC", []byte(`{}`), false, later, nil, []byte(`{}`)))
+		WithArgs("sub-1", "c1", "u1", title, nil, nil, nil, nil, nil, nil, nil, nil, nil, enabled).
+		WillReturnRows(reminderRows().AddRow("sub-1", "c1", "u1", "s1", "a1", title, "* * * * *", "UTC", []byte(`{}`), false, later, nil, 0, nil, 0, 0, []byte(`{}`)))
 	updated, err := store.UpdateUserReminderSubscription(ctx, "sub-1", "c1", "u1", ReminderSubscriptionUpdate{Title: &title, Enabled: &enabled})
 	if err != nil || updated.Title != title || updated.Enabled {
 		t.Fatalf("updated=%#v err=%v", updated, err)
@@ -66,6 +66,44 @@ func TestStoreReminderSubscriptionMethodsWithPgxMock(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestUpdateUserReminderSubscriptionRejectsZeroExistingInterval(t *testing.T) {
+	store, mock := newMockStore(t)
+	ctx := context.Background()
+	later := time.Now().UTC().Add(time.Hour)
+	zero := 0
+
+	mock.ExpectQuery("SELECT schedule, next_run_at, repeat_interval_seconds, repeat_until").
+		WithArgs("sub-1", "c1", "u1").
+		WillReturnRows(pgxmock.NewRows([]string{"schedule", "next_run_at", "repeat_interval_seconds", "repeat_until"}).
+			AddRow("@interval", later, 3600, nil))
+	_, err := store.UpdateUserReminderSubscription(ctx, "sub-1", "c1", "u1", ReminderSubscriptionUpdate{RepeatIntervalSeconds: &zero})
+	if err == nil || !strings.Contains(err.Error(), "positive") {
+		t.Fatalf("expected positive interval error, got %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestUpdateUserReminderSubscriptionRejectsRepeatUntilBeforeExistingNextRun(t *testing.T) {
+	store, mock := newMockStore(t)
+	ctx := context.Background()
+	later := time.Now().UTC().Add(time.Hour)
+	repeatUntil := later.Add(-time.Minute)
+
+	mock.ExpectQuery("SELECT schedule, next_run_at, repeat_interval_seconds, repeat_until").
+		WithArgs("sub-1", "c1", "u1").
+		WillReturnRows(pgxmock.NewRows([]string{"schedule", "next_run_at", "repeat_interval_seconds", "repeat_until"}).
+			AddRow("@interval", later, 3600, nil))
+	_, err := store.UpdateUserReminderSubscription(ctx, "sub-1", "c1", "u1", ReminderSubscriptionUpdate{RepeatUntil: &repeatUntil})
+	if err == nil || !strings.Contains(err.Error(), "repeat_until") {
+		t.Fatalf("expected repeat_until error, got %v", err)
+	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
 	}

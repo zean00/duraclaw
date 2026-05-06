@@ -426,6 +426,9 @@ func (w *Worker) process(ctx context.Context, run *db.Run) (err error) {
 	}
 	w.enqueueAsyncObservability(ctx, run, "checkpoint.provider_complete", map[string]any{"finish_reason": resp.FinishReason, "content_length": len(resp.Content)})
 	finalContent := resp.Content
+	if isReminderDueRun(run.Input) {
+		finalContent = sanitizeReminderDueResponse(finalContent, run.Input)
+	}
 	if recommendations != nil {
 		finalContent = w.applyRecommendationResult(ctx, run, scope, finalContent, recommendations)
 	}
@@ -2794,7 +2797,7 @@ func (w *Worker) trustedRuntimeContext(ctx context.Context, run *db.Run) string 
 }
 
 func currentTimePromptContext(now time.Time) string {
-	return "Trusted runtime time context: current time is " + now.Format(time.RFC3339) + " (" + now.Location().String() + "). Convert relative dates such as today, tomorrow, and next week from this timestamp, and never create scheduled reminders in the past."
+	return "Trusted runtime time context: current time is " + now.Format(time.RFC3339) + " (" + now.Location().String() + "). Convert relative dates such as today, tomorrow, and next week from this timestamp, and never create scheduled reminders in the past. When a precise local timezone conversion is needed for a scheduled action, use duraclaw.current_time with the user's timezone if available."
 }
 
 type locationContext struct {
@@ -3581,6 +3584,22 @@ func internalToolDefinitions() []providers.ToolDefinition {
 		{
 			Type: "function",
 			Function: providers.ToolFunctionDefinition{
+				Name:        "duraclaw.current_time",
+				Description: "Return trusted current time. Use before converting relative dates or times such as today, tomorrow, tonight, next Friday, besok, nanti malam, or pagi into absolute timestamps for reminders, calendar events, travel mode, jobs, or other scheduled actions. Pass timezone when known.",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"timezone": map[string]any{"type": "string", "description": "Optional IANA timezone, for example Asia/Jakarta. Defaults to UTC."},
+						"at":       map[string]any{"type": "string", "description": "Optional RFC3339 instant to convert instead of current time."},
+						"locale":   map[string]any{"type": "string", "description": "Optional locale hint such as id-ID or en-US."},
+					},
+					"additionalProperties": false,
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: providers.ToolFunctionDefinition{
 				Name:        "duraclaw.run_workflow",
 				Description: "Run an assigned durable workflow and return its output.",
 				Parameters: map[string]any{
@@ -3611,11 +3630,13 @@ func internalToolDefinitions() []providers.ToolDefinition {
 }
 
 func (w *Worker) isInternalTool(name string) bool {
-	return name == "duraclaw.run_workflow" || name == "duraclaw.ask_user"
+	return name == "duraclaw.run_workflow" || name == "duraclaw.ask_user" || name == "duraclaw.current_time"
 }
 
 func (w *Worker) executeInternalTool(ctx context.Context, run *db.Run, stepID string, call providers.ToolCall) (string, error) {
 	switch call.Function.Name {
+	case "duraclaw.current_time":
+		return currentTimeToolResult(call.Function.Arguments, time.Now())
 	case "duraclaw.ask_user":
 		question, _ := call.Function.Arguments["question"].(string)
 		if strings.TrimSpace(question) == "" {
@@ -3687,6 +3708,54 @@ func (w *Worker) executeInternalTool(ctx context.Context, run *db.Run, stepID st
 	default:
 		return "", fmt.Errorf("unsupported internal tool %q", call.Function.Name)
 	}
+}
+
+func currentTimeToolResult(args map[string]any, now time.Time) (string, error) {
+	timezone, _ := args["timezone"].(string)
+	timezone = strings.TrimSpace(timezone)
+	if timezone == "" {
+		timezone = "UTC"
+	}
+	loc, err := time.LoadLocation(timezone)
+	if err != nil {
+		return "", fmt.Errorf("invalid timezone %q: %w", timezone, err)
+	}
+	instant := now
+	if raw, _ := args["at"].(string); strings.TrimSpace(raw) != "" {
+		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(raw))
+		if err != nil {
+			return "", fmt.Errorf("at must be RFC3339: %w", err)
+		}
+		instant = parsed
+	}
+	local := instant.In(loc)
+	dateOnly := func(t time.Time) string { return t.Format("2006-01-02") }
+	_, offsetSeconds := local.Zone()
+	payload := map[string]any{
+		"utc_time":           instant.UTC().Format(time.RFC3339),
+		"local_time":         local.Format(time.RFC3339),
+		"local_date":         dateOnly(local),
+		"local_clock":        local.Format("15:04:05"),
+		"local_weekday":      local.Weekday().String(),
+		"timezone":           timezone,
+		"utc_offset_seconds": offsetSeconds,
+		"locale":             strings.TrimSpace(stringArgFromMap(args, "locale")),
+		"relative_dates": map[string]any{
+			"yesterday": dateOnly(local.AddDate(0, 0, -1)),
+			"today":     dateOnly(local),
+			"tomorrow":  dateOnly(local.AddDate(0, 0, 1)),
+		},
+	}
+	raw, _ := json.Marshal(payload)
+	return "duraclaw.current_time: " + string(raw), nil
+}
+
+func stringArgFromMap(args map[string]any, key string) string {
+	if args == nil {
+		return ""
+	}
+	value, _ := args[key].(string)
+	return value
 }
 
 func (w *Worker) completedNonRetryableTools(ctx context.Context, runID string) (map[string]db.ToolCallRecord, error) {
@@ -3890,6 +3959,7 @@ func reminderDuePromptText(raw json.RawMessage) string {
 	payload := inputMap(raw)
 	reminder, _ := payload["reminder"].(map[string]any)
 	reminderText, _ := payload["text"].(string)
+	reminderText = extractReminderMessageText(reminderText)
 	if strings.TrimSpace(reminderText) == "" {
 		reminderText, _ = reminder["title"].(string)
 	}
@@ -3898,6 +3968,104 @@ func reminderDuePromptText(raw json.RawMessage) string {
 		return "Ini adalah pengingat yang waktunya sudah tiba. Tulis pesan pengingat singkat untuk pengguna. Jangan membuat atau menjadwalkan pengingat baru."
 	}
 	return fmt.Sprintf("Ini adalah pengingat yang waktunya sudah tiba: %q.\nTulis satu pesan pengingat singkat dan natural dalam Bahasa Indonesia untuk pengguna.\nJangan membuat, menjadwalkan, atau mengonfirmasi pengingat baru.\nJangan memakai kata besok, nanti, sebentar lagi, sudah dibuat, atau akan mengingatkan.\nContoh gaya: Jangan lupa {isi pengingat} hari ini.", reminderText)
+}
+
+func sanitizeReminderDueResponse(content string, raw json.RawMessage) string {
+	cleaned := stripReasoningBlocks(strings.TrimSpace(content))
+	if extracted := extractFinalAnswerLine(cleaned); extracted != "" && !looksLikeInternalReasoning(extracted) {
+		return extracted
+	}
+	if cleaned != "" && !looksLikeInternalReasoning(cleaned) {
+		return cleaned
+	}
+	if reminder := reminderTextFromInput(raw); reminder != "" {
+		return "Jangan lupa " + strings.TrimRight(reminder, ".!?") + "."
+	}
+	return "Ini pengingat dari Wulan."
+}
+
+func stripReasoningBlocks(content string) string {
+	content = regexp.MustCompile(`(?is)<think>.*?</think>`).ReplaceAllString(content, "")
+	content = regexp.MustCompile(`(?is)<reasoning>.*?</reasoning>`).ReplaceAllString(content, "")
+	return strings.TrimSpace(content)
+}
+
+func extractFinalAnswerLine(content string) string {
+	lines := strings.Split(content, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		lower := strings.ToLower(line)
+		for _, marker := range []string{"final answer:", "final:", "result:", "jawaban akhir:", "hasil:"} {
+			if strings.Contains(lower, marker) {
+				idx := strings.Index(lower, marker)
+				return trimAnswerQuotes(strings.TrimSpace(line[idx+len(marker):]))
+			}
+		}
+		if !looksLikeInternalReasoning(line) {
+			return trimAnswerQuotes(line)
+		}
+	}
+	return ""
+}
+
+func trimAnswerQuotes(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.Trim(value, "\"'“”`")
+	return strings.TrimSpace(value)
+}
+
+func looksLikeInternalReasoning(content string) bool {
+	lower := strings.ToLower(content)
+	markers := []string{
+		"trusted reminder runtime instruction",
+		"the user is sending",
+		"the instruction explicitly",
+		"i need to",
+		"i will output",
+		"i will use",
+		"final check",
+		"draft:",
+		"the prompt asks",
+		"adhering to the persona",
+		"constraints",
+	}
+	for _, marker := range markers {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return strings.Count(content, "\n") >= 3 && strings.Contains(lower, "reminder")
+}
+
+func reminderTextFromInput(raw json.RawMessage) string {
+	payload := inputMap(raw)
+	reminder, _ := payload["reminder"].(map[string]any)
+	if text, _ := payload["text"].(string); strings.TrimSpace(text) != "" {
+		if extracted := extractReminderMessageText(text); extracted != "" {
+			return extracted
+		}
+		return strings.TrimSpace(text)
+	}
+	if text, _ := reminder["title"].(string); strings.TrimSpace(text) != "" {
+		return strings.TrimSpace(text)
+	}
+	return ""
+}
+
+func extractReminderMessageText(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	const marker = "Reminder message text:"
+	idx := strings.LastIndex(text, marker)
+	if idx < 0 {
+		return text
+	}
+	return strings.TrimSpace(text[idx+len(marker):])
 }
 
 func workflowIDFromInput(raw json.RawMessage) string {

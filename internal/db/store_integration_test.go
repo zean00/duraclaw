@@ -168,6 +168,9 @@ func TestStoreReminderSubscriptionLeaseCompletionPostgres(t *testing.T) {
 	if len(subs) != 1 || subs[0].Enabled {
 		t.Fatalf("subscription should be disabled after one-shot completion: %#v", subs)
 	}
+	if subs[0].FiredCount != 1 {
+		t.Fatalf("subscription fired_count should increment after completion: %#v", subs[0])
+	}
 }
 
 func TestStoreLeaseRecoveryPostgres(t *testing.T) {

@@ -20,16 +20,19 @@ type fakeReminderStore struct {
 func (s *fakeReminderStore) CreateReminderSubscription(_ context.Context, spec db.ReminderSubscriptionSpec) (*db.ReminderSubscription, error) {
 	s.spec = spec
 	return &db.ReminderSubscription{
-		ID:              "rem-1",
-		CustomerID:      spec.CustomerID,
-		UserID:          spec.UserID,
-		SessionID:       spec.SessionID,
-		AgentInstanceID: spec.AgentInstanceID,
-		Title:           spec.Title,
-		Schedule:        spec.Schedule,
-		Timezone:        "UTC",
-		Enabled:         true,
-		NextRunAt:       spec.NextRunAt,
+		ID:                    "rem-1",
+		CustomerID:            spec.CustomerID,
+		UserID:                spec.UserID,
+		SessionID:             spec.SessionID,
+		AgentInstanceID:       spec.AgentInstanceID,
+		Title:                 spec.Title,
+		Schedule:              spec.Schedule,
+		Timezone:              "UTC",
+		Enabled:               true,
+		NextRunAt:             spec.NextRunAt,
+		RepeatIntervalSeconds: spec.RepeatIntervalSeconds,
+		RepeatUntil:           spec.RepeatUntil,
+		RepeatCount:           spec.RepeatCount,
 	}, nil
 }
 
@@ -162,6 +165,38 @@ func TestCreateReminderToolKeepsPayloadEmptyForTitleFallback(t *testing.T) {
 	}
 }
 
+func TestCreateReminderToolSupportsBoundedInterval(t *testing.T) {
+	store := &fakeReminderStore{}
+	result := (CreateReminderTool{Store: store}).Execute(context.Background(), ExecutionContext{
+		CustomerID: "c1", UserID: "u1", SessionID: "s1", AgentInstanceID: "a1",
+	}, map[string]any{
+		"title":                   "minum obat",
+		"schedule":                "@interval",
+		"next_run_at":             "2030-01-01T08:00:00+07:00",
+		"repeat_interval_seconds": float64(8 * 60 * 60),
+		"repeat_until":            "2030-01-04T08:00:00+07:00",
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.ForLLM)
+	}
+	if store.spec.Schedule != "@interval" || store.spec.RepeatIntervalSeconds != 8*60*60 || store.spec.RepeatUntil == nil {
+		t.Fatalf("spec=%#v", store.spec)
+	}
+	ref := result.Artifacts[0]
+	if ref.Data["repeat_interval_seconds"] != 8*60*60 || ref.Data["repeat_until"] == "" {
+		t.Fatalf("ref=%#v", ref.Data)
+	}
+}
+
+func TestCreateReminderToolRequiresIntervalFields(t *testing.T) {
+	result := (CreateReminderTool{Store: &fakeReminderStore{}}).Execute(context.Background(), ExecutionContext{}, map[string]any{
+		"schedule": "@interval",
+	})
+	if !result.IsError || !strings.Contains(result.ForLLM, "repeat_interval_seconds") {
+		t.Fatalf("result=%#v", result)
+	}
+}
+
 func TestUpdateReminderToolReturnsReferenceArtifact(t *testing.T) {
 	store := &fakeReminderStore{}
 	result := (UpdateReminderTool{Store: store}).Execute(context.Background(), ExecutionContext{
@@ -195,7 +230,7 @@ func TestUpdateReminderToolRequiresSubscriptionID(t *testing.T) {
 }
 
 func TestReminderNextRunAtParsesCron(t *testing.T) {
-	next, err := reminderNextRunAt("* * * * *", "")
+	next, err := reminderNextRunAt("* * * * *", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}

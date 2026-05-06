@@ -8,49 +8,63 @@ import (
 )
 
 type ReminderSubscription struct {
-	ID              string          `json:"id"`
-	CustomerID      string          `json:"customer_id"`
-	UserID          string          `json:"user_id"`
-	SessionID       string          `json:"session_id"`
-	AgentInstanceID string          `json:"agent_instance_id"`
-	Title           string          `json:"title"`
-	Schedule        string          `json:"schedule"`
-	Timezone        string          `json:"timezone"`
-	Payload         json.RawMessage `json:"payload"`
-	Enabled         bool            `json:"enabled"`
-	NextRunAt       time.Time       `json:"next_run_at"`
-	LastFiredAt     *time.Time      `json:"last_fired_at,omitempty"`
-	Metadata        json.RawMessage `json:"metadata"`
-	LeaseOwner      *string         `json:"lease_owner,omitempty"`
-	LeaseExpiresAt  *time.Time      `json:"lease_expires_at,omitempty"`
+	ID                    string          `json:"id"`
+	CustomerID            string          `json:"customer_id"`
+	UserID                string          `json:"user_id"`
+	SessionID             string          `json:"session_id"`
+	AgentInstanceID       string          `json:"agent_instance_id"`
+	Title                 string          `json:"title"`
+	Schedule              string          `json:"schedule"`
+	Timezone              string          `json:"timezone"`
+	Payload               json.RawMessage `json:"payload"`
+	Enabled               bool            `json:"enabled"`
+	NextRunAt             time.Time       `json:"next_run_at"`
+	LastFiredAt           *time.Time      `json:"last_fired_at,omitempty"`
+	RepeatIntervalSeconds int             `json:"repeat_interval_seconds,omitempty"`
+	RepeatUntil           *time.Time      `json:"repeat_until,omitempty"`
+	RepeatCount           int             `json:"repeat_count,omitempty"`
+	FiredCount            int             `json:"fired_count,omitempty"`
+	Metadata              json.RawMessage `json:"metadata"`
+	LeaseOwner            *string         `json:"lease_owner,omitempty"`
+	LeaseExpiresAt        *time.Time      `json:"lease_expires_at,omitempty"`
 }
 
 type ReminderSubscriptionSpec struct {
-	CustomerID      string
-	UserID          string
-	SessionID       string
-	AgentInstanceID string
-	Title           string
-	Schedule        string
-	Timezone        string
-	Payload         any
-	NextRunAt       time.Time
-	Metadata        any
+	CustomerID            string
+	UserID                string
+	SessionID             string
+	AgentInstanceID       string
+	Title                 string
+	Schedule              string
+	Timezone              string
+	Payload               any
+	NextRunAt             time.Time
+	RepeatIntervalSeconds int
+	RepeatUntil           *time.Time
+	RepeatCount           int
+	Metadata              any
 }
 
 type ReminderSubscriptionUpdate struct {
-	Title     *string
-	Schedule  *string
-	Timezone  *string
-	Payload   any
-	NextRunAt *time.Time
-	Metadata  any
-	Enabled   *bool
+	Title                 *string
+	Schedule              *string
+	Timezone              *string
+	Payload               any
+	NextRunAt             *time.Time
+	RepeatIntervalSeconds *int
+	RepeatUntil           *time.Time
+	RepeatCount           *int
+	FiredCount            *int
+	Metadata              any
+	Enabled               *bool
 }
 
 func (s *Store) CreateReminderSubscription(ctx context.Context, spec ReminderSubscriptionSpec) (*ReminderSubscription, error) {
 	if spec.CustomerID == "" || spec.UserID == "" || spec.SessionID == "" || spec.AgentInstanceID == "" || spec.Schedule == "" || spec.NextRunAt.IsZero() {
 		return nil, fmt.Errorf("customer_id, user_id, session_id, agent_instance_id, schedule, and next_run_at are required")
+	}
+	if spec.RepeatIntervalSeconds < 0 || spec.RepeatCount < 0 {
+		return nil, fmt.Errorf("repeat_interval_seconds and repeat_count must be non-negative")
 	}
 	if spec.Timezone == "" {
 		spec.Timezone = "UTC"
@@ -68,11 +82,11 @@ func (s *Store) CreateReminderSubscription(ctx context.Context, spec ReminderSub
 	}
 	var sub ReminderSubscription
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO reminder_subscriptions(customer_id,user_id,session_id,agent_instance_id,title,schedule,timezone,payload,next_run_at,metadata)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-		RETURNING id::text, customer_id, user_id, session_id, agent_instance_id, title, schedule, timezone, payload, enabled, next_run_at, last_fired_at, metadata`,
-		spec.CustomerID, spec.UserID, spec.SessionID, spec.AgentInstanceID, spec.Title, spec.Schedule, spec.Timezone, payload, spec.NextRunAt, metadata).
-		Scan(&sub.ID, &sub.CustomerID, &sub.UserID, &sub.SessionID, &sub.AgentInstanceID, &sub.Title, &sub.Schedule, &sub.Timezone, &sub.Payload, &sub.Enabled, &sub.NextRunAt, &sub.LastFiredAt, &sub.Metadata)
+		INSERT INTO reminder_subscriptions(customer_id,user_id,session_id,agent_instance_id,title,schedule,timezone,payload,next_run_at,repeat_interval_seconds,repeat_until,repeat_count,metadata)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+		RETURNING id::text, customer_id, user_id, session_id, agent_instance_id, title, schedule, timezone, payload, enabled, next_run_at, last_fired_at, repeat_interval_seconds, repeat_until, repeat_count, fired_count, metadata`,
+		spec.CustomerID, spec.UserID, spec.SessionID, spec.AgentInstanceID, spec.Title, spec.Schedule, spec.Timezone, payload, spec.NextRunAt, spec.RepeatIntervalSeconds, spec.RepeatUntil, spec.RepeatCount, metadata).
+		Scan(&sub.ID, &sub.CustomerID, &sub.UserID, &sub.SessionID, &sub.AgentInstanceID, &sub.Title, &sub.Schedule, &sub.Timezone, &sub.Payload, &sub.Enabled, &sub.NextRunAt, &sub.LastFiredAt, &sub.RepeatIntervalSeconds, &sub.RepeatUntil, &sub.RepeatCount, &sub.FiredCount, &sub.Metadata)
 	return &sub, err
 }
 
@@ -87,7 +101,7 @@ func (s *Store) ListReminderSubscriptions(ctx context.Context, customerID, userI
 		filter = " AND user_id=$3"
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT id::text, customer_id, user_id, session_id, agent_instance_id, title, schedule, timezone, payload, enabled, next_run_at, last_fired_at, metadata
+		SELECT id::text, customer_id, user_id, session_id, agent_instance_id, title, schedule, timezone, payload, enabled, next_run_at, last_fired_at, repeat_interval_seconds, repeat_until, repeat_count, fired_count, metadata
 		FROM reminder_subscriptions
 		WHERE customer_id=$1`+filter+`
 		ORDER BY next_run_at ASC
@@ -99,7 +113,7 @@ func (s *Store) ListReminderSubscriptions(ctx context.Context, customerID, userI
 	var out []ReminderSubscription
 	for rows.Next() {
 		var sub ReminderSubscription
-		if err := rows.Scan(&sub.ID, &sub.CustomerID, &sub.UserID, &sub.SessionID, &sub.AgentInstanceID, &sub.Title, &sub.Schedule, &sub.Timezone, &sub.Payload, &sub.Enabled, &sub.NextRunAt, &sub.LastFiredAt, &sub.Metadata); err != nil {
+		if err := rows.Scan(&sub.ID, &sub.CustomerID, &sub.UserID, &sub.SessionID, &sub.AgentInstanceID, &sub.Title, &sub.Schedule, &sub.Timezone, &sub.Payload, &sub.Enabled, &sub.NextRunAt, &sub.LastFiredAt, &sub.RepeatIntervalSeconds, &sub.RepeatUntil, &sub.RepeatCount, &sub.FiredCount, &sub.Metadata); err != nil {
 			return nil, err
 		}
 		out = append(out, sub)
@@ -126,7 +140,7 @@ func (s *Store) ClaimDueReminderSubscriptions(ctx context.Context, owner string,
 		SET lease_owner=$2, lease_expires_at=now()+$3::interval
 		FROM candidate
 		WHERE r.id=candidate.id
-		RETURNING r.id::text, r.customer_id, r.user_id, r.session_id, r.agent_instance_id, r.title, r.schedule, r.timezone, r.payload, r.enabled, r.next_run_at, r.last_fired_at, r.metadata, r.lease_owner, r.lease_expires_at`,
+		RETURNING r.id::text, r.customer_id, r.user_id, r.session_id, r.agent_instance_id, r.title, r.schedule, r.timezone, r.payload, r.enabled, r.next_run_at, r.last_fired_at, r.repeat_interval_seconds, r.repeat_until, r.repeat_count, r.fired_count, r.metadata, r.lease_owner, r.lease_expires_at`,
 		limit, owner, fmt.Sprintf("%f seconds", leaseFor.Seconds()))
 	if err != nil {
 		return nil, err
@@ -135,7 +149,7 @@ func (s *Store) ClaimDueReminderSubscriptions(ctx context.Context, owner string,
 	var out []ReminderSubscription
 	for rows.Next() {
 		var sub ReminderSubscription
-		if err := rows.Scan(&sub.ID, &sub.CustomerID, &sub.UserID, &sub.SessionID, &sub.AgentInstanceID, &sub.Title, &sub.Schedule, &sub.Timezone, &sub.Payload, &sub.Enabled, &sub.NextRunAt, &sub.LastFiredAt, &sub.Metadata, &sub.LeaseOwner, &sub.LeaseExpiresAt); err != nil {
+		if err := rows.Scan(&sub.ID, &sub.CustomerID, &sub.UserID, &sub.SessionID, &sub.AgentInstanceID, &sub.Title, &sub.Schedule, &sub.Timezone, &sub.Payload, &sub.Enabled, &sub.NextRunAt, &sub.LastFiredAt, &sub.RepeatIntervalSeconds, &sub.RepeatUntil, &sub.RepeatCount, &sub.FiredCount, &sub.Metadata, &sub.LeaseOwner, &sub.LeaseExpiresAt); err != nil {
 			return nil, err
 		}
 		out = append(out, sub)
@@ -147,13 +161,13 @@ func (s *Store) CompleteReminderSubscription(ctx context.Context, id string, fir
 	if nextRunAt.IsZero() {
 		_, err := s.pool.Exec(ctx, `
 			UPDATE reminder_subscriptions
-			SET last_fired_at=$2, enabled=false, lease_owner=NULL, lease_expires_at=NULL, updated_at=now()
+			SET last_fired_at=$2, fired_count=fired_count+1, enabled=false, lease_owner=NULL, lease_expires_at=NULL, updated_at=now()
 			WHERE id=$1`, id, firedAt)
 		return err
 	}
 	_, err := s.pool.Exec(ctx, `
 		UPDATE reminder_subscriptions
-		SET last_fired_at=$2, next_run_at=$3, lease_owner=NULL, lease_expires_at=NULL, updated_at=now()
+		SET last_fired_at=$2, fired_count=fired_count+1, next_run_at=$3, lease_owner=NULL, lease_expires_at=NULL, updated_at=now()
 		WHERE id=$1`, id, firedAt, nextRunAt)
 	return err
 }
@@ -176,8 +190,20 @@ func (s *Store) UpdateUserReminderSubscription(ctx context.Context, id, customer
 	if id == "" || customerID == "" || userID == "" {
 		return nil, fmt.Errorf("subscription_id, customer_id, and user_id are required")
 	}
-	if update.Title == nil && update.Schedule == nil && update.Timezone == nil && update.Payload == nil && update.NextRunAt == nil && update.Metadata == nil && update.Enabled == nil {
+	if update.RepeatIntervalSeconds != nil && *update.RepeatIntervalSeconds < 0 {
+		return nil, fmt.Errorf("repeat_interval_seconds must be non-negative")
+	}
+	if update.RepeatCount != nil && *update.RepeatCount < 0 {
+		return nil, fmt.Errorf("repeat_count must be non-negative")
+	}
+	if update.FiredCount != nil && *update.FiredCount < 0 {
+		return nil, fmt.Errorf("fired_count must be non-negative")
+	}
+	if update.Title == nil && update.Schedule == nil && update.Timezone == nil && update.Payload == nil && update.NextRunAt == nil && update.RepeatIntervalSeconds == nil && update.RepeatUntil == nil && update.RepeatCount == nil && update.FiredCount == nil && update.Metadata == nil && update.Enabled == nil {
 		return nil, fmt.Errorf("at least one reminder field is required")
+	}
+	if err := s.validateReminderUpdateBounds(ctx, id, customerID, userID, update); err != nil {
+		return nil, err
 	}
 	var payload []byte
 	if update.Payload != nil {
@@ -197,6 +223,10 @@ func (s *Store) UpdateUserReminderSubscription(ctx context.Context, id, customer
 	schedule := nullableString(update.Schedule)
 	timezone := nullableString(update.Timezone)
 	nextRunAt := nullableTime(update.NextRunAt)
+	repeatIntervalSeconds := nullableInt(update.RepeatIntervalSeconds)
+	repeatUntil := nullableTime(update.RepeatUntil)
+	repeatCount := nullableInt(update.RepeatCount)
+	firedCount := nullableInt(update.FiredCount)
 	enabled := nullableBool(update.Enabled)
 	var sub ReminderSubscription
 	err := s.pool.QueryRow(ctx, `
@@ -206,19 +236,61 @@ func (s *Store) UpdateUserReminderSubscription(ctx context.Context, id, customer
 			timezone=COALESCE($6::text, timezone),
 			payload=COALESCE($7::jsonb, payload),
 			next_run_at=COALESCE($8::timestamptz, next_run_at),
-			metadata=COALESCE($9::jsonb, metadata),
-			enabled=COALESCE($10::boolean, enabled),
+			repeat_interval_seconds=COALESCE($9::integer, repeat_interval_seconds),
+			repeat_until=COALESCE($10::timestamptz, repeat_until),
+			repeat_count=COALESCE($11::integer, repeat_count),
+			fired_count=COALESCE($12::integer, fired_count),
+			metadata=COALESCE($13::jsonb, metadata),
+			enabled=COALESCE($14::boolean, enabled),
 			lease_owner=NULL,
 			lease_expires_at=NULL,
 			updated_at=now()
 		WHERE id=$1 AND customer_id=$2 AND user_id=$3
-		RETURNING id::text, customer_id, user_id, session_id, agent_instance_id, title, schedule, timezone, payload, enabled, next_run_at, last_fired_at, metadata`,
-		id, customerID, userID, title, schedule, timezone, nullableBytes(payload), nextRunAt, nullableBytes(metadata), enabled).
-		Scan(&sub.ID, &sub.CustomerID, &sub.UserID, &sub.SessionID, &sub.AgentInstanceID, &sub.Title, &sub.Schedule, &sub.Timezone, &sub.Payload, &sub.Enabled, &sub.NextRunAt, &sub.LastFiredAt, &sub.Metadata)
+		RETURNING id::text, customer_id, user_id, session_id, agent_instance_id, title, schedule, timezone, payload, enabled, next_run_at, last_fired_at, repeat_interval_seconds, repeat_until, repeat_count, fired_count, metadata`,
+		id, customerID, userID, title, schedule, timezone, nullableBytes(payload), nextRunAt, repeatIntervalSeconds, repeatUntil, repeatCount, firedCount, nullableBytes(metadata), enabled).
+		Scan(&sub.ID, &sub.CustomerID, &sub.UserID, &sub.SessionID, &sub.AgentInstanceID, &sub.Title, &sub.Schedule, &sub.Timezone, &sub.Payload, &sub.Enabled, &sub.NextRunAt, &sub.LastFiredAt, &sub.RepeatIntervalSeconds, &sub.RepeatUntil, &sub.RepeatCount, &sub.FiredCount, &sub.Metadata)
 	if err != nil {
 		return nil, err
 	}
 	return &sub, nil
+}
+
+func (s *Store) validateReminderUpdateBounds(ctx context.Context, id, customerID, userID string, update ReminderSubscriptionUpdate) error {
+	if update.Schedule == nil && update.NextRunAt == nil && update.RepeatIntervalSeconds == nil && update.RepeatUntil == nil {
+		return nil
+	}
+	var current ReminderSubscription
+	err := s.pool.QueryRow(ctx, `
+		SELECT schedule, next_run_at, repeat_interval_seconds, repeat_until
+		FROM reminder_subscriptions
+		WHERE id=$1 AND customer_id=$2 AND user_id=$3`, id, customerID, userID).
+		Scan(&current.Schedule, &current.NextRunAt, &current.RepeatIntervalSeconds, &current.RepeatUntil)
+	if err != nil {
+		return err
+	}
+	schedule := current.Schedule
+	if update.Schedule != nil {
+		schedule = *update.Schedule
+	}
+	repeatIntervalSeconds := current.RepeatIntervalSeconds
+	if update.RepeatIntervalSeconds != nil {
+		repeatIntervalSeconds = *update.RepeatIntervalSeconds
+	}
+	if schedule == "@interval" && repeatIntervalSeconds <= 0 {
+		return fmt.Errorf("repeat_interval_seconds must be positive for @interval reminders")
+	}
+	nextRunAt := current.NextRunAt
+	if update.NextRunAt != nil {
+		nextRunAt = *update.NextRunAt
+	}
+	repeatUntil := current.RepeatUntil
+	if update.RepeatUntil != nil {
+		repeatUntil = update.RepeatUntil
+	}
+	if repeatUntil != nil && !nextRunAt.IsZero() && !repeatUntil.After(nextRunAt) {
+		return fmt.Errorf("repeat_until must be after next_run_at")
+	}
+	return nil
 }
 
 func (s *Store) DeleteUserReminderSubscription(ctx context.Context, id, customerID, userID string) error {
@@ -256,6 +328,13 @@ func nullableTime(t *time.Time) any {
 		return nil
 	}
 	return *t
+}
+
+func nullableInt(i *int) any {
+	if i == nil {
+		return nil
+	}
+	return *i
 }
 
 func nullableBool(b *bool) any {

@@ -53,6 +53,49 @@ func TestExtractTextForReminderDueRun(t *testing.T) {
 	}
 }
 
+func TestSanitizeReminderDueResponseDropsReasoningLeak(t *testing.T) {
+	raw, _ := json.Marshal(map[string]any{
+		"event_type": "reminder_due",
+		"text":       "Trusted reminder runtime instruction:\nSend a direct reminder message.\n\nReminder message text:\nBawain bekal buat Luqman",
+		"reminder":   map[string]any{"title": "Bekal Luqman"},
+	})
+	content := `The user is sending a "Trusted reminder runtime instruction" which simulates the system triggering a reminder.
+I need to formulate a short, natural Indonesian message.
+Final Answer: "Jangan lupa bawain bekal buat Luqman."`
+	got := sanitizeReminderDueResponse(content, raw)
+	if got != "Jangan lupa bawain bekal buat Luqman." {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestSanitizeReminderDueResponseFallsBackToReminderText(t *testing.T) {
+	raw, _ := json.Marshal(map[string]any{
+		"event_type": "reminder_due",
+		"text":       "Trusted reminder runtime instruction:\nSend it.\n\nReminder message text:\nBawa tas hitam ke sekolah anak",
+	})
+	got := sanitizeReminderDueResponse("The user is sending a reminder.\nI will output this.\nFinal check on constraints.", raw)
+	if got != "Jangan lupa Bawa tas hitam ke sekolah anak." {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestExtractTextForReminderDueRunUsesReminderMessageFromTrustedPrompt(t *testing.T) {
+	raw, _ := json.Marshal(map[string]any{
+		"event_type": "reminder_due",
+		"text":       "Trusted reminder runtime instruction:\nSend it.\n\nReminder message text:\nBawain bekal buat Luqman",
+		"reminder": map[string]any{
+			"title": "Generic label",
+		},
+	})
+	got := extractText(raw)
+	if !strings.Contains(got, "Bawain bekal buat Luqman") {
+		t.Fatalf("expected reminder message in prompt: %q", got)
+	}
+	if strings.Contains(got, "Trusted reminder runtime instruction") {
+		t.Fatalf("trusted runtime wrapper should not be nested into user prompt: %q", got)
+	}
+}
+
 func TestToolCallsForExecutionInterleavesFirstCallOnly(t *testing.T) {
 	calls := []providers.ToolCall{
 		{ID: "call-1", Function: providers.FunctionCall{Name: "first"}},
@@ -317,14 +360,17 @@ func TestStringSetTrimsAndDropsEmptyValues(t *testing.T) {
 
 func TestInternalToolDefinitionsAndPlanning(t *testing.T) {
 	defs := internalToolDefinitions()
-	if len(defs) != 2 || defs[0].Function.Name != "duraclaw.run_workflow" || defs[1].Function.Name != "duraclaw.ask_user" {
+	if len(defs) != 3 || defs[0].Function.Name != "duraclaw.current_time" || defs[1].Function.Name != "duraclaw.run_workflow" || defs[2].Function.Name != "duraclaw.ask_user" {
 		t.Fatalf("defs=%#v", defs)
 	}
-	if !strings.Contains(defs[1].Function.Description, "do not guess missing dates") {
-		t.Fatalf("ask_user guidance is too weak: %q", defs[1].Function.Description)
+	if !strings.Contains(defs[0].Function.Description, "besok") {
+		t.Fatalf("current_time guidance is too weak: %q", defs[0].Function.Description)
+	}
+	if !strings.Contains(defs[2].Function.Description, "do not guess missing dates") {
+		t.Fatalf("ask_user guidance is too weak: %q", defs[2].Function.Description)
 	}
 	w := &Worker{}
-	if !w.isInternalTool("duraclaw.ask_user") || w.isInternalTool("echo") {
+	if !w.isInternalTool("duraclaw.ask_user") || !w.isInternalTool("duraclaw.current_time") || w.isInternalTool("echo") {
 		t.Fatalf("internal tool classification failed")
 	}
 	registry := tools.NewRegistry()
@@ -339,6 +385,25 @@ func TestInternalToolDefinitionsAndPlanning(t *testing.T) {
 	}
 	if got := w.plannedToolExecutions(registry, completed, calls); got != 2 {
 		t.Fatalf("planned=%d", got)
+	}
+}
+
+func TestCurrentTimeToolResultUsesTimezoneAndRelativeDates(t *testing.T) {
+	now := time.Date(2026, 5, 5, 18, 30, 0, 0, time.UTC)
+	got, err := currentTimeToolResult(map[string]any{"timezone": "Asia/Jakarta", "locale": "id-ID"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"timezone":"Asia/Jakarta"`, `"local_date":"2026-05-06"`, `"tomorrow":"2026-05-07"`, `"locale":"id-ID"`} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %s in %s", want, got)
+		}
+	}
+}
+
+func TestCurrentTimeToolResultRejectsInvalidTimezone(t *testing.T) {
+	if _, err := currentTimeToolResult(map[string]any{"timezone": "Mars/Olympus"}, time.Now()); err == nil {
+		t.Fatal("expected invalid timezone error")
 	}
 }
 

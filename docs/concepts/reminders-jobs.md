@@ -26,7 +26,9 @@ X-Idempotency-Key
 
 ## Reminder Subscriptions
 
-Reminder subscriptions are durable cron-like subscriptions. `schedule` accepts cron expressions or `@once`. If `next_run_at` is omitted, Duraclaw computes the next fire time from `schedule`.
+Reminder subscriptions are durable cron-like subscriptions. `schedule` accepts cron expressions, `@once`, or `@interval`. If `next_run_at` is omitted for a cron expression, Duraclaw computes the next fire time from `schedule`.
+
+Bounded recurring reminders use `@interval` with a positive `repeat_interval_seconds` and an absolute `next_run_at` first fire time. Optional `repeat_until` and `repeat_count` stop future fires. `repeat_until` must be after the effective `next_run_at`; if an already-claimed due fire is at or past `repeat_until`, the scheduler disables the subscription without creating a reminder run.
 
 Reminder workers are multi-instance safe. Due subscriptions are claimed with PostgreSQL row locks and expiring leases. Each fire creates a durable run with a deterministic idempotency key derived from the subscription and scheduled fire time, so a retry after worker crash reuses the same run instead of creating a duplicate.
 
@@ -55,6 +57,24 @@ Create body:
   "next_run_at": "2026-04-29T20:00:00Z",
   "payload": {"text": "Pengingat: minum obat malam."},
   "metadata": {"origin": "conversation"}
+}
+```
+
+Bounded interval example:
+
+```json
+{
+  "customer_id": "customer-1",
+  "user_id": "user-1",
+  "session_id": "session-1",
+  "agent_instance_id": "agent-1",
+  "title": "Minum obat",
+  "schedule": "@interval",
+  "timezone": "Asia/Jakarta",
+  "next_run_at": "2026-04-29T01:00:00Z",
+  "repeat_interval_seconds": 28800,
+  "repeat_until": "2026-05-02T01:00:00Z",
+  "payload": {"text": "Pengingat: minum obat."}
 }
 ```
 

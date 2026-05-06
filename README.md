@@ -323,11 +323,11 @@ Run input may also include `workflow_id` or `workflow_definition_id` to execute 
 
 Duraclaw exposes both admin-scoped and ACP user-scoped APIs for reminders, cron/one-time scheduler jobs, and long-running background runs. ACP routes enforce `X-Customer-ID` and `X-User-ID` against the requested `customer_id` and `user_id`; mismatches return not found.
 
-Reminder subscriptions are durable cron-like subscriptions. Use `schedule` with a cron expression or `@once`; when `next_run_at` is omitted, Duraclaw computes the next fire time from `schedule`.
+Reminder subscriptions are durable cron-like subscriptions. Use `schedule` with a cron expression, `@once`, or `@interval`; when `next_run_at` is omitted for cron schedules, Duraclaw computes the next fire time from `schedule`. Bounded `@interval` reminders require positive `repeat_interval_seconds` and can stop with `repeat_until` or `repeat_count`.
 
-- `POST /acp/reminders` creates a user reminder subscription. Body fields: `customer_id`, `user_id`, `session_id`, `agent_instance_id`, `title`, `schedule`, `timezone`, `payload`, optional `next_run_at`, and `metadata`.
+- `POST /acp/reminders` creates a user reminder subscription. Body fields: `customer_id`, `user_id`, `session_id`, `agent_instance_id`, `title`, `schedule`, `timezone`, `payload`, optional `next_run_at`, `repeat_interval_seconds`, `repeat_until`, `repeat_count`, and `metadata`.
 - `GET /acp/reminders?customer_id={customer_id}&user_id={user_id}&limit=100` lists that user's reminders.
-- `PATCH /acp/reminders/{subscription_id}` updates user-owned reminder fields: `title`, `schedule`, `timezone`, `payload`, `next_run_at`, `metadata`, and `enabled`.
+- `PATCH /acp/reminders/{subscription_id}` updates user-owned reminder fields: `title`, `schedule`, `timezone`, `payload`, `next_run_at`, `repeat_interval_seconds`, `repeat_until`, `repeat_count`, `fired_count`, `metadata`, and `enabled`.
 - `DELETE /acp/reminders/{subscription_id}?customer_id={customer_id}&user_id={user_id}` deletes a user-owned reminder.
 
 Scheduler jobs are lower-level durable run triggers for one-time or recurring work, including research/background jobs. The scheduler creates runs from the stored `input` when the job fires.
