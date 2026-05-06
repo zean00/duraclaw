@@ -2,8 +2,8 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -60,7 +60,11 @@ func TestServiceReminderFanoutPostgres(t *testing.T) {
 	if run.AgentInstanceID != "a" || run.State != "queued" {
 		t.Fatalf("run=%#v", run)
 	}
-	if !strings.Contains(string(run.Input), `"channel_type":"webchat"`) {
+	var input map[string]any
+	if err := json.Unmarshal(run.Input, &input); err != nil {
+		t.Fatalf("unmarshal run input: %v", err)
+	}
+	if input["channel_type"] != "webchat" {
 		t.Fatalf("expected reminder channel preference in run input: %s", string(run.Input))
 	}
 	subs, err := store.ListReminderSubscriptions(ctx, customerID, "u", 10)
