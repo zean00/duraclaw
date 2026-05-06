@@ -378,12 +378,14 @@ func TestInternalToolDefinitionsAndPlanning(t *testing.T) {
 	calls := []providers.ToolCall{
 		{Function: providers.FunctionCall{Name: "duraclaw.ask_user"}},
 		{Function: providers.FunctionCall{Name: "remember_once", Arguments: map[string]any{"content": "tea"}}},
+		{Function: providers.FunctionCall{Name: "remember_once", Arguments: map[string]any{"content": "coffee"}}},
+		{Function: providers.FunctionCall{Name: "remember_once", Arguments: map[string]any{"content": "coffee"}}},
 		{Function: providers.FunctionCall{Name: "echo", Arguments: map[string]any{"message": "hi"}}},
 	}
 	completed := map[string]db.ToolCallRecord{
 		"remember_once:" + db.StableArgsHash("remember_once", map[string]any{"content": "tea"}): {},
 	}
-	if got := w.plannedToolExecutions(registry, completed, calls); got != 2 {
+	if got := w.plannedToolExecutions(registry, completed, calls); got != 3 {
 		t.Fatalf("planned=%d", got)
 	}
 }

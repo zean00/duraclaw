@@ -3463,9 +3463,30 @@ func (w *Worker) executeToolCalls(ctx context.Context, run *db.Run, stepID strin
 			return nil, err
 		}
 		w.emitAgentActivity(ctx, run, "tool", "completed", map[string]any{"tool_name": call.Function.Name, "tool_call_id": call.ID})
-		results = append(results, toolExecutionResult{ToolCallID: call.ID, Content: call.Function.Name + ": " + result.ForLLM})
+		content := call.Function.Name + ": " + result.ForLLM
+		results = append(results, toolExecutionResult{ToolCallID: call.ID, Content: content})
+		if !retryable {
+			completed[call.Function.Name+":"+argsHash] = db.ToolCallRecord{
+				ID:        callID,
+				RunID:     run.ID,
+				ToolName:  call.Function.Name,
+				State:     "succeeded",
+				Arguments: mustMarshalJSON(call.Function.Arguments),
+				Result:    mustMarshalJSON(map[string]any{"for_llm": result.ForLLM, "artifacts": result.Artifacts, "is_error": result.IsError}),
+				Retryable: false,
+				ArgsHash:  argsHash,
+			}
+		}
 	}
 	return results, nil
+}
+
+func mustMarshalJSON(value any) json.RawMessage {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return json.RawMessage(`null`)
+	}
+	return raw
 }
 
 type toolAliasSet struct {
@@ -3579,6 +3600,7 @@ func mcpToolResultText(binding mcpToolBinding, result map[string]any) string {
 
 func (w *Worker) plannedToolExecutions(toolRegistry *tools.Registry, completed map[string]db.ToolCallRecord, calls []providers.ToolCall) int {
 	planned := 0
+	seen := map[string]struct{}{}
 	for _, call := range calls {
 		if w.isInternalTool(call.Function.Name) {
 			planned++
@@ -3590,9 +3612,14 @@ func (w *Worker) plannedToolExecutions(toolRegistry *tools.Registry, completed m
 		}
 		if !retryable {
 			argsHash := db.StableArgsHash(call.Function.Name, call.Function.Arguments)
-			if _, ok := completed[call.Function.Name+":"+argsHash]; ok {
+			key := call.Function.Name + ":" + argsHash
+			if _, ok := completed[key]; ok {
 				continue
 			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
 		}
 		planned++
 	}
