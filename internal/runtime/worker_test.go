@@ -855,6 +855,15 @@ func TestEmitFinalOutboundUsesRunChannelPreference(t *testing.T) {
 	}
 }
 
+func TestToolCallRecordForLLMUsesStoredForLLM(t *testing.T) {
+	got := toolCallRecordForLLM(db.ToolCallRecord{
+		Result: json.RawMessage(`{"for_llm":"saved preference","artifacts":[{"type":"preference_reference"}],"is_error":false}`),
+	})
+	if got != "saved preference" {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestRecommendationArtifactIncludesSelectedItem(t *testing.T) {
 	itemID := "item-1"
 	decision := &db.RecommendationDecision{

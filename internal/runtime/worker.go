@@ -3424,7 +3424,7 @@ func (w *Worker) executeToolCalls(ctx context.Context, run *db.Run, stepID strin
 		argsHash := db.StableArgsHash(call.Function.Name, call.Function.Arguments)
 		if !retryable {
 			if prior, ok := completed[call.Function.Name+":"+argsHash]; ok {
-				results = append(results, toolExecutionResult{ToolCallID: call.ID, Content: call.Function.Name + ": " + string(prior.Result)})
+				results = append(results, toolExecutionResult{ToolCallID: call.ID, Content: call.Function.Name + ": " + toolCallRecordForLLM(prior)})
 				continue
 			}
 		}
@@ -3487,6 +3487,16 @@ func mustMarshalJSON(value any) json.RawMessage {
 		return json.RawMessage(`null`)
 	}
 	return raw
+}
+
+func toolCallRecordForLLM(record db.ToolCallRecord) string {
+	var payload struct {
+		ForLLM string `json:"for_llm"`
+	}
+	if err := json.Unmarshal(record.Result, &payload); err == nil && strings.TrimSpace(payload.ForLLM) != "" {
+		return payload.ForLLM
+	}
+	return string(record.Result)
 }
 
 type toolAliasSet struct {
