@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
@@ -190,38 +192,82 @@ func buildOutboxSink(cfg config) outbound.Sink {
 }
 
 func buildProvider(cfg config) providers.LLMProvider {
-	switch providers.NormalizeProvider(cfg.Provider) {
+	return buildNamedProvider(providers.NormalizeProvider(cfg.Provider), providerConfig{
+		BaseURL:      cfg.ProviderBaseURL,
+		APIKey:       cfg.ProviderAPIKey,
+		DefaultModel: cfg.ProviderModel,
+		Referer:      cfg.ProviderReferer,
+		Title:        cfg.ProviderTitle,
+	})
+}
+
+type providerConfig struct {
+	BaseURL      string `json:"base_url"`
+	APIKey       string `json:"api_key"`
+	DefaultModel string `json:"default_model"`
+	Model        string `json:"model"`
+	Referer      string `json:"referer"`
+	Title        string `json:"title"`
+}
+
+func parseProviderConfigs(raw json.RawMessage) (map[string]providerConfig, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var cfgs map[string]providerConfig
+	if err := json.Unmarshal(raw, &cfgs); err != nil {
+		return nil, fmt.Errorf("DURACLAW_PROVIDERS must be a JSON object: %w", err)
+	}
+	out := make(map[string]providerConfig, len(cfgs))
+	for name, cfg := range cfgs {
+		normalized := providers.NormalizeProvider(name)
+		if strings.TrimSpace(normalized) == "" {
+			return nil, fmt.Errorf("DURACLAW_PROVIDERS contains an empty provider name")
+		}
+		if _, exists := out[normalized]; exists {
+			return nil, fmt.Errorf("DURACLAW_PROVIDERS contains duplicate provider %q after alias normalization", normalized)
+		}
+		if strings.TrimSpace(cfg.DefaultModel) == "" {
+			cfg.DefaultModel = cfg.Model
+		}
+		out[normalized] = cfg
+	}
+	return out, nil
+}
+
+func buildNamedProvider(providerName string, cfg providerConfig) providers.LLMProvider {
+	switch providers.NormalizeProvider(providerName) {
 	case "openai":
 		return providers.OpenAIProvider{
-			BaseURL:      cfg.ProviderBaseURL,
-			APIKey:       cfg.ProviderAPIKey,
-			DefaultModel: cfg.ProviderModel,
+			BaseURL:      cfg.BaseURL,
+			APIKey:       cfg.APIKey,
+			DefaultModel: cfg.DefaultModel,
 		}
 	case "openrouter":
 		return providers.OpenRouterProvider{
-			BaseURL:      cfg.ProviderBaseURL,
-			APIKey:       cfg.ProviderAPIKey,
-			DefaultModel: cfg.ProviderModel,
-			Referer:      cfg.ProviderReferer,
-			Title:        cfg.ProviderTitle,
+			BaseURL:      cfg.BaseURL,
+			APIKey:       cfg.APIKey,
+			DefaultModel: cfg.DefaultModel,
+			Referer:      cfg.Referer,
+			Title:        cfg.Title,
 		}
 	case "together":
 		return providers.TogetherProvider{
-			BaseURL:      cfg.ProviderBaseURL,
-			APIKey:       cfg.ProviderAPIKey,
-			DefaultModel: cfg.ProviderModel,
+			BaseURL:      cfg.BaseURL,
+			APIKey:       cfg.APIKey,
+			DefaultModel: cfg.DefaultModel,
 		}
 	case "deepseek":
 		return providers.DeepSeekProvider{
-			BaseURL:      cfg.ProviderBaseURL,
-			APIKey:       cfg.ProviderAPIKey,
-			DefaultModel: cfg.ProviderModel,
+			BaseURL:      cfg.BaseURL,
+			APIKey:       cfg.APIKey,
+			DefaultModel: cfg.DefaultModel,
 		}
 	case "openai-compatible":
 		return providers.OpenAICompatibleProvider{
-			BaseURL:      cfg.ProviderBaseURL,
-			APIKey:       cfg.ProviderAPIKey,
-			DefaultModel: cfg.ProviderModel,
+			BaseURL:      cfg.BaseURL,
+			APIKey:       cfg.APIKey,
+			DefaultModel: cfg.DefaultModel,
 		}
 	default:
 		return providers.MockProvider{}
@@ -354,6 +400,17 @@ func buildProviderRegistry(cfg config) *providers.Registry {
 	registry := providers.NewRegistry(defaultProvider)
 	registry.Register("mock", providers.MockProvider{})
 	registry.Register(defaultProvider, buildProvider(cfg))
+	if configured, err := parseProviderConfigs(cfg.Providers); err == nil {
+		for name, providerCfg := range configured {
+			if !isKnownProvider(name) {
+				continue
+			}
+			registry.Register(name, buildNamedProvider(name, providerCfg))
+			if name == "openai-compatible" {
+				registry.Register("local", buildNamedProvider(name, providerCfg))
+			}
+		}
+	}
 	if defaultProvider == "openai-compatible" {
 		registry.Register("local", buildProvider(cfg))
 	}

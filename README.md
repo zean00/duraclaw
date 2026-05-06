@@ -96,6 +96,35 @@ DURACLAW_PROVIDER_FALLBACKS=mock/duraclaw
 
 OpenAI, OpenRouter, Together, and DeepSeek chat requests use OpenAI-compatible message shapes. Multimodal content parts are passed through when the selected provider/model supports those modalities. ACP run parts can include `text`, `image_url`, `file`, `input_audio`, and `video_url`; Duraclaw maps those to OpenAI-compatible content part shapes. Use URL/data URI fields for images/files/videos and base64 `data` plus `format` for audio.
 
+To register multiple chat providers in one Duraclaw process, keep `DURACLAW_PROVIDER` as the default provider and add `DURACLAW_PROVIDERS`:
+
+```bash
+DURACLAW_PROVIDER=deepseek
+DURACLAW_PROVIDER_API_KEY=...
+DURACLAW_PROVIDER_MODEL=deepseek-v4-pro
+DURACLAW_PROVIDERS='{
+  "openrouter": {
+    "api_key": "...",
+    "default_model": "openai/gpt-4.1-mini",
+    "referer": "https://your-app.example",
+    "title": "Duraclaw"
+  },
+  "together": {
+    "api_key": "...",
+    "default_model": "MiniMaxAI/MiniMax-M2.7"
+  }
+}'
+```
+
+Then use provider-qualified refs for cross-provider fallback:
+
+```json
+{
+  "primary": "deepseek/deepseek-v4-pro",
+  "fallbacks": ["openrouter/openai/gpt-4.1-mini", "together/MiniMaxAI/MiniMax-M2.7"]
+}
+```
+
 Knowledge ingestion and workflow retrieval default to a deterministic local hash embedder. To use an OpenAI-compatible `/embeddings` endpoint:
 
 ```bash

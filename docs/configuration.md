@@ -81,6 +81,50 @@ DURACLAW_PROVIDER_FALLBACKS=mock/duraclaw
 
 OpenAI, OpenRouter, Together, and DeepSeek chat requests use OpenAI-compatible message shapes. Multimodal content parts are passed through when the selected provider/model supports those modalities. ACP run parts can include `text`, `image_url`, `file`, `input_audio`, and `video_url`.
 
+### Multiple chat providers
+
+Duraclaw can register multiple chat providers in one process with `DURACLAW_PROVIDERS`. Keep `DURACLAW_PROVIDER` as the default provider, then add any additional providers as a JSON object keyed by provider name:
+
+```bash
+DURACLAW_PROVIDER=deepseek
+DURACLAW_PROVIDER_API_KEY=...
+DURACLAW_PROVIDER_MODEL=deepseek-v4-pro
+DURACLAW_PROVIDERS='{
+  "openrouter": {
+    "api_key": "...",
+    "default_model": "openai/gpt-4.1-mini",
+    "referer": "https://your-app.example",
+    "title": "Duraclaw"
+  },
+  "together": {
+    "api_key": "...",
+    "default_model": "MiniMaxAI/MiniMax-M2.7"
+  },
+  "openai-compatible": {
+    "base_url": "http://localhost:11434/v1",
+    "api_key": "...",
+    "default_model": "llama3.1"
+  }
+}'
+```
+
+Provider entries support `api_key`, `base_url`, `default_model`, `model`, `referer`, and `title`. `model` is accepted as an alias for `default_model`. `local` is accepted as an alias for `openai-compatible`.
+
+Once providers are registered, agent instance `model_config` can fallback across providers with provider-qualified model refs:
+
+```json
+{
+  "primary": "deepseek/deepseek-v4-pro",
+  "fallbacks": [
+    "openrouter/openai/gpt-4.1-mini",
+    "together/MiniMaxAI/MiniMax-M2.7",
+    "openai-compatible/llama3.1"
+  ]
+}
+```
+
+The first path segment is the Duraclaw provider name, not necessarily the upstream model owner. For example, use `openrouter/openai/gpt-4.1-mini` to call OpenAI's model through OpenRouter.
+
 ### OpenRouter model guidance
 
 Agent instance `model_config.primary`, `model_config.fallbacks`, and `profile_config.domain_scope.scope_judge_model` may use provider-qualified model refs:

@@ -16,6 +16,7 @@ type config struct {
 	Addr                        string
 	Hostname                    string
 	Provider                    string
+	Providers                   json.RawMessage
 	AllowMockInProduction       bool
 	ProviderBaseURL             string
 	ProviderAPIKey              string
@@ -87,6 +88,7 @@ func loadConfig() (config, error) {
 		Addr:                        envDefault("ADDR", ":8080"),
 		Hostname:                    os.Getenv("HOSTNAME"),
 		Provider:                    envDefault("DURACLAW_PROVIDER", "mock"),
+		Providers:                   json.RawMessage(os.Getenv("DURACLAW_PROVIDERS")),
 		AllowMockInProduction:       envBool("DURACLAW_ALLOW_MOCK_IN_PRODUCTION", false),
 		ProviderBaseURL:             os.Getenv("DURACLAW_PROVIDER_BASE_URL"),
 		ProviderAPIKey:              os.Getenv("DURACLAW_PROVIDER_API_KEY"),
@@ -163,6 +165,20 @@ func loadConfig() (config, error) {
 	if cfg.isProduction() && !isProductionProvider(providerName) && !cfg.AllowMockInProduction {
 		return cfg, fmt.Errorf("provider %q is not allowed when DURACLAW_ENV is production unless DURACLAW_ALLOW_MOCK_IN_PRODUCTION is true", cfg.Provider)
 	}
+	if len(cfg.Providers) > 0 {
+		configured, err := parseProviderConfigs(cfg.Providers)
+		if err != nil {
+			return cfg, err
+		}
+		for name := range configured {
+			if !isKnownProvider(name) {
+				return cfg, fmt.Errorf("DURACLAW_PROVIDERS contains unsupported provider %q", name)
+			}
+			if cfg.isProduction() && !isProductionProvider(name) && !cfg.AllowMockInProduction {
+				return cfg, fmt.Errorf("provider %q in DURACLAW_PROVIDERS is not allowed when DURACLAW_ENV is production unless DURACLAW_ALLOW_MOCK_IN_PRODUCTION is true", name)
+			}
+		}
+	}
 	if len(cfg.MCPConfig) > 0 && !json.Valid(cfg.MCPConfig) {
 		return cfg, fmt.Errorf("DURACLAW_MCP_CONFIG must be valid JSON")
 	}
@@ -175,6 +191,15 @@ func loadConfig() (config, error) {
 func (cfg config) isProduction() bool {
 	env := strings.ToLower(strings.TrimSpace(cfg.Environment))
 	return env == "production" || env == "prod"
+}
+
+func isKnownProvider(provider string) bool {
+	switch providers.NormalizeProvider(provider) {
+	case "mock", "openai", "openrouter", "openai-compatible", "together", "deepseek":
+		return true
+	default:
+		return false
+	}
 }
 
 func isProductionProvider(provider string) bool {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"reflect"
 	"strings"
@@ -93,6 +94,39 @@ func TestLoadConfigRejectsInvalidMCPConfig(t *testing.T) {
 	t.Setenv("DURACLAW_MCP_CONFIG", "{bad")
 	if _, err := loadConfig(); err == nil {
 		t.Fatalf("expected mcp config error")
+	}
+}
+
+func TestLoadConfigRejectsInvalidProvidersConfig(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://example")
+	t.Setenv("DURACLAW_PROVIDERS", "{bad")
+	if _, err := loadConfig(); err == nil || !strings.Contains(err.Error(), "DURACLAW_PROVIDERS") {
+		t.Fatalf("expected providers config error, got %v", err)
+	}
+	t.Setenv("DURACLAW_PROVIDERS", `{"unknown":{"api_key":"key"}}`)
+	if _, err := loadConfig(); err == nil || !strings.Contains(err.Error(), "unsupported provider") {
+		t.Fatalf("expected unsupported provider error, got %v", err)
+	}
+	t.Setenv("DURACLAW_PROVIDERS", `{"local":{"base_url":"http://one.test/v1"},"openai-compatible":{"base_url":"http://two.test/v1"}}`)
+	if _, err := loadConfig(); err == nil || !strings.Contains(err.Error(), "duplicate provider") {
+		t.Fatalf("expected duplicate provider error, got %v", err)
+	}
+}
+
+func TestLoadConfigValidatesProductionProvidersConfig(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://example")
+	t.Setenv("DURACLAW_ENV", "production")
+	t.Setenv("DURACLAW_REQUIRE_AUTH", "true")
+	t.Setenv("DURACLAW_ADMIN_TOKEN", "admin")
+	t.Setenv("DURACLAW_ACP_TOKEN", "acp")
+	t.Setenv("DURACLAW_PROVIDER", "openrouter")
+	t.Setenv("DURACLAW_PROVIDERS", `{"mock":{}}`)
+	if _, err := loadConfig(); err == nil || !strings.Contains(err.Error(), "mock") {
+		t.Fatalf("expected production mock provider error, got %v", err)
+	}
+	t.Setenv("DURACLAW_PROVIDERS", `{"deepseek":{"api_key":"key","default_model":"deepseek-v4-pro"}}`)
+	if _, err := loadConfig(); err != nil {
+		t.Fatalf("unexpected production providers config error: %v", err)
 	}
 }
 
@@ -250,6 +284,32 @@ func TestBuildProviderRegistryUsesProviderIdentity(t *testing.T) {
 	}
 	if got := buildProviderRegistry(config{Provider: "local"}).DefaultProvider(); got != "openai-compatible" {
 		t.Fatalf("default=%s", got)
+	}
+}
+
+func TestBuildProviderRegistryRegistersConfiguredProviders(t *testing.T) {
+	registry := buildProviderRegistry(config{
+		Provider: "deepseek",
+		Providers: json.RawMessage(`{
+			"openrouter": {"api_key": "or-key", "default_model": "openai/gpt-4.1-mini", "referer": "https://duraclaw.test", "title": "Duraclaw"},
+			"together": {"api_key": "tg-key", "model": "MiniMaxAI/MiniMax-M2.7"},
+			"local": {"base_url": "http://localhost:11434/v1", "model": "llama3.1"}
+		}`),
+	})
+	if _, ok := registry.Get("deepseek"); !ok {
+		t.Fatal("expected default deepseek provider")
+	}
+	if got, ok := registry.Get("openrouter"); !ok || reflect.TypeOf(got) != reflect.TypeOf(providers.OpenRouterProvider{}) {
+		t.Fatalf("openrouter provider=%T ok=%v", got, ok)
+	}
+	if got, ok := registry.Get("together"); !ok || reflect.TypeOf(got) != reflect.TypeOf(providers.TogetherProvider{}) {
+		t.Fatalf("together provider=%T ok=%v", got, ok)
+	}
+	if got, ok := registry.Get("openai-compatible"); !ok || reflect.TypeOf(got) != reflect.TypeOf(providers.OpenAICompatibleProvider{}) {
+		t.Fatalf("openai-compatible provider=%T ok=%v", got, ok)
+	}
+	if got, ok := registry.Get("local"); !ok || reflect.TypeOf(got) != reflect.TypeOf(providers.OpenAICompatibleProvider{}) {
+		t.Fatalf("local provider=%T ok=%v", got, ok)
 	}
 }
 
