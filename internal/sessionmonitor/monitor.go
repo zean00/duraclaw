@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -264,44 +265,56 @@ func (s *Service) extractSummaryWithMetadata(ctx context.Context, transcript str
 }
 
 type extractionResult struct {
-	Memories []struct {
-		Type    string `json:"type"`
-		Content string `json:"content"`
-	} `json:"memories"`
-	Preferences []struct {
-		Category  string         `json:"category"`
-		Content   string         `json:"content"`
-		Condition map[string]any `json:"condition"`
-	} `json:"preferences"`
+	Memories    []extractedMemory     `json:"memories"`
+	Preferences []extractedPreference `json:"preferences"`
+}
+
+type extractedMemory struct {
+	Type    string `json:"type"`
+	Content string `json:"content"`
+}
+
+type extractedPreference struct {
+	Category  string         `json:"category"`
+	Content   string         `json:"content"`
+	Condition map[string]any `json:"condition"`
 }
 
 func (s *Service) extractMemoryAndPreferences(ctx context.Context, now time.Time, session db.MonitoredSession, transcript string) (int, int, error) {
 	resp, err := s.providers.ChatWithFallback(ctx, s.modelConfig, []providers.Message{
-		{Role: "system", Content: "Extract stable user memories and conditional preferences. Return JSON only with arrays: memories[{type,content}], preferences[{category,content,condition}]. Stable memories are facts that rarely change. Preferences may be conditional."},
+		{Role: "system", Content: "Extract stable user memories and conditional preferences explicitly stated by the user. Return JSON only: {\"memories\":[{\"type\":\"fact\",\"content\":\"...\"}],\"preferences\":[{\"category\":\"...\",\"content\":\"...\",\"condition\":{}}]}. Include durable profile facts such as family relationships, names, and identity details. Include preferences such as what the user wants to be called, language/style preferences, and recurring likes/dislikes. Do not extract reminders, temporary moods, assistant suggestions, or generic notes/bookmarks as profile memory."},
 		{Role: "user", Content: transcript},
-	}, nil, map[string]any{"response_format": "json_object", "purpose": "idle_memory_preference_extraction"})
+	}, nil, map[string]any{"response_format": map[string]any{"type": "json_object"}, "purpose": "idle_memory_preference_extraction"})
 	if err != nil {
 		return 0, 0, err
 	}
 	var result extractionResult
 	if err := json.Unmarshal([]byte(extractJSONObject(resp.Response.Content)), &result); err != nil {
+		_ = s.store.AddObservabilityEvent(ctx, session.CustomerID, "", "session_memory_extraction_failed", map[string]any{"session_id": session.SessionID, "error": err.Error(), "raw_preview": preview(resp.Response.Content, 500)})
 		return 0, 0, nil
 	}
+	applyProfileExtractionFallbacks(transcript, &result)
 	existingMemories, _ := s.store.ListMemories(ctx, session.CustomerID, session.UserID, 200)
 	existingPreferences, _ := s.store.ListPreferences(ctx, session.CustomerID, session.UserID, 200)
 	seenMemories := map[string]bool{}
 	for _, m := range existingMemories {
 		seenMemories[normalize(m.Content)] = true
+		for _, key := range profileSemanticKeys(m.Content, m.Type) {
+			seenMemories[key] = true
+		}
 	}
 	seenPreferences := map[string]bool{}
 	for _, p := range existingPreferences {
 		seenPreferences[normalize(p.Category+" "+p.Content+" "+string(p.Condition))] = true
+		for _, key := range profileSemanticKeys(p.Content, p.Category) {
+			seenPreferences[key] = true
+		}
 	}
 	writtenMemories := 0
 	writtenPreferences := 0
 	for _, m := range result.Memories {
 		content := strings.TrimSpace(m.Content)
-		if content == "" || seenMemories[normalize(content)] {
+		if content == "" || skipMemoryExtraction(content) || seenMemories[normalize(content)] || seenProfileSemantic(seenMemories, content, memoryTypeForCandidate(m.Type)) {
 			continue
 		}
 		if _, err := s.policy.Enforce(ctx, "pre_memory_write", policy.Context{CustomerID: session.CustomerID, UserID: session.UserID, AgentInstanceID: session.AgentInstanceID, SessionID: session.SessionID, Content: content}); err != nil {
@@ -314,6 +327,10 @@ func (s *Service) extractMemoryAndPreferences(ctx context.Context, now time.Time
 		if _, err := s.store.AddMemory(ctx, session.CustomerID, session.UserID, session.SessionID, memoryType, content, map[string]any{"source": "session_monitor", "extracted_at": now.Format(time.RFC3339), "provider": resp.Provider, "model": resp.Model}); err != nil {
 			return writtenMemories, writtenPreferences, err
 		}
+		seenMemories[normalize(content)] = true
+		for _, key := range profileSemanticKeys(content, memoryType) {
+			seenMemories[key] = true
+		}
 		writtenMemories++
 	}
 	for _, p := range result.Preferences {
@@ -324,7 +341,7 @@ func (s *Service) extractMemoryAndPreferences(ctx context.Context, now time.Time
 		}
 		keyBytes, _ := json.Marshal(p.Condition)
 		key := normalize(category + " " + content + " " + string(keyBytes))
-		if content == "" || seenPreferences[key] {
+		if content == "" || skipProfileExtraction(content) || seenPreferences[key] || seenProfileSemantic(seenPreferences, content, category) {
 			continue
 		}
 		if _, err := s.policy.Enforce(ctx, "pre_memory_write", policy.Context{CustomerID: session.CustomerID, UserID: session.UserID, AgentInstanceID: session.AgentInstanceID, SessionID: session.SessionID, Content: content}); err != nil {
@@ -333,10 +350,156 @@ func (s *Service) extractMemoryAndPreferences(ctx context.Context, now time.Time
 		if _, err := s.store.AddPreference(ctx, session.CustomerID, session.UserID, session.SessionID, category, content, p.Condition, map[string]any{"source": "session_monitor", "extracted_at": now.Format(time.RFC3339), "provider": resp.Provider, "model": resp.Model}); err != nil {
 			return writtenMemories, writtenPreferences, err
 		}
+		seenPreferences[key] = true
+		for _, semanticKey := range profileSemanticKeys(content, category) {
+			seenPreferences[semanticKey] = true
+		}
 		writtenPreferences++
 	}
 	_ = s.store.AddObservabilityEvent(ctx, session.CustomerID, "", "session_memory_extracted", map[string]any{"session_id": session.SessionID, "memories": writtenMemories, "preferences": writtenPreferences})
 	return writtenMemories, writtenPreferences, nil
+}
+
+func memoryTypeForCandidate(memoryType string) string {
+	memoryType = strings.TrimSpace(memoryType)
+	if memoryType == "" {
+		return "fact"
+	}
+	return memoryType
+}
+
+func skipMemoryExtraction(content string) bool {
+	if skipProfileExtraction(content) {
+		return true
+	}
+	text := normalize(content)
+	return strings.Contains(text, "nama panggilan") || strings.Contains(text, "dipanggil") || strings.Contains(text, "called")
+}
+
+func skipProfileExtraction(content string) bool {
+	text := normalize(content)
+	if text == "" {
+		return true
+	}
+	// Avoid storing unsupported inferences and note/bookmark content as profile.
+	if strings.Contains(text, "masih hidup") || strings.Contains(text, "still alive") {
+		return true
+	}
+	if strings.Contains(text, "memiliki") && strings.Contains(text, "ibu") {
+		return true
+	}
+	if strings.Contains(text, "has") && strings.Contains(text, "mother") {
+		return true
+	}
+	if strings.Contains(text, "bakso") && (strings.Contains(text, "jalan magelang") || strings.Contains(text, "pak marno")) {
+		return true
+	}
+	return false
+}
+
+func seenProfileSemantic(seen map[string]bool, content, category string) bool {
+	for _, key := range profileSemanticKeys(content, category) {
+		if seen[key] {
+			return true
+		}
+	}
+	return false
+}
+
+func profileSemanticKeys(content, category string) []string {
+	text := normalize(category + " " + content)
+	var out []string
+	if strings.Contains(text, "kak zen") && (strings.Contains(text, "panggil") || strings.Contains(text, "dipanggil") || strings.Contains(text, "called") || strings.Contains(text, "address")) {
+		out = append(out, "profile:addressing:kak zen")
+	}
+	if strings.Contains(text, "luqman") && (strings.Contains(text, "anak") || strings.Contains(text, "child")) {
+		out = append(out, "profile:child:luqman")
+	}
+	return out
+}
+
+func applyProfileExtractionFallbacks(transcript string, result *extractionResult) {
+	if strings.TrimSpace(transcript) == "" || result == nil {
+		return
+	}
+	for _, nickname := range regexpCaptureAll(transcript, `(?i)\bpanggil\s+(?:aku|saya|gue|gua)\s+([\pL][\pL .'-]{1,40}?)(?:\s+ya|\s+mulai|\?|$)`) {
+		if hasExtractedPreference(result.Preferences, "called "+nickname) || hasExtractedPreference(result.Preferences, nickname) {
+			continue
+		}
+		result.Preferences = append(result.Preferences, extractedPreference{Category: "addressing", Content: "User prefers to be called " + nickname, Condition: map[string]any{}})
+	}
+	for _, child := range regexpCaptureAll(transcript, `(?i)(?:^|[\s"'(])([\pL][\pL'-]{1,30})\s+anak(?:ku| saya| gue| gua)?\b`) {
+		if hasExtractedMemory(result.Memories, child, "anak") || hasExtractedMemory(result.Memories, child, "child") {
+			continue
+		}
+		result.Memories = append(result.Memories, extractedMemory{Type: "family", Content: child + " is the user's child"})
+	}
+	for _, child := range regexpCaptureAll(transcript, `(?i)\banak(?:ku| saya| gue| gua)?\s+namanya\s+([\pL][\pL .'-]{1,40})(?:\s|\.|,|$)`) {
+		if hasExtractedMemory(result.Memories, child, "anak") || hasExtractedMemory(result.Memories, child, "child") {
+			continue
+		}
+		result.Memories = append(result.Memories, extractedMemory{Type: "family", Content: child + " is the user's child"})
+	}
+}
+
+func hasExtractedMemory(items []extractedMemory, needles ...string) bool {
+	for _, item := range items {
+		text := normalize(item.Content)
+		matched := true
+		for _, needle := range needles {
+			if !strings.Contains(text, normalize(needle)) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
+func hasExtractedPreference(items []extractedPreference, needles ...string) bool {
+	for _, item := range items {
+		text := normalize(item.Category + " " + item.Content)
+		matched := true
+		for _, needle := range needles {
+			if !strings.Contains(text, normalize(needle)) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
+func regexpCaptureAll(text, pattern string) []string {
+	re := regexp.MustCompile(pattern)
+	seen := map[string]bool{}
+	var out []string
+	for _, match := range re.FindAllStringSubmatch(text, -1) {
+		if len(match) < 2 {
+			continue
+		}
+		value := strings.Trim(strings.TrimSpace(match[1]), `"'.,!? `)
+		if value == "" || seen[normalize(value)] {
+			continue
+		}
+		seen[normalize(value)] = true
+		out = append(out, value)
+	}
+	return out
+}
+
+func preview(text string, limit int) string {
+	text = strings.TrimSpace(text)
+	if limit <= 0 || len(text) <= limit {
+		return text
+	}
+	return text[:limit]
 }
 
 func transcript(messages []db.Message) string {

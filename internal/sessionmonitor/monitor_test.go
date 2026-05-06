@@ -82,6 +82,21 @@ func (compactionProfileProvider) Chat(ctx context.Context, _ []providers.Message
 	return &providers.LLMResponse{Content: "Profile-aware summary"}, nil
 }
 
+type emptyExtractionProvider struct{}
+
+func (emptyExtractionProvider) GetDefaultModel() string { return "mock/empty" }
+
+func (emptyExtractionProvider) Chat(ctx context.Context, _ []providers.Message, _ []providers.ToolDefinition, _ string, options map[string]any) (*providers.LLMResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	purpose, _ := options["purpose"].(string)
+	if purpose == "idle_memory_preference_extraction" {
+		return &providers.LLMResponse{Content: `{"memories":[],"preferences":[]}`}, nil
+	}
+	return &providers.LLMResponse{Content: "summary"}, nil
+}
+
 func TestActivePatternCountsUserMessageHoursAndWeekdays(t *testing.T) {
 	messages := []db.Message{
 		{CreatedAt: time.Date(2026, 4, 27, 9, 0, 0, 0, time.UTC)},
@@ -201,5 +216,42 @@ func TestCompactSessionCanExtractProfile(t *testing.T) {
 	extraction, _ := result.Metadata["profile_extraction"].(map[string]any)
 	if extraction["memories"] != 1 || extraction["preferences"] != 1 {
 		t.Fatalf("metadata=%#v", result.Metadata)
+	}
+}
+
+func TestProfileExtractionFallbacksCaptureNicknameAndChild(t *testing.T) {
+	raw, _ := json.Marshal(map[string]any{"text": "Mulai sekarang panggil aku Kak Zen ya. Besok ingatkan bawa tas hitamnya Luqman anakku."})
+	store := &compactStore{messages: []db.Message{{ID: "m1", Role: "user", Content: raw, CreatedAt: time.Now()}}}
+	registry := providers.NewRegistry("empty")
+	registry.Register("empty", emptyExtractionProvider{})
+	service := NewService(store, registry, providers.ModelConfig{Primary: "empty/mock"}, "test")
+
+	result, err := service.CompactSession(context.Background(), CompactRequest{CustomerID: "c1", SessionID: "s1", Force: true, ExtractProfile: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Compacted {
+		t.Fatalf("result=%#v", result)
+	}
+	if len(store.memories) != 1 || store.memories[0] != "Luqman is the user's child" {
+		t.Fatalf("memories=%#v", store.memories)
+	}
+	if len(store.preferences) != 1 || store.preferences[0] != "User prefers to be called Kak Zen" {
+		t.Fatalf("preferences=%#v", store.preferences)
+	}
+}
+
+func TestProfileExtractionSemanticKeysAndSkips(t *testing.T) {
+	if !skipMemoryExtraction("Nama panggilan pengguna adalah Kak Zen") {
+		t.Fatal("expected nickname fact to be skipped as memory")
+	}
+	if !skipProfileExtraction("User memiliki seorang ibu") {
+		t.Fatal("expected trivial inferred parent fact to be skipped")
+	}
+	if !seenProfileSemantic(map[string]bool{"profile:child:luqman": true}, "Pengguna memiliki anak bernama Luqman", "fact") {
+		t.Fatal("expected child semantic duplicate")
+	}
+	if !seenProfileSemantic(map[string]bool{"profile:addressing:kak zen": true}, "Panggil saya Kak Zen", "panggilan") {
+		t.Fatal("expected addressing semantic duplicate")
 	}
 }
