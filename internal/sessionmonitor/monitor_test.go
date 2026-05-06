@@ -254,4 +254,10 @@ func TestProfileExtractionSemanticKeysAndSkips(t *testing.T) {
 	if !seenProfileSemantic(map[string]bool{"profile:addressing:kak zen": true}, "Panggil saya Kak Zen", "panggilan") {
 		t.Fatal("expected addressing semantic duplicate")
 	}
+	if !seenProfileSemantic(map[string]bool{"profile:child:maya": true}, "Maya is the user's child", "family") {
+		t.Fatal("expected generic child semantic duplicate")
+	}
+	if !seenProfileSemantic(map[string]bool{"profile:addressing:captain rio": true}, "User prefers to be called Captain Rio", "addressing") {
+		t.Fatal("expected generic addressing semantic duplicate")
+	}
 }

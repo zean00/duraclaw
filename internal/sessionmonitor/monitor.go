@@ -381,7 +381,7 @@ func skipProfileExtraction(content string) bool {
 	if text == "" {
 		return true
 	}
-	// Avoid storing unsupported inferences and note/bookmark content as profile.
+	// Avoid storing unsupported inferences as profile.
 	if strings.Contains(text, "masih hidup") || strings.Contains(text, "still alive") {
 		return true
 	}
@@ -389,9 +389,6 @@ func skipProfileExtraction(content string) bool {
 		return true
 	}
 	if strings.Contains(text, "has") && strings.Contains(text, "mother") {
-		return true
-	}
-	if strings.Contains(text, "bakso") && (strings.Contains(text, "jalan magelang") || strings.Contains(text, "pak marno")) {
 		return true
 	}
 	return false
@@ -407,13 +404,12 @@ func seenProfileSemantic(seen map[string]bool, content, category string) bool {
 }
 
 func profileSemanticKeys(content, category string) []string {
-	text := normalize(category + " " + content)
 	var out []string
-	if strings.Contains(text, "kak zen") && (strings.Contains(text, "panggil") || strings.Contains(text, "dipanggil") || strings.Contains(text, "called") || strings.Contains(text, "address")) {
-		out = append(out, "profile:addressing:kak zen")
+	for _, name := range profileNameCandidates(category + " " + content) {
+		out = append(out, "profile:addressing:"+normalize(name))
 	}
-	if strings.Contains(text, "luqman") && (strings.Contains(text, "anak") || strings.Contains(text, "child")) {
-		out = append(out, "profile:child:luqman")
+	for _, name := range childNameCandidates(content) {
+		out = append(out, "profile:child:"+normalize(name))
 	}
 	return out
 }
@@ -422,24 +418,37 @@ func applyProfileExtractionFallbacks(transcript string, result *extractionResult
 	if strings.TrimSpace(transcript) == "" || result == nil {
 		return
 	}
-	for _, nickname := range regexpCaptureAll(transcript, `(?i)\bpanggil\s+(?:aku|saya|gue|gua)\s+([\pL][\pL .'-]{1,40}?)(?:\s+ya|\s+mulai|\?|$)`) {
+	for _, nickname := range profileNameCandidates(transcript) {
 		if hasExtractedPreference(result.Preferences, "called "+nickname) || hasExtractedPreference(result.Preferences, nickname) {
 			continue
 		}
 		result.Preferences = append(result.Preferences, extractedPreference{Category: "addressing", Content: "User prefers to be called " + nickname, Condition: map[string]any{}})
 	}
-	for _, child := range regexpCaptureAll(transcript, `(?i)(?:^|[\s"'(])([\pL][\pL'-]{1,30})\s+anak(?:ku| saya| gue| gua)?\b`) {
+	for _, child := range childNameCandidates(transcript) {
 		if hasExtractedMemory(result.Memories, child, "anak") || hasExtractedMemory(result.Memories, child, "child") {
 			continue
 		}
 		result.Memories = append(result.Memories, extractedMemory{Type: "family", Content: child + " is the user's child"})
 	}
-	for _, child := range regexpCaptureAll(transcript, `(?i)\banak(?:ku| saya| gue| gua)?\s+namanya\s+([\pL][\pL .'-]{1,40})(?:\s|\.|,|$)`) {
-		if hasExtractedMemory(result.Memories, child, "anak") || hasExtractedMemory(result.Memories, child, "child") {
-			continue
-		}
-		result.Memories = append(result.Memories, extractedMemory{Type: "family", Content: child + " is the user's child"})
+}
+
+func profileNameCandidates(text string) []string {
+	patterns := []string{
+		`(?i)\bpanggil\s+(?:aku|saya|gue|gua)\s+([\pL][\pL .'-]{1,40}?)(?:\s+ya|\s+mulai|\?|$)`,
+		`(?i)\b(?:call|address)\s+me\s+([\pL][\pL .'-]{1,40}?)(?:\s+please|\.|,|\?|$)`,
+		`(?i)\b(?:dipanggil|called|addressed as)\s+([\pL][\pL .'-]{1,40}?)(?:\.|,|\?|$)`,
 	}
+	return regexpCaptureAllPatterns(text, patterns...)
+}
+
+func childNameCandidates(text string) []string {
+	patterns := []string{
+		`(?i)(?:^|[\s"'(])([\pL][\pL'-]{1,30})\s+anak(?:ku| saya| gue| gua| pengguna)?\b`,
+		`(?i)\banak(?:ku| saya| gue| gua| pengguna)?\s+(?:namanya|bernama)\s+([\pL][\pL .'-]{1,40})(?:\s|\.|,|$)`,
+		`(?i)\b(?:my|user(?:'?s| s))\s+child\s+(?:is\s+|named\s+)?([\pL][\pL .'-]{1,40})(?:\s|\.|,|$)`,
+		`(?i)\b([\pL][\pL .'-]{1,40})\s+is\s+(?:the\s+)?user(?:'?s| s)\s+child\b`,
+	}
+	return regexpCaptureAllPatterns(text, patterns...)
 }
 
 func hasExtractedMemory(items []extractedMemory, needles ...string) bool {
@@ -477,21 +486,39 @@ func hasExtractedPreference(items []extractedPreference, needles ...string) bool
 }
 
 func regexpCaptureAll(text, pattern string) []string {
-	re := regexp.MustCompile(pattern)
+	return regexpCaptureAllPatterns(text, pattern)
+}
+
+func regexpCaptureAllPatterns(text string, patterns ...string) []string {
 	seen := map[string]bool{}
 	var out []string
-	for _, match := range re.FindAllStringSubmatch(text, -1) {
-		if len(match) < 2 {
-			continue
+	for _, pattern := range patterns {
+		re := regexp.MustCompile(pattern)
+		for _, match := range re.FindAllStringSubmatch(text, -1) {
+			if len(match) < 2 {
+				continue
+			}
+			value := cleanProfileCandidate(match[1])
+			if value == "" || seen[normalize(value)] {
+				continue
+			}
+			seen[normalize(value)] = true
+			out = append(out, value)
 		}
-		value := strings.Trim(strings.TrimSpace(match[1]), `"'.,!? `)
-		if value == "" || seen[normalize(value)] {
-			continue
-		}
-		seen[normalize(value)] = true
-		out = append(out, value)
 	}
 	return out
+}
+
+func cleanProfileCandidate(value string) string {
+	value = strings.Trim(strings.TrimSpace(value), `"'.,!? `)
+	lower := strings.ToLower(value)
+	for _, sep := range []string{" and ", " dan ", " lalu ", " terus "} {
+		if idx := strings.Index(lower, sep); idx >= 0 {
+			value = strings.TrimSpace(value[:idx])
+			lower = strings.ToLower(value)
+		}
+	}
+	return strings.Trim(value, `"'.,!? `)
 }
 
 func preview(text string, limit int) string {
