@@ -11,12 +11,18 @@ import (
 )
 
 type compactStore struct {
-	messages    []db.Message
-	summary     string
-	metadata    any
-	events      []string
-	memories    []string
-	preferences []string
+	messages         []db.Message
+	summary          string
+	metadata         any
+	events           []string
+	memories         []string
+	preferences      []string
+	existingMemories []db.Memory
+	existingPrefs    []db.Preference
+	updatedMemories  map[string]string
+	deletedMemories  []string
+	updatedPrefs     map[string]string
+	deletedPrefs     []string
 }
 
 func (s *compactStore) ClaimIdleSessions(context.Context, string, time.Duration, time.Duration, int) ([]db.MonitoredSession, error) {
@@ -41,21 +47,43 @@ func (s *compactStore) UpsertSessionSummary(_ context.Context, _, _, _, summary 
 	return nil
 }
 func (s *compactStore) ListMemories(context.Context, string, string, int) ([]db.Memory, error) {
-	return nil, nil
+	return s.existingMemories, nil
 }
 func (s *compactStore) AddMemory(_ context.Context, _, _, _, _, content string, _ any) (string, error) {
 	s.memories = append(s.memories, content)
 	return "mem-1", nil
 }
+func (s *compactStore) UpdateMemory(_ context.Context, id, _, _, _ string, content string, _ any) error {
+	if s.updatedMemories == nil {
+		s.updatedMemories = map[string]string{}
+	}
+	s.updatedMemories[id] = content
+	return nil
+}
+func (s *compactStore) DeleteMemory(_ context.Context, id, _, _ string) error {
+	s.deletedMemories = append(s.deletedMemories, id)
+	return nil
+}
 func (s *compactStore) SetMemoryEmbedding(context.Context, string, string, string, []float32) error {
 	return nil
 }
 func (s *compactStore) ListPreferences(context.Context, string, string, int) ([]db.Preference, error) {
-	return nil, nil
+	return s.existingPrefs, nil
 }
 func (s *compactStore) AddPreference(_ context.Context, _, _, _, _, content string, _ any, _ any) (string, error) {
 	s.preferences = append(s.preferences, content)
 	return "pref-1", nil
+}
+func (s *compactStore) UpdatePreference(_ context.Context, id, _, _, _ string, content string, _ any, _ any) error {
+	if s.updatedPrefs == nil {
+		s.updatedPrefs = map[string]string{}
+	}
+	s.updatedPrefs[id] = content
+	return nil
+}
+func (s *compactStore) DeletePreference(_ context.Context, id, _, _ string) error {
+	s.deletedPrefs = append(s.deletedPrefs, id)
+	return nil
 }
 func (s *compactStore) SetPreferenceEmbedding(context.Context, string, string, string, []float32) error {
 	return nil
@@ -101,6 +129,24 @@ func (emptyExtractionProvider) Chat(ctx context.Context, _ []providers.Message, 
 		return &providers.LLMResponse{Content: `{"memories":[],"preferences":[]}`}, nil
 	}
 	return &providers.LLMResponse{Content: "summary"}, nil
+}
+
+type consolidationProvider struct{}
+
+func (consolidationProvider) GetDefaultModel() string { return "mock/consolidation" }
+
+func (consolidationProvider) Chat(ctx context.Context, _ []providers.Message, _ []providers.ToolDefinition, _ string, options map[string]any) (*providers.LLMResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	switch options["purpose"] {
+	case "idle_memory_preference_extraction":
+		return &providers.LLMResponse{Content: `{"memories":[{"type":"fact","content":"User likes concise replies"}],"preferences":[{"category":"style","content":"User prefers brief replies","condition":{}}]}`}, nil
+	case "profile_consolidation":
+		return &providers.LLMResponse{Content: `{"memory_updates":[{"id":"mem-old","type":"fact","content":"User prefers concise responses","duplicate_ids":[]}],"preference_updates":[{"id":"pref-old","category":"style","content":"User prefers concise responses","condition":{},"duplicate_ids":[]}],"memory_delete_ids":["mem-dup"],"preference_delete_ids":["pref-dup"]}`}, nil
+	default:
+		return &providers.LLMResponse{Content: "summary"}, nil
+	}
 }
 
 func TestActivePatternCountsUserMessageHoursAndWeekdays(t *testing.T) {
@@ -236,6 +282,38 @@ func TestCompactSessionCanExtractProfile(t *testing.T) {
 	extraction, _ := result.Metadata["profile_extraction"].(map[string]any)
 	if extraction["memories"] != 1 || extraction["preferences"] != 1 {
 		t.Fatalf("metadata=%#v", result.Metadata)
+	}
+}
+
+func TestProfileConsolidationMergesExplicitDuplicates(t *testing.T) {
+	raw, _ := json.Marshal(map[string]any{"text": "I like concise replies"})
+	store := &compactStore{
+		messages: []db.Message{{ID: "m1", Role: "user", Content: raw, CreatedAt: time.Now()}},
+		existingMemories: []db.Memory{
+			{ID: "mem-old", Type: "fact", Content: "User likes short responses", Metadata: []byte(`{"source":"old"}`)},
+			{ID: "mem-dup", Type: "fact", Content: "User prefers concise replies", Metadata: []byte(`{"source":"dup"}`)},
+		},
+		existingPrefs: []db.Preference{
+			{ID: "pref-old", Category: "style", Content: "User likes brief answers", Condition: []byte(`{}`), Metadata: []byte(`{"source":"old"}`)},
+			{ID: "pref-dup", Category: "style", Content: "User prefers short answers", Condition: []byte(`{}`), Metadata: []byte(`{"source":"dup"}`)},
+		},
+	}
+	registry := providers.NewRegistry("profile")
+	registry.Register("profile", consolidationProvider{})
+	service := NewService(store, registry, providers.ModelConfig{Primary: "profile/mock"}, "test")
+
+	result, err := service.CompactSession(context.Background(), CompactRequest{CustomerID: "c1", SessionID: "s1", Force: true, ExtractProfile: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Compacted || len(store.memories) != 1 || len(store.preferences) != 1 {
+		t.Fatalf("result=%#v memories=%#v preferences=%#v", result, store.memories, store.preferences)
+	}
+	if store.updatedMemories["mem-old"] != "User prefers concise responses" || len(store.deletedMemories) != 1 || store.deletedMemories[0] != "mem-dup" {
+		t.Fatalf("memory consolidation updates=%#v deletes=%#v", store.updatedMemories, store.deletedMemories)
+	}
+	if store.updatedPrefs["pref-old"] != "User prefers concise responses" || len(store.deletedPrefs) != 1 || store.deletedPrefs[0] != "pref-dup" {
+		t.Fatalf("preference consolidation updates=%#v deletes=%#v", store.updatedPrefs, store.deletedPrefs)
 	}
 }
 

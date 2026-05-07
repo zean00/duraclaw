@@ -99,7 +99,8 @@ func main() {
 		WithIdleFor(cfg.SessionMonitorIdleFor).
 		WithLimit(cfg.SessionMonitorLimit).
 		WithMessageLimit(cfg.SessionMonitorMessageLimit).
-		WithCompactionThreshold(cfg.SessionCompactionThreshold)
+		WithCompactionThreshold(cfg.SessionCompactionThreshold).
+		WithProfileConsolidation(cfg.ProfileConsolidationEnabled)
 	go func() {
 		ticker := time.NewTicker(cfg.SchedulerInterval)
 		defer ticker.Stop()

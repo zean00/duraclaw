@@ -70,6 +70,19 @@ When the model-loop `save_preference` tool writes a preference, the tool result 
 
 Prompt context ranks matching preferences by relevance before injection. A preference's usage counter is updated when it is selected for prompt context; explicit list APIs still return stored preferences for inspection and management.
 
+## Profile Consolidation
+
+Idle extraction first reads only the newly monitored message window. After new memories or preferences are written, Duraclaw can run an optional profile consolidation pass over the user's stored memory/preference list. This pass asks the configured model to merge clear duplicates or near-duplicates into canonical items.
+
+Consolidation is intentionally conservative:
+
+- It runs in the background session-monitor path, not the live turn path.
+- It updates existing item IDs instead of creating a separate free-text profile document.
+- It deletes only IDs explicitly marked by the model as duplicates of a canonical item.
+- It preserves separate conditional or complementary preferences instead of flattening them into one ambiguous statement.
+
+Set `DURACLAW_PROFILE_CONSOLIDATION_ENABLED=false` to disable this pass.
+
 ## Knowledge
 
 Knowledge is admin-managed content for retrieval:

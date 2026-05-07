@@ -32,6 +32,7 @@ type config struct {
 	SessionMonitorLimit         int
 	SessionMonitorMessageLimit  int
 	SessionCompactionThreshold  int
+	ProfileConsolidationEnabled bool
 	RunInterruptWindow          time.Duration
 	RunMaxRefinementDepth       int
 	AgentActivityEnabled        bool
@@ -104,6 +105,7 @@ func loadConfig() (config, error) {
 		SessionMonitorLimit:         envInt("DURACLAW_SESSION_MONITOR_LIMIT", 25),
 		SessionMonitorMessageLimit:  envInt("DURACLAW_SESSION_MONITOR_MESSAGE_LIMIT", 40),
 		SessionCompactionThreshold:  envInt("DURACLAW_SESSION_COMPACTION_THRESHOLD_CHARS", 12000),
+		ProfileConsolidationEnabled: envBool("DURACLAW_PROFILE_CONSOLIDATION_ENABLED", true),
 		RunInterruptWindow:          time.Duration(envInt("DURACLAW_RUN_INTERRUPT_WINDOW_MS", 2000)) * time.Millisecond,
 		RunMaxRefinementDepth:       envInt("DURACLAW_RUN_MAX_REFINEMENT_DEPTH", 2),
 		AgentActivityEnabled:        envBool("DURACLAW_AGENT_ACTIVITY_ENABLED", false),

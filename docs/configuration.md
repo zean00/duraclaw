@@ -438,6 +438,7 @@ Delivery failures are logged by the outbox worker and released for retry. `/read
 | `DURACLAW_SESSION_MONITOR_LIMIT` | `25` | Sessions claimed per tick. |
 | `DURACLAW_SESSION_MONITOR_MESSAGE_LIMIT` | `40` | Recent messages loaded for compaction/extraction. |
 | `DURACLAW_SESSION_COMPACTION_THRESHOLD_CHARS` | `12000` | Transcript size before summary compaction. |
+| `DURACLAW_PROFILE_CONSOLIDATION_ENABLED` | `true` | After idle memory/preference extraction, ask the configured model to merge clear duplicate profile items and delete only explicitly identified duplicate IDs. Runs in the background/session-monitor path, not the live turn path. |
 
 ## Rapid Follow-Up Refinement
 

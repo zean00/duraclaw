@@ -24,9 +24,13 @@ type Store interface {
 	UpsertSessionSummary(ctx context.Context, customerID, sessionID, sourceRunID, summary string, metadata any) error
 	ListMemories(ctx context.Context, customerID, userID string, limit int) ([]db.Memory, error)
 	AddMemory(ctx context.Context, customerID, userID, sessionID, memoryType, content string, metadata any) (string, error)
+	UpdateMemory(ctx context.Context, memoryID, customerID, userID, memoryType, content string, metadata any) error
+	DeleteMemory(ctx context.Context, memoryID, customerID, userID string) error
 	SetMemoryEmbedding(ctx context.Context, memoryID, customerID, userID string, embedding []float32) error
 	ListPreferences(ctx context.Context, customerID, userID string, limit int) ([]db.Preference, error)
 	AddPreference(ctx context.Context, customerID, userID, sessionID, category, content string, condition, metadata any) (string, error)
+	UpdatePreference(ctx context.Context, preferenceID, customerID, userID, category, content string, condition, metadata any) error
+	DeletePreference(ctx context.Context, preferenceID, customerID, userID string) error
 	SetPreferenceEmbedding(ctx context.Context, preferenceID, customerID, userID string, embedding []float32) error
 	AddObservabilityEvent(ctx context.Context, customerID, runID, eventType string, payload any) error
 	PolicyRulesForScope(ctx context.Context, customerID, agentInstanceID, enforcementMode string) ([]db.PolicyRule, error)
@@ -45,6 +49,7 @@ type Service struct {
 	limit               int
 	messageLimit        int
 	compactionThreshold int
+	profileConsolidate  bool
 }
 
 type CompactRequest struct {
@@ -80,7 +85,7 @@ func NewService(store Store, registry *providers.Registry, modelConfig providers
 	}
 	return &Service{
 		store: store, providers: registry, modelConfig: modelConfig, policy: policy.NewEngine(store),
-		owner: owner, idleFor: 30 * time.Minute, leaseFor: 5 * time.Minute, limit: 25, messageLimit: 40, compactionThreshold: 12000,
+		owner: owner, idleFor: 30 * time.Minute, leaseFor: 5 * time.Minute, limit: 25, messageLimit: 40, compactionThreshold: 12000, profileConsolidate: true,
 	}
 }
 
@@ -116,6 +121,11 @@ func (s *Service) WithCompactionThreshold(chars int) *Service {
 	if chars > 0 {
 		s.compactionThreshold = chars
 	}
+	return s
+}
+
+func (s *Service) WithProfileConsolidation(enabled bool) *Service {
+	s.profileConsolidate = enabled
 	return s
 }
 
@@ -291,6 +301,28 @@ type extractedPreference struct {
 	Condition map[string]any `json:"condition"`
 }
 
+type profileConsolidationResult struct {
+	MemoryUpdates       []consolidatedMemory     `json:"memory_updates"`
+	PreferenceUpdates   []consolidatedPreference `json:"preference_updates"`
+	MemoryDeleteIDs     []string                 `json:"memory_delete_ids"`
+	PreferenceDeleteIDs []string                 `json:"preference_delete_ids"`
+}
+
+type consolidatedMemory struct {
+	ID           string   `json:"id"`
+	Type         string   `json:"type"`
+	Content      string   `json:"content"`
+	DuplicateIDs []string `json:"duplicate_ids"`
+}
+
+type consolidatedPreference struct {
+	ID           string         `json:"id"`
+	Category     string         `json:"category"`
+	Content      string         `json:"content"`
+	Condition    map[string]any `json:"condition"`
+	DuplicateIDs []string       `json:"duplicate_ids"`
+}
+
 func (s *Service) extractMemoryAndPreferences(ctx context.Context, now time.Time, session db.MonitoredSession, transcript string) (int, int, error) {
 	resp, err := s.providers.ChatWithFallback(ctx, s.modelConfig, []providers.Message{
 		{Role: "system", Content: "Extract stable user memories and conditional preferences explicitly stated by the user. Return JSON only: {\"memories\":[{\"type\":\"fact\",\"content\":\"...\"}],\"preferences\":[{\"category\":\"...\",\"content\":\"...\",\"condition\":{}}]}. Include durable profile facts such as family relationships, names, and identity details. Include preferences such as what the user wants to be called, language/style preferences, and recurring likes/dislikes. Do not extract reminders, temporary moods, assistant suggestions, or generic notes/bookmarks as profile memory."},
@@ -371,6 +403,9 @@ func (s *Service) extractMemoryAndPreferences(ctx context.Context, now time.Time
 		}
 		writtenPreferences++
 	}
+	if s.profileConsolidate && (writtenMemories > 0 || writtenPreferences > 0) {
+		s.consolidateProfileBestEffort(ctx, now, session)
+	}
 	_ = s.store.AddObservabilityEvent(ctx, session.CustomerID, "", "session_memory_extracted", map[string]any{"session_id": session.SessionID, "memories": writtenMemories, "preferences": writtenPreferences})
 	return writtenMemories, writtenPreferences, nil
 }
@@ -395,6 +430,173 @@ func (s *Service) setPreferenceEmbeddingBestEffort(ctx context.Context, session 
 		return
 	}
 	_ = s.store.SetPreferenceEmbedding(ctx, preferenceID, session.CustomerID, session.UserID, embedding)
+}
+
+func (s *Service) consolidateProfileBestEffort(ctx context.Context, now time.Time, session db.MonitoredSession) {
+	memories, err := s.store.ListMemories(ctx, session.CustomerID, session.UserID, 200)
+	if err != nil {
+		return
+	}
+	preferences, err := s.store.ListPreferences(ctx, session.CustomerID, session.UserID, 200)
+	if err != nil {
+		return
+	}
+	if len(memories)+len(preferences) < 2 {
+		return
+	}
+	input := profileConsolidationInput(memories, preferences)
+	resp, err := s.providers.ChatWithFallback(ctx, s.modelConfig, []providers.Message{
+		{Role: "system", Content: "You consolidate a user's stored profile memory. Merge only clear duplicates or near-duplicates. Preserve separate facts/preferences that are conditional, complementary, or potentially different. Return JSON only: {\"memory_updates\":[{\"id\":\"existing-id\",\"type\":\"fact\",\"content\":\"canonical text\",\"duplicate_ids\":[\"duplicate-id\"]}],\"preference_updates\":[{\"id\":\"existing-id\",\"category\":\"style\",\"content\":\"canonical text\",\"condition\":{},\"duplicate_ids\":[\"duplicate-id\"]}],\"memory_delete_ids\":[\"duplicate-id\"],\"preference_delete_ids\":[\"duplicate-id\"]}. Use only existing ids. Put duplicate ids in duplicate_ids on their canonical item and/or the top-level delete arrays. Do not delete an item unless it is represented by another canonical item."},
+		{Role: "user", Content: input},
+	}, nil, map[string]any{"response_format": map[string]any{"type": "json_object"}, "purpose": "profile_consolidation"})
+	if err != nil {
+		_ = s.store.AddObservabilityEvent(ctx, session.CustomerID, "", "session_profile_consolidation_failed", map[string]any{"session_id": session.SessionID, "error": err.Error()})
+		return
+	}
+	var result profileConsolidationResult
+	if err := json.Unmarshal([]byte(extractJSONObject(resp.Response.Content)), &result); err != nil {
+		_ = s.store.AddObservabilityEvent(ctx, session.CustomerID, "", "session_profile_consolidation_failed", map[string]any{"session_id": session.SessionID, "error": err.Error(), "raw_preview": preview(resp.Response.Content, 500)})
+		return
+	}
+	updatedMemories, deletedMemories := s.applyMemoryConsolidation(ctx, now, session, memories, result)
+	updatedPreferences, deletedPreferences := s.applyPreferenceConsolidation(ctx, now, session, preferences, result)
+	if updatedMemories+deletedMemories+updatedPreferences+deletedPreferences > 0 {
+		_ = s.store.AddObservabilityEvent(ctx, session.CustomerID, "", "session_profile_consolidated", map[string]any{
+			"session_id":          session.SessionID,
+			"updated_memories":    updatedMemories,
+			"deleted_memories":    deletedMemories,
+			"updated_preferences": updatedPreferences,
+			"deleted_preferences": deletedPreferences,
+			"provider":            resp.Provider,
+			"model":               resp.Model,
+			"consolidated_at":     now.Format(time.RFC3339),
+		})
+	}
+}
+
+func profileConsolidationInput(memories []db.Memory, preferences []db.Preference) string {
+	payload := map[string]any{
+		"memories":    memories,
+		"preferences": preferences,
+	}
+	raw, _ := json.Marshal(payload)
+	return string(raw)
+}
+
+func (s *Service) applyMemoryConsolidation(ctx context.Context, now time.Time, session db.MonitoredSession, existing []db.Memory, result profileConsolidationResult) (updated, deleted int) {
+	byID := map[string]db.Memory{}
+	for _, item := range existing {
+		if strings.TrimSpace(item.ID) != "" {
+			byID[item.ID] = item
+		}
+	}
+	deleteIDs := map[string]bool{}
+	for _, id := range result.MemoryDeleteIDs {
+		if _, ok := byID[id]; ok {
+			deleteIDs[id] = true
+		}
+	}
+	protectedIDs := map[string]bool{}
+	for _, update := range result.MemoryUpdates {
+		item, ok := byID[update.ID]
+		if !ok {
+			continue
+		}
+		protectedIDs[update.ID] = true
+		memoryType := memoryTypeForCandidate(update.Type)
+		content := strings.TrimSpace(update.Content)
+		if content == "" || skipMemoryExtraction(content) {
+			continue
+		}
+		for _, id := range update.DuplicateIDs {
+			if id != update.ID {
+				if _, ok := byID[id]; ok {
+					deleteIDs[id] = true
+				}
+			}
+		}
+		if item.Type != memoryType || strings.TrimSpace(item.Content) != content {
+			if err := s.store.UpdateMemory(ctx, update.ID, session.CustomerID, session.UserID, memoryType, content, consolidationMetadata(item.Metadata, now)); err != nil {
+				continue
+			}
+			s.setMemoryEmbeddingBestEffort(ctx, session, update.ID, content)
+			updated++
+		}
+	}
+	for id := range protectedIDs {
+		delete(deleteIDs, id)
+	}
+	for id := range deleteIDs {
+		if err := s.store.DeleteMemory(ctx, id, session.CustomerID, session.UserID); err == nil {
+			deleted++
+		}
+	}
+	return updated, deleted
+}
+
+func (s *Service) applyPreferenceConsolidation(ctx context.Context, now time.Time, session db.MonitoredSession, existing []db.Preference, result profileConsolidationResult) (updated, deleted int) {
+	byID := map[string]db.Preference{}
+	for _, item := range existing {
+		if strings.TrimSpace(item.ID) != "" {
+			byID[item.ID] = item
+		}
+	}
+	deleteIDs := map[string]bool{}
+	for _, id := range result.PreferenceDeleteIDs {
+		if _, ok := byID[id]; ok {
+			deleteIDs[id] = true
+		}
+	}
+	protectedIDs := map[string]bool{}
+	for _, update := range result.PreferenceUpdates {
+		item, ok := byID[update.ID]
+		if !ok {
+			continue
+		}
+		protectedIDs[update.ID] = true
+		category := strings.TrimSpace(update.Category)
+		if category == "" {
+			category = "general"
+		}
+		content := strings.TrimSpace(update.Content)
+		if content == "" || skipProfileExtraction(content) {
+			continue
+		}
+		for _, id := range update.DuplicateIDs {
+			if id != update.ID {
+				if _, ok := byID[id]; ok {
+					deleteIDs[id] = true
+				}
+			}
+		}
+		conditionBytes, _ := json.Marshal(update.Condition)
+		if item.Category != category || strings.TrimSpace(item.Content) != content || string(item.Condition) != string(conditionBytes) {
+			if err := s.store.UpdatePreference(ctx, update.ID, session.CustomerID, session.UserID, category, content, update.Condition, consolidationMetadata(item.Metadata, now)); err != nil {
+				continue
+			}
+			s.setPreferenceEmbeddingBestEffort(ctx, session, update.ID, content)
+			updated++
+		}
+	}
+	for id := range protectedIDs {
+		delete(deleteIDs, id)
+	}
+	for id := range deleteIDs {
+		if err := s.store.DeletePreference(ctx, id, session.CustomerID, session.UserID); err == nil {
+			deleted++
+		}
+	}
+	return updated, deleted
+}
+
+func consolidationMetadata(raw json.RawMessage, now time.Time) map[string]any {
+	out := map[string]any{}
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &out)
+	}
+	out["profile_consolidated_at"] = now.Format(time.RFC3339)
+	out["profile_consolidation_source"] = "session_monitor"
+	return out
 }
 
 func memoryTypeForCandidate(memoryType string) string {
