@@ -69,7 +69,8 @@ If the request is out of scope or below threshold, Duraclaw:
 
 - Persists scope judge events.
 - Inserts the configured out-of-scope assistant response.
-- Marks both the out-of-scope user message and refusal response as `context_excluded`, so they remain visible/auditable but are skipped by future prompt context and session compaction.
+- Marks both the out-of-scope user message and refusal response as `context_excluded`, so they remain visible/auditable but are skipped by future main-agent prompt context and session compaction.
+- Keeps denied turns available to the scope judge's implicit-context pass, so follow-up questions cannot bypass the original denial by omitting the denied topic.
 - Marks the run completed.
 - Skips the main model/tool/workflow/MCP path.
 

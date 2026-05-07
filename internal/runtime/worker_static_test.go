@@ -168,6 +168,7 @@ func TestScopeJudgeUsesTwoPassImplicitIntent(t *testing.T) {
 		`"pass": "context"`,
 		"Recent conversation:",
 		"sessionSummaryContext(ctx, run)",
+		"messageExcludedFromContext(msg.Content)",
 	} {
 		if !strings.Contains(src, want) {
 			t.Fatalf("scope judge two-pass behavior missing %q", want)

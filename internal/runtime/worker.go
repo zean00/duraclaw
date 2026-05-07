@@ -1789,6 +1789,24 @@ func messageExcludedFromContext(raw json.RawMessage) bool {
 	return false
 }
 
+func messageExcludedFromScopeContext(raw json.RawMessage) bool {
+	if scopeDeniedMessage(raw) {
+		return false
+	}
+	return messageExcludedFromContext(raw)
+}
+
+func scopeDeniedMessage(raw json.RawMessage) bool {
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return false
+	}
+	if stringMapValue(payload, "source") == "scope_denied" {
+		return true
+	}
+	return stringMapValue(mapValue(payload, "metadata"), "source") == "scope_denied"
+}
+
 func isAgentDelegationInstructionText(text string) bool {
 	text = strings.TrimSpace(text)
 	return strings.HasPrefix(text, "You are receiving an asynchronous delegated task from another agent")
@@ -1801,6 +1819,11 @@ func boolMapValue(data map[string]any, keys ...string) bool {
 		}
 	}
 	return false
+}
+
+func stringMapValue(data map[string]any, key string) string {
+	value, _ := data[key].(string)
+	return strings.TrimSpace(value)
 }
 
 func mapValue(data map[string]any, key string) map[string]any {
@@ -2134,6 +2157,25 @@ func fallbackScopeAllowsPersonalCapture(cfg agentProfileConfig, content string) 
 	if text == "" {
 		return false
 	}
+	forbiddenTerms := []string{
+		"password",
+		"passphrase",
+		"kata sandi",
+		"token",
+		"otp",
+		"private key",
+		"secret key",
+		"api key",
+		"kartu kredit",
+		"credit card",
+		"cvv",
+		"pin atm",
+	}
+	for _, term := range forbiddenTerms {
+		if strings.Contains(text, term) {
+			return false
+		}
+	}
 	personalCaptureTerms := []string{
 		"catet",
 		"catat",
@@ -2268,6 +2310,9 @@ func (w *Worker) scopeJudgeContext(ctx context.Context, run *db.Run) (string, er
 	}
 	var lines []string
 	for _, msg := range history {
+		if messageExcludedFromScopeContext(msg.Content) {
+			continue
+		}
 		text := strings.TrimSpace(messageText(msg.Content))
 		if text == "" {
 			continue

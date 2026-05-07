@@ -124,6 +124,28 @@ func TestMessageExcludedFromContext(t *testing.T) {
 	}
 }
 
+func TestScopeContextKeepsScopeDeniedMessages(t *testing.T) {
+	denied, _ := json.Marshal(map[string]any{
+		"context_excluded": true,
+		"metadata":         map[string]any{"source": "scope_denied"},
+		"parts":            []map[string]any{{"type": "text", "text": "out of scope request"}},
+	})
+	if !messageExcludedFromContext(denied) {
+		t.Fatal("scope-denied message should be excluded from normal prompt context")
+	}
+	if messageExcludedFromScopeContext(denied) {
+		t.Fatal("scope-denied message should be preserved for implicit scope checks")
+	}
+	hidden, _ := json.Marshal(map[string]any{
+		"context_excluded": true,
+		"metadata":         map[string]any{"source": "agent_delegation_result"},
+		"parts":            []map[string]any{{"type": "text", "text": "hidden"}},
+	})
+	if !messageExcludedFromScopeContext(hidden) {
+		t.Fatal("non-scope excluded messages should stay hidden from scope context")
+	}
+}
+
 func TestExtractTextForReminderDueRunUsesReminderMessageFromTrustedPrompt(t *testing.T) {
 	raw, _ := json.Marshal(map[string]any{
 		"event_type": "reminder_due",
@@ -434,6 +456,33 @@ func TestExtractJSONObject(t *testing.T) {
 		if got := extractJSONObject(input); got != want {
 			t.Fatalf("extractJSONObject(%q)=%q want %q", input, got, want)
 		}
+	}
+}
+
+func TestFallbackScopeJudgementAllowsConfiguredPersonalCapture(t *testing.T) {
+	cfg := agentProfileConfig{}
+	cfg.DomainScope.AllowedDomains = []string{"notes, bookmarks, todos, and personal idea capture"}
+	cfg.DomainScope.OutOfScopeGuidance = "di luar cakupan"
+
+	got := fallbackScopeJudgement(cfg, "Ya sudah, tolong catet resep ini ya", "invalid json")
+	if !got.InScope {
+		t.Fatalf("personal capture fallback should be in scope: %#v", got)
+	}
+	if got.Confidence < 0.8 {
+		t.Fatalf("confidence too low: %#v", got)
+	}
+
+	denied := fallbackScopeJudgement(cfg, "buatkan resep pepes ikan", "invalid json")
+	if denied.InScope {
+		t.Fatalf("non-capture recipe request should stay denied: %#v", denied)
+	}
+	if denied.RecommendedResponse != "di luar cakupan" {
+		t.Fatalf("recommended response=%q", denied.RecommendedResponse)
+	}
+
+	secret := fallbackScopeJudgement(cfg, "tolong simpan password emailku abc123", "invalid json")
+	if secret.InScope {
+		t.Fatalf("secret capture should stay denied: %#v", secret)
 	}
 }
 
