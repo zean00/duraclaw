@@ -31,6 +31,8 @@ Channel headers are persisted on the run and exposed to the agent prompt context
 
 `location` content parts are normalized into trusted runtime context for prompts, policies, recommendations, and workflows. Use numeric `latitude`/`longitude` or aliases `lat`/`lng`, plus optional `label`.
 
+If run input or user metadata/profile includes a valid IANA `timezone`, Duraclaw uses it in trusted current-time context and as the default for `duraclaw.current_time` when the model omits a timezone argument. Invalid stored metadata timezones are ignored and UTC is used; explicit invalid tool arguments still fail validation.
+
 `POST /acp/runs` also accepts compact explicit reply metadata:
 
 ```json

@@ -483,6 +483,8 @@ The retriever is called on ACP session ensure and run creation. It receives cust
 
 Only fields listed in `DURACLAW_CUSTOMER_PROFILE_PROMPT_FIELDS` are included in model prompt context. Sensitive fields such as email, phone, and birth date should remain omitted unless explicitly needed.
 
+Duraclaw also uses trusted runtime time metadata to interpret relative dates. The current-time prompt and `duraclaw.current_time` tool prefer a valid IANA timezone from active location, user metadata/profile, or base location. Invalid stored timezones are ignored for trusted defaults and fall back to UTC; an explicit invalid `timezone` argument passed by the model to `duraclaw.current_time` still returns an error so bad tool arguments are visible.
+
 ## Observability
 
 ```bash
