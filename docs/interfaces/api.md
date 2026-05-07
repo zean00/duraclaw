@@ -31,6 +31,22 @@ Channel headers are persisted on the run and exposed to the agent prompt context
 
 `location` content parts are normalized into trusted runtime context for prompts, policies, recommendations, and workflows. Use numeric `latitude`/`longitude` or aliases `lat`/`lng`, plus optional `label`.
 
+`POST /acp/runs` also accepts compact explicit reply metadata:
+
+```json
+{
+  "text": "make it 8am",
+  "reply_to": {
+    "message_id": "duraclaw-message-id",
+    "external_message_id": "channel-message-id",
+    "role": "assistant",
+    "artifact_ids": ["reminder-subscription-id"]
+  }
+}
+```
+
+Duraclaw stores only compact reply references and injects them as trusted runtime context for prompts, scope/recommendation checks, policies, and workflows. A reply reference must include `message_id`, `external_message_id`, or `run_id`; metadata such as `role` or `kind` alone is ignored. Duraclaw does not append or quote the original message body into the conversation context; clients should pass artifact IDs when the reply is meant to update a prior side effect such as a reminder.
+
 ## Core ACP Routes
 
 Session and runs:
@@ -73,6 +89,8 @@ The same session endpoint can set channel suppression for recommendation-style d
 Duraclaw stores the normalized `X-Channel-Type` on the session. Normal recommendation runs evaluate the run's persisted channel context against `recommendation.blocked_channels`; broadcast/promotion fanout evaluates each target session's stored channel. Matching channels are audited but not sent. Missing policy or missing channel allows delivery by default.
 
 For `X-Channel-Type: email`, Nexus can include a `structured_data` part with `data.kind: "email_context"` containing trusted email metadata such as `subject`, `from`, `from_name`, `message_id`, `thread_id`, `in_reply_to`, and `references`. Duraclaw adds this metadata to trusted runtime context, scope and recommendation context, policies, and workflow context while keeping the email body and attachments as untrusted content. Inbound run `artifacts` are also persisted on the run, and matching `artifact_ref` parts make them available for artifact processing.
+
+For non-email channels, Nexus can represent an explicit message reply with the top-level `reply_to` object above. Duraclaw also recognizes `parts[].type: "structured_data"` with `data.kind: "reply_context"` for clients that need to keep all channel metadata inside content parts.
 
 Artifacts:
 

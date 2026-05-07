@@ -2694,6 +2694,7 @@ func (h *Handler) startRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	payload = normalizeRunReplyTo(payload)
 	payloadArtifacts, err := h.artifactsFromRunPayload(r, c, payload)
 	if err != nil {
 		writeError(w, http.StatusForbidden, err)
@@ -3382,6 +3383,17 @@ func validateRunInput(payload map[string]any) error {
 	if payload == nil {
 		return fmt.Errorf("request body is required")
 	}
+	if raw, ok := payload["reply_to"]; ok {
+		replyTo, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("reply_to must be an object")
+		}
+		if strings.TrimSpace(runInputStringValue(replyTo, "message_id")) == "" &&
+			strings.TrimSpace(runInputStringValue(replyTo, "external_message_id")) == "" &&
+			strings.TrimSpace(runInputStringValue(replyTo, "run_id")) == "" {
+			return fmt.Errorf("reply_to requires message_id, external_message_id, or run_id")
+		}
+	}
 	parts, ok := payload["parts"]
 	if !ok {
 		return nil
@@ -3410,6 +3422,69 @@ func validateRunInput(payload map[string]any) error {
 		}
 	}
 	return nil
+}
+
+func normalizeRunReplyTo(payload map[string]any) map[string]any {
+	if payload == nil {
+		return payload
+	}
+	raw, ok := payload["reply_to"]
+	if !ok {
+		return payload
+	}
+	replyTo, ok := raw.(map[string]any)
+	if !ok {
+		return payload
+	}
+	normalized := make(map[string]any, 8)
+	for _, key := range []string{"message_id", "external_message_id", "run_id", "role", "source", "kind"} {
+		if value := strings.TrimSpace(runInputStringValue(replyTo, key)); value != "" {
+			normalized[key] = value
+		}
+	}
+	if ids := runInputStringsFromAny(replyTo["artifact_ids"]); len(ids) > 0 {
+		normalized["artifact_ids"] = ids
+	} else if ids := runInputStringsFromAny(replyTo["artifacts"]); len(ids) > 0 {
+		normalized["artifact_ids"] = ids
+	}
+	out := make(map[string]any, len(payload))
+	for key, value := range payload {
+		out[key] = value
+	}
+	if len(normalized) == 0 {
+		delete(out, "reply_to")
+		return out
+	}
+	out["reply_to"] = normalized
+	return out
+}
+
+func runInputStringValue(data map[string]any, key string) string {
+	value, _ := data[key].(string)
+	return value
+}
+
+func runInputStringsFromAny(value any) []string {
+	switch v := value.(type) {
+	case []string:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if strings.TrimSpace(item) != "" {
+				out = append(out, strings.TrimSpace(item))
+			}
+		}
+		return out
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, _ := item.(string); strings.TrimSpace(s) != "" {
+				out = append(out, strings.TrimSpace(s))
+			}
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 func existingRunContext(w http.ResponseWriter, r *http.Request) (db.ACPContext, bool) {

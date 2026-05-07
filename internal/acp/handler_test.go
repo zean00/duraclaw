@@ -632,6 +632,40 @@ func TestValidateRunInputRequiresArtifactID(t *testing.T) {
 	}
 }
 
+func TestValidateRunInputRequiresCompactReplyReference(t *testing.T) {
+	payload := map[string]any{"reply_to": map[string]any{"role": "assistant"}}
+	if err := validateRunInput(payload); err == nil || !strings.Contains(err.Error(), "reply_to requires") {
+		t.Fatalf("err=%v", err)
+	}
+	payload = map[string]any{"reply_to": map[string]any{"message_id": "msg-1"}}
+	if err := validateRunInput(payload); err != nil {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestNormalizeRunReplyToDropsQuotedBody(t *testing.T) {
+	payload := normalizeRunReplyTo(map[string]any{
+		"text": "make it 8am",
+		"reply_to": map[string]any{
+			"message_id":   "msg-1",
+			"role":         "assistant",
+			"text":         strings.Repeat("quoted body ", 20),
+			"artifact_ids": []any{"rem-1"},
+		},
+	})
+	replyTo, _ := payload["reply_to"].(map[string]any)
+	if replyTo["message_id"] != "msg-1" || replyTo["role"] != "assistant" {
+		t.Fatalf("reply_to=%#v", replyTo)
+	}
+	if _, ok := replyTo["text"]; ok {
+		t.Fatalf("quoted text should be dropped: %#v", replyTo)
+	}
+	ids, _ := replyTo["artifact_ids"].([]string)
+	if len(ids) != 1 || ids[0] != "rem-1" {
+		t.Fatalf("artifact_ids=%#v", replyTo["artifact_ids"])
+	}
+}
+
 func TestArtifactsFromRunPayloadAcceptsNexusShape(t *testing.T) {
 	payload := map[string]any{"artifacts": []any{map[string]any{
 		"id":          "att-1",

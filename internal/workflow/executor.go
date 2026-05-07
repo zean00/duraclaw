@@ -142,6 +142,7 @@ type GraphRequest struct {
 	ChannelConvID        string         `json:"channel_conversation_id,omitempty"`
 	LocationContext      string         `json:"location_context,omitempty"`
 	EmailContext         string         `json:"email_context,omitempty"`
+	ReplyContext         string         `json:"reply_context,omitempty"`
 	TraceID              string         `json:"trace_id,omitempty"`
 	TraceParent          string         `json:"traceparent,omitempty"`
 	WorkflowDefinitionID string         `json:"workflow_definition_id"`
@@ -1691,6 +1692,7 @@ func workflowPolicyFields(req GraphRequest) map[string]any {
 		"channel_conversation_id": req.ChannelConvID,
 		"location":                req.LocationContext,
 		"email_context":           req.EmailContext,
+		"reply_context":           req.ReplyContext,
 	}
 }
 
@@ -1722,6 +1724,9 @@ func workflowInitialContext(req GraphRequest) map[string]any {
 	}
 	if req.EmailContext != "" {
 		out["email_context"] = req.EmailContext
+	}
+	if req.ReplyContext != "" {
+		out["reply_context"] = req.ReplyContext
 	}
 	return out
 }

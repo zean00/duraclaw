@@ -473,6 +473,7 @@ func (w *Worker) runWorkflowPhase(ctx context.Context, run *db.Run) (string, err
 	channelCtx := w.runChannelContext(ctx, run.ID)
 	locationContext := locationPromptContext(run.Input)
 	emailContext := emailPromptContext(run.Input)
+	replyContext := replyPromptContext(run.Input)
 	stepID, err := w.store.StartRunStep(ctx, run.ID, "workflow_graph", map[string]any{"workflow_id": workflowID})
 	if err != nil {
 		return "", err
@@ -502,6 +503,7 @@ func (w *Worker) runWorkflowPhase(ctx context.Context, run *db.Run) (string, err
 			ChannelConvID:        channelCtx.ChannelConversationID,
 			LocationContext:      locationContext,
 			EmailContext:         emailContext,
+			ReplyContext:         replyContext,
 			TraceID:              traceCtx.TraceID,
 			TraceParent:          traceCtx.TraceParent,
 			WorkflowDefinitionID: workflowID,
@@ -1666,6 +1668,9 @@ func (w *Worker) providerMessages(ctx context.Context, run *db.Run, currentText 
 	if emailContext := emailPromptContext(run.Input); emailContext != "" {
 		promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: emailContext})
 	}
+	if replyContext := replyPromptContext(run.Input); replyContext != "" {
+		promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: replyContext})
+	}
 	workflowManifest, err := workflow.PromptManifest(ctx, w.store, run.CustomerID, run.AgentInstanceID)
 	if err != nil {
 		return nil, err
@@ -2180,6 +2185,9 @@ func (w *Worker) scopeJudgeContext(ctx context.Context, run *db.Run) (string, er
 	if email := emailPromptContext(run.Input); email != "" {
 		sections = append(sections, email)
 	}
+	if reply := replyPromptContext(run.Input); reply != "" {
+		sections = append(sections, reply)
+	}
 	if summary, err := w.sessionSummaryContext(ctx, run); err != nil {
 		return "", err
 	} else if strings.TrimSpace(summary) != "" {
@@ -2369,7 +2377,8 @@ func (w *Worker) recommendationInputContext(ctx context.Context, run *db.Run, sc
 	channelContext := w.channelPromptContext(ctx, run)
 	locationContext := locationPromptContext(run.Input)
 	emailContext := emailPromptContext(run.Input)
-	prefix := strings.TrimSpace(strings.Join(nonEmptyStrings(channelContext, locationContext, emailContext), "\n\n"))
+	replyContext := replyPromptContext(run.Input)
+	prefix := strings.TrimSpace(strings.Join(nonEmptyStrings(channelContext, locationContext, emailContext, replyContext), "\n\n"))
 	if strings.EqualFold(strings.TrimSpace(scope.Intent), "implicit") {
 		scopeContext, err := w.scopeJudgeContext(ctx, run)
 		if err != nil {
@@ -3013,6 +3022,7 @@ func (w *Worker) policyContext(run *db.Run, stepID, subject, content string) pol
 		location = locations[0].Summary
 	}
 	emailContext := emailContextData(run.Input)
+	replyContext := replyContextData(run.Input)
 	pc := policy.Context{
 		CustomerID: run.CustomerID, UserID: run.UserID, AgentInstanceID: run.AgentInstanceID,
 		SessionID: run.SessionID, RunID: run.ID, StepID: stepID, Content: content,
@@ -3023,6 +3033,7 @@ func (w *Worker) policyContext(run *db.Run, stepID, subject, content string) pol
 			"location":                location,
 			"locations":               locationContextSummaries(locations),
 			"email_context":           emailContext,
+			"reply_to":                replyContext,
 		},
 	}
 	if ids, err := w.policyPackIDsForRun(context.Background(), run); err == nil && len(ids) > 0 {
@@ -3045,7 +3056,7 @@ func (w *Worker) channelPromptContext(ctx context.Context, run *db.Run) string {
 }
 
 func (w *Worker) trustedRuntimeContext(ctx context.Context, run *db.Run) string {
-	return strings.Join(nonEmptyStrings(w.channelPromptContext(ctx, run), currentTimePromptContext(time.Now()), locationPromptContext(run.Input), emailPromptContext(run.Input)), "\n\n")
+	return strings.Join(nonEmptyStrings(w.channelPromptContext(ctx, run), currentTimePromptContext(time.Now()), locationPromptContext(run.Input), emailPromptContext(run.Input), replyPromptContext(run.Input)), "\n\n")
 }
 
 func currentTimePromptContext(now time.Time) string {
@@ -3203,6 +3214,87 @@ func emailContextLabel(key string) string {
 		}
 		return strings.ToUpper(key[:1]) + key[1:]
 	}
+}
+
+func replyPromptContext(raw json.RawMessage) string {
+	data := replyContextData(raw)
+	if len(data) == 0 {
+		return ""
+	}
+	keys := []string{"message_id", "external_message_id", "run_id", "role", "source", "kind"}
+	labels := map[string]string{
+		"message_id":          "Message ID",
+		"external_message_id": "External message ID",
+		"run_id":              "Run ID",
+		"role":                "Role",
+		"source":              "Source",
+		"kind":                "Kind",
+	}
+	lines := make([]string, 0, len(keys)+2)
+	for _, key := range keys {
+		if value, _ := data[key].(string); strings.TrimSpace(value) != "" {
+			lines = append(lines, labels[key]+": "+strconv.Quote(strings.TrimSpace(value)))
+		}
+	}
+	if ids, ok := data["artifact_ids"].([]string); ok && len(ids) > 0 {
+		quoted := make([]string, 0, len(ids))
+		for _, id := range ids {
+			if strings.TrimSpace(id) != "" {
+				quoted = append(quoted, strconv.Quote(strings.TrimSpace(id)))
+			}
+		}
+		if len(quoted) > 0 {
+			lines = append(lines, "Artifact IDs: "+strings.Join(quoted, ", "))
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	lines = append(lines, "The current user message is an explicit reply to this referenced message. Use the reference for disambiguation only; do not assume quoted text unless it is present in recent history or artifacts.")
+	return "Trusted explicit reply context:\n" + strings.Join(lines, "\n")
+}
+
+func replyContextData(raw json.RawMessage) map[string]any {
+	var payload struct {
+		ReplyTo map[string]any   `json:"reply_to"`
+		Parts   []db.ContentPart `json:"parts"`
+	}
+	_ = json.Unmarshal(raw, &payload)
+	if len(payload.ReplyTo) > 0 {
+		return compactReplyContext(payload.ReplyTo)
+	}
+	for _, part := range payload.Parts {
+		if part.Type != "structured_data" || part.Data == nil {
+			continue
+		}
+		if kind, _ := part.Data["kind"].(string); kind != "reply_context" {
+			continue
+		}
+		return compactReplyContext(part.Data)
+	}
+	return nil
+}
+
+func compactReplyContext(data map[string]any) map[string]any {
+	out := map[string]any{}
+	for _, key := range []string{"message_id", "external_message_id", "run_id", "role", "source", "kind"} {
+		if value, _ := data[key].(string); strings.TrimSpace(value) != "" {
+			out[key] = strings.TrimSpace(value)
+		}
+	}
+	if ids := stringsFromAny(data["artifact_ids"]); len(ids) > 0 {
+		out["artifact_ids"] = ids
+	} else if ids := stringsFromAny(data["artifacts"]); len(ids) > 0 {
+		out["artifact_ids"] = ids
+	}
+	if _, ok := out["message_id"]; !ok {
+		if _, ok := out["external_message_id"]; !ok {
+			if _, ok := out["run_id"]; !ok {
+				return nil
+			}
+		}
+	}
+	return out
 }
 
 func stringsFromAny(value any) []string {
@@ -4069,6 +4161,7 @@ func (w *Worker) executeInternalTool(ctx context.Context, run *db.Run, stepID st
 		channelCtx := w.runChannelContext(ctx, run.ID)
 		locationContext := locationPromptContext(run.Input)
 		emailContext := emailPromptContext(run.Input)
+		replyContext := replyPromptContext(run.Input)
 		result, err := workflow.NewExecutor(w.store).
 			WithProviders(w.providers, modelConfig).
 			WithTools(toolRegistry).
@@ -4081,7 +4174,7 @@ func (w *Worker) executeInternalTool(ctx context.Context, run *db.Run, stepID st
 				RunID: run.ID, CustomerID: run.CustomerID, UserID: run.UserID, AgentInstanceID: run.AgentInstanceID,
 				SessionID: run.SessionID, RequestID: run.RequestID,
 				ChannelType: channelCtx.ChannelType, ChannelUserID: channelCtx.ChannelUserID, ChannelConvID: channelCtx.ChannelConversationID,
-				LocationContext: locationContext, EmailContext: emailContext,
+				LocationContext: locationContext, EmailContext: emailContext, ReplyContext: replyContext,
 				TraceID: traceCtx.TraceID, TraceParent: traceCtx.TraceParent, WorkflowDefinitionID: workflowID, Input: input,
 			})
 		if err != nil {

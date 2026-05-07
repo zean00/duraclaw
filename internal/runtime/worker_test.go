@@ -246,6 +246,50 @@ func TestEmailPromptContextFromStructuredData(t *testing.T) {
 	}
 }
 
+func TestReplyPromptContextIsCompact(t *testing.T) {
+	raw, _ := json.Marshal(map[string]any{
+		"reply_to": map[string]any{
+			"message_id":          "msg-1",
+			"external_message_id": "wa-1",
+			"role":                "assistant",
+			"text":                strings.Repeat("quoted body ", 20),
+			"artifact_ids":        []string{"rem-1"},
+		},
+		"text": "change it to 8am",
+	})
+	got := replyPromptContext(raw)
+	for _, want := range []string{"Trusted explicit reply context", `Message ID: "msg-1"`, `External message ID: "wa-1"`, `Role: "assistant"`, `Artifact IDs: "rem-1"`} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %q in %q", want, got)
+		}
+	}
+	if strings.Contains(got, "quoted body") {
+		t.Fatalf("reply context should not quote original body: %q", got)
+	}
+}
+
+func TestReplyPromptContextRequiresReference(t *testing.T) {
+	raw, _ := json.Marshal(map[string]any{
+		"parts": []map[string]any{{
+			"type": "structured_data",
+			"data": map[string]any{"kind": "reply_context", "role": "assistant"},
+		}},
+		"text": "thanks",
+	})
+	if got := replyPromptContext(raw); got != "" {
+		t.Fatalf("reply context without reference should be ignored: %q", got)
+	}
+	raw, _ = json.Marshal(map[string]any{
+		"parts": []map[string]any{{
+			"type": "structured_data",
+			"data": map[string]any{"kind": "reply_context", "external_message_id": "channel-msg-1"},
+		}},
+	})
+	if got := replyPromptContext(raw); !strings.Contains(got, `External message ID: "channel-msg-1"`) {
+		t.Fatalf("expected structured reply context, got %q", got)
+	}
+}
+
 func TestArtifactRefsFromContentParts(t *testing.T) {
 	raw, _ := json.Marshal(map[string]any{
 		"parts": []map[string]any{
