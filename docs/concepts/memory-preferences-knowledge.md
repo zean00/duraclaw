@@ -80,6 +80,7 @@ Consolidation is intentionally conservative:
 - It updates existing item IDs instead of creating a separate free-text profile document.
 - It deletes only IDs explicitly marked by the model as duplicates of a canonical item.
 - It preserves separate conditional or complementary preferences instead of flattening them into one ambiguous statement.
+- If a newer explicit preference replaces an older conflicting preference, it keeps clean active wording only and deletes the obsolete duplicate. Supersession/audit wording is not written into `content`, so it is not injected into prompt context.
 
 Set `DURACLAW_PROFILE_CONSOLIDATION_ENABLED=false` to disable this pass.
 
