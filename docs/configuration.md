@@ -288,6 +288,7 @@ Duraclaw's built-in shortlist metadata is intentionally domain-neutral. Domain p
     "tool_selection": {
       "enabled": true,
       "mode": "hybrid",
+      "method": "heuristic",
       "model": "openrouter/openai/gpt-4.1-mini",
       "max_tools": 6,
       "confidence_threshold": 0.65
@@ -303,7 +304,12 @@ Modes:
 - `hybrid`: deterministic shortlist plus router-model fallback when confidence is low.
 - `llm`: always use the configured router model after authorization.
 
-If `model` is empty, router fallback uses the run's normal `model_config`. Router failures are non-fatal; Duraclaw falls back to the deterministic shortlist and records a `tool_selection.completed` run event.
+Methods:
+
+- `heuristic`: current lexical metadata scorer over tool name, description, tags, trigger phrases, and negative phrases.
+- `hypothetical`: experimental query-rewrite scorer. Duraclaw asks the configured model to describe hypothetical tool capabilities needed for the turn, then locally ranks those descriptions against authorized tool descriptions, tags, trigger phrases, and examples. This keeps the existing `llm` router available for benchmarking and fallback.
+
+If `model` is empty, router fallback and hypothetical capability generation use the run's normal `model_config`. Router failures are non-fatal; Duraclaw falls back to the deterministic shortlist and records a `tool_selection.completed` run event. When an embedder is configured, hypothetical ranking caches authorized tool-document embeddings in process and recomputes only the per-turn hypothetical query embeddings. Tool selection only controls which tools are exposed to the main model; Duraclaw does not force `tool_choice: required` solely because one write-capable tool remains visible.
 
 ## Decision Eval CLI
 

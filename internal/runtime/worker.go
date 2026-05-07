@@ -57,6 +57,7 @@ type Worker struct {
 	counters        *observability.Counters
 	otlp            observability.OTLPExporter
 	embedder        embeddings.Provider
+	toolEmbeddings  *toolEmbeddingCache
 	asyncWriter     *asyncwrite.Writer
 	outbound        *outbound.Service
 	policy          *policy.Engine
@@ -135,7 +136,7 @@ func NewWorkerWithProviders(store *db.Store, registry *providers.Registry, model
 		toolRegistry.Register(tools.UpdateReminderTool{Store: store})
 		registerMediaGenerationTools(toolRegistry, registry, store, modelConfig, nil)
 	}
-	return &Worker{store: store, providers: registry, modelConfig: modelConfig, processors: artifacts.NewRegistry(artifacts.MockProcessor{}), tools: toolRegistry, policy: policy.NewEngine(store), owner: owner, leaseFor: 2 * time.Minute, maxIterations: defaultMaxIterations, interruptWindow: interruptWindow, maxRefineDepth: maxRefinementDepth, embedder: embeddings.NewHashProvider(768)}
+	return &Worker{store: store, providers: registry, modelConfig: modelConfig, processors: artifacts.NewRegistry(artifacts.MockProcessor{}), tools: toolRegistry, policy: policy.NewEngine(store), owner: owner, leaseFor: 2 * time.Minute, maxIterations: defaultMaxIterations, interruptWindow: interruptWindow, maxRefineDepth: maxRefinementDepth, embedder: embeddings.NewHashProvider(768), toolEmbeddings: newToolEmbeddingCache(512)}
 }
 
 func (w *Worker) WithAgentActivity(config ActivityConfig) *Worker {
@@ -202,6 +203,7 @@ func (w *Worker) WithProcessors(registry *artifacts.Registry) *Worker {
 func (w *Worker) WithEmbedder(embedder embeddings.Provider) *Worker {
 	if embedder != nil {
 		w.embedder = embedder
+		w.toolEmbeddings = newToolEmbeddingCache(512)
 	}
 	return w
 }
@@ -1427,8 +1429,9 @@ func (w *Worker) chat(ctx context.Context, run *db.Run, messages []providers.Mes
 		} else {
 			var resp *providers.LLMResponse
 			started := time.Now()
+			options := modelCallOptions(modelConfig.Options)
 			if streamer, ok := provider.(providers.StreamingProvider); ok {
-				resp, err = w.chatStream(ctx, run, streamer, messages, toolDefs, candidate.Model, modelConfig.Options)
+				resp, err = w.chatStream(ctx, run, streamer, messages, toolDefs, candidate.Model, options)
 			} else if durable, ok := provider.(providers.DurableProvider); ok {
 				resp, err = durable.ChatDurable(ctx, providers.CallMetadata{
 					CustomerID:      run.CustomerID,
@@ -1439,9 +1442,9 @@ func (w *Worker) chat(ctx context.Context, run *db.Run, messages []providers.Mes
 					RequestID:       run.RequestID,
 					Provider:        candidate.Provider,
 					Model:           candidate.Model,
-				}, messages, toolDefs, candidate.Model, modelConfig.Options)
+				}, messages, toolDefs, candidate.Model, options)
 			} else {
-				resp, err = provider.Chat(ctx, messages, toolDefs, candidate.Model, modelConfig.Options)
+				resp, err = provider.Chat(ctx, messages, toolDefs, candidate.Model, options)
 			}
 			if w.counters != nil {
 				w.counters.ObserveDuration("model_call_duration_seconds", time.Since(started))
@@ -1472,6 +1475,14 @@ func (w *Worker) chat(ctx context.Context, run *db.Run, messages []providers.Mes
 		lastErr = fmt.Errorf("no provider candidates configured")
 	}
 	return nil, lastErr
+}
+
+func modelCallOptions(base map[string]any) map[string]any {
+	options := map[string]any{}
+	for key, value := range base {
+		options[key] = value
+	}
+	return options
 }
 
 func (w *Worker) chatStream(ctx context.Context, run *db.Run, provider providers.StreamingProvider, messages []providers.Message, toolDefs []providers.ToolDefinition, model string, options map[string]any) (*providers.LLMResponse, error) {
@@ -2078,6 +2089,7 @@ type recommendationProfileConfig struct {
 type toolSelectionProfileConfig struct {
 	Enabled             bool           `json:"enabled"`
 	Mode                string         `json:"mode"`
+	Method              string         `json:"method"`
 	Model               string         `json:"model"`
 	MaxTools            int            `json:"max_tools"`
 	ConfidenceThreshold float64        `json:"confidence_threshold"`

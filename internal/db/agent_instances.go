@@ -412,7 +412,7 @@ func validateProfileConfigValues(value any) error {
 				return fmt.Errorf("profile_config.tool_selection.enabled must be a boolean")
 			}
 		}
-		for _, key := range []string{"mode", "model"} {
+		for _, key := range []string{"mode", "method", "model"} {
 			if raw, ok := selection[key]; ok {
 				if _, ok := raw.(string); !ok {
 					return fmt.Errorf("profile_config.tool_selection.%s must be a string", key)
@@ -425,6 +425,14 @@ func validateProfileConfigValues(value any) error {
 			case "", "disabled", "heuristic", "hybrid", "llm":
 			default:
 				return fmt.Errorf("profile_config.tool_selection.mode must be disabled, heuristic, hybrid, or llm")
+			}
+		}
+		if raw, ok := selection["method"]; ok {
+			method := strings.ToLower(strings.TrimSpace(fmt.Sprint(raw)))
+			switch method {
+			case "", "heuristic", "hypothetical":
+			default:
+				return fmt.Errorf("profile_config.tool_selection.method must be heuristic or hypothetical")
 			}
 		}
 		if raw, ok := selection["max_tools"]; ok {
@@ -577,7 +585,7 @@ func validateToolConfigValues(value any) error {
 			if !ok {
 				return fmt.Errorf("tool_config.tool_metadata.%s must be an object", name)
 			}
-			for _, key := range []string{"tags", "trigger_phrases", "negative_phrases", "conflicts_with"} {
+			for _, key := range []string{"tags", "trigger_phrases", "negative_phrases", "examples", "conflicts_with"} {
 				if raw, ok := meta[key]; ok {
 					if err := validateStringArray("tool_config.tool_metadata."+name+"."+key, raw); err != nil {
 						return err

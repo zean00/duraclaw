@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"duraclaw/internal/db"
+	"duraclaw/internal/embeddings"
 	"duraclaw/internal/mcp"
 	"duraclaw/internal/outbound"
 	"duraclaw/internal/providers"
@@ -810,6 +811,69 @@ func TestHeuristicToolSelectionUsesMetadataForHashedMCPNames(t *testing.T) {
 	decision := heuristicToolSelection("@quran tolong carikan ayat tentang lebah", scopeJudgement{Intent: "direct"}, defs, metadata, toolSelectionProfileConfig{MaxTools: 2})
 	if len(decision.SelectedTools) == 0 || decision.SelectedTools[0] != defs[0].Function.Name {
 		t.Fatalf("selected=%#v reason=%s", decision.SelectedTools, decision.Reason)
+	}
+}
+
+func TestHypotheticalToolSelectionRanksCapabilityDescriptions(t *testing.T) {
+	defs := []providers.ToolDefinition{
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "create_reminder", Description: "Create a scheduled reminder or alarm for a future time."}},
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "remember", Description: "Persist a stable memory about the user."}},
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "save_preference", Description: "Persist a durable user preference."}},
+	}
+	metadata := map[string]toolSelectionMetadata{
+		"create_reminder": {
+			Tags:       []string{"reminder", "schedule", "future"},
+			Examples:   []string{"create a future reminder for the user"},
+			SideEffect: "write",
+		},
+		"remember":        {Tags: []string{"memory", "profile"}, SideEffect: "write"},
+		"save_preference": {Tags: []string{"preference"}, SideEffect: "write"},
+	}
+	decision := rankHypotheticalToolSelection(t.Context(), nil, []string{"Create a future scheduled reminder for the user with reminder text and time."}, defs, metadata, toolSelectionProfileConfig{MaxTools: 2})
+	if len(decision.SelectedTools) == 0 || decision.SelectedTools[0] != "create_reminder" {
+		t.Fatalf("selected=%#v reason=%s", decision.SelectedTools, decision.Reason)
+	}
+}
+
+type countingEmbedder struct {
+	embeddings.Provider
+	counts map[string]int
+}
+
+func (e *countingEmbedder) Embed(ctx context.Context, text string) ([]float32, error) {
+	if e.counts == nil {
+		e.counts = map[string]int{}
+	}
+	e.counts[text]++
+	return e.Provider.Embed(ctx, text)
+}
+
+func TestHypotheticalToolSelectionCachesToolDocumentEmbeddings(t *testing.T) {
+	defs := []providers.ToolDefinition{
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "create_reminder", Description: "Create a scheduled reminder or alarm for a future time."}},
+	}
+	metadata := map[string]toolSelectionMetadata{"create_reminder": {Tags: []string{"reminder", "schedule"}}}
+	embedder := &countingEmbedder{Provider: embeddings.NewHashProvider(16), counts: map[string]int{}}
+	w := (&Worker{}).WithEmbedder(embedder)
+	description := "Create a future scheduled reminder for the user."
+	rankHypotheticalToolSelection(t.Context(), w, []string{description}, defs, metadata, toolSelectionProfileConfig{MaxTools: 1})
+	rankHypotheticalToolSelection(t.Context(), w, []string{description}, defs, metadata, toolSelectionProfileConfig{MaxTools: 1})
+	document := toolSelectionToolDocument(defs[0], metadata["create_reminder"])
+	if embedder.counts[document] != 1 {
+		t.Fatalf("tool document embedding calls=%d", embedder.counts[document])
+	}
+	if embedder.counts[description] != 2 {
+		t.Fatalf("query embedding should not be cached per tool catalog: calls=%d", embedder.counts[description])
+	}
+}
+
+func TestModelCallOptionsDoesNotForceSingleWriteTool(t *testing.T) {
+	options := modelCallOptions(map[string]any{"temperature": 0.2})
+	if _, ok := options["tool_choice"]; ok {
+		t.Fatalf("tool_choice should not be forced from visible tool count: %#v", options)
+	}
+	if options["temperature"] != 0.2 {
+		t.Fatalf("base options not preserved: %#v", options)
 	}
 }
 

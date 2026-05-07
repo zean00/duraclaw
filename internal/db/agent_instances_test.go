@@ -23,6 +23,7 @@ func TestValidateAgentInstanceVersionSpecAllowsKnownConfigKeys(t *testing.T) {
 				"tags":             []string{"debug"},
 				"trigger_phrases":  []string{"ping"},
 				"negative_phrases": []string{"ignore"},
+				"examples":         []string{"run a ping check"},
 				"side_effect":      "read",
 				"conflicts_with":   []string{"remember"},
 			}},
@@ -63,6 +64,7 @@ func TestValidateAgentInstanceVersionSpecAllowsKnownConfigKeys(t *testing.T) {
 			"tool_selection": map[string]any{
 				"enabled":              true,
 				"mode":                 "hybrid",
+				"method":               "hypothetical",
 				"model":                "openrouter/openai/gpt-4.1-mini",
 				"max_tools":            6,
 				"confidence_threshold": 0.65,
@@ -148,6 +150,7 @@ func TestValidateAgentInstanceVersionSpecRejectsInvalidToolSelectionValues(t *te
 		{"tool_selection": "bad"},
 		{"tool_selection": map[string]any{"enabled": "yes"}},
 		{"tool_selection": map[string]any{"mode": "always"}},
+		{"tool_selection": map[string]any{"method": "word2vec"}},
 		{"tool_selection": map[string]any{"max_tools": -1}},
 		{"tool_selection": map[string]any{"max_tools": 1.5}},
 		{"tool_selection": map[string]any{"confidence_threshold": 2}},
@@ -171,6 +174,7 @@ func TestValidateAgentInstanceVersionSpecRejectsInvalidToolMetadata(t *testing.T
 		{"tool_metadata": map[string]any{"echo": map[string]any{"tags": "debug"}}},
 		{"tool_metadata": map[string]any{"echo": map[string]any{"trigger_phrases": "ping"}}},
 		{"tool_metadata": map[string]any{"echo": map[string]any{"negative_phrases": "ignore"}}},
+		{"tool_metadata": map[string]any{"echo": map[string]any{"examples": "ping"}}},
 		{"tool_metadata": map[string]any{"echo": map[string]any{"side_effect": true}}},
 	}
 	for _, toolConfig := range cases {

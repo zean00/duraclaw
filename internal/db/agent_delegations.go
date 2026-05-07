@@ -42,25 +42,26 @@ type EffectiveAgentDelegationAccess struct {
 }
 
 type AgentDelegation struct {
-	ID                    string          `json:"id"`
-	CustomerID            string          `json:"customer_id"`
-	UserID                string          `json:"user_id"`
-	SourceAgentInstanceID string          `json:"source_agent_instance_id"`
-	TargetAgentInstanceID string          `json:"target_agent_instance_id"`
-	TargetHandle          string          `json:"target_handle"`
-	ParentSessionID       string          `json:"parent_session_id"`
-	ParentRunID           string          `json:"parent_run_id"`
-	ChildSessionID        string          `json:"child_session_id"`
-	ChildRunID            string          `json:"child_run_id"`
-	ExactMessage          string          `json:"exact_message"`
-	ContextSummary        string          `json:"context_summary"`
-	Status                string          `json:"status"`
-	ResultText            string          `json:"result_text,omitempty"`
-	Error                 *string         `json:"error,omitempty"`
-	Metadata              json.RawMessage `json:"metadata,omitempty"`
-	CreatedAt             time.Time       `json:"created_at"`
-	UpdatedAt             time.Time       `json:"updated_at"`
-	CompletedAt           *time.Time      `json:"completed_at,omitempty"`
+	ID                    string           `json:"id"`
+	CustomerID            string           `json:"customer_id"`
+	UserID                string           `json:"user_id"`
+	SourceAgentInstanceID string           `json:"source_agent_instance_id"`
+	TargetAgentInstanceID string           `json:"target_agent_instance_id"`
+	TargetHandle          string           `json:"target_handle"`
+	ParentSessionID       string           `json:"parent_session_id"`
+	ParentRunID           string           `json:"parent_run_id"`
+	ChildSessionID        string           `json:"child_session_id"`
+	ChildRunID            string           `json:"child_run_id"`
+	ExactMessage          string           `json:"exact_message"`
+	ContextSummary        string           `json:"context_summary"`
+	Status                string           `json:"status"`
+	ResultText            string           `json:"result_text,omitempty"`
+	Artifacts             []map[string]any `json:"artifacts,omitempty"`
+	Error                 *string          `json:"error,omitempty"`
+	Metadata              json.RawMessage  `json:"metadata,omitempty"`
+	CreatedAt             time.Time        `json:"created_at"`
+	UpdatedAt             time.Time        `json:"updated_at"`
+	CompletedAt           *time.Time       `json:"completed_at,omitempty"`
 }
 
 type AgentDelegationSpec struct {
@@ -498,6 +499,13 @@ func (s *Store) AgentDelegation(ctx context.Context, customerID, delegationID st
 		Scan(&out.ID, &out.CustomerID, &out.UserID, &out.SourceAgentInstanceID, &out.TargetAgentInstanceID, &out.TargetHandle, &out.ParentSessionID, &out.ParentRunID, &out.ChildSessionID, &out.ChildRunID, &out.ExactMessage, &out.ContextSummary, &out.Status, &out.ResultText, &out.Error, &out.Metadata, &out.CreatedAt, &out.UpdatedAt, &out.CompletedAt)
 	if err != nil {
 		return nil, err
+	}
+	if strings.TrimSpace(out.ChildRunID) != "" {
+		artifacts, err := s.ToolArtifactsForRun(ctx, out.ChildRunID)
+		if err != nil {
+			return nil, err
+		}
+		out.Artifacts = artifacts
 	}
 	return &out, nil
 }
