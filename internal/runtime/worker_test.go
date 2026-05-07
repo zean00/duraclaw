@@ -353,6 +353,59 @@ func TestReplyPromptContextRequiresReference(t *testing.T) {
 	}
 }
 
+func TestReplyPromptContextQuotesOriginalWhenMissingRecent(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(mock.Close)
+	store := db.NewStore(mock)
+	w := &Worker{store: store}
+	raw, _ := json.Marshal(map[string]any{
+		"reply_to": map[string]any{"message_id": "msg-1", "role": "assistant"},
+		"text":     "make it shorter",
+	})
+	run := &db.Run{ID: "run-2", CustomerID: "c", SessionID: "s", Input: raw}
+	mock.ExpectQuery("SELECT id::text, COALESCE").
+		WithArgs("c", "s", "msg-1", "", "").
+		WillReturnRows(pgxmock.NewRows([]string{"id", "run_id", "role", "content", "created_at"}).
+			AddRow("msg-1", "run-1", "assistant", []byte(`{"text":"This is the original answer."}`), time.Now()))
+
+	got := w.replyPromptContext(context.Background(), run, nil)
+	if !strings.Contains(got, "Untrusted original referenced message excerpt") || !strings.Contains(got, "assistant: This is the original answer.") {
+		t.Fatalf("expected quoted original in %q", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReplyPromptContextDoesNotQuoteOriginalWhenRecent(t *testing.T) {
+	raw, _ := json.Marshal(map[string]any{
+		"reply_to": map[string]any{"message_id": "msg-1", "role": "assistant"},
+		"text":     "make it shorter",
+	})
+	w := &Worker{}
+	run := &db.Run{Input: raw}
+	recent := []db.Message{{ID: "msg-1", Role: "assistant", Content: json.RawMessage(`{"text":"This is already recent."}`)}}
+	got := w.replyPromptContext(context.Background(), run, recent)
+	if strings.Contains(got, "original referenced message excerpt") {
+		t.Fatalf("should not quote recent original: %q", got)
+	}
+}
+
+func TestReplyReferenceInRecentIgnoresReplyToExternalID(t *testing.T) {
+	data := map[string]any{"external_message_id": "channel-msg-1"}
+	recent := []db.Message{{
+		ID:      "current-msg",
+		Role:    "user",
+		Content: json.RawMessage(`{"text":"reply","reply_to":{"external_message_id":"channel-msg-1"}}`),
+	}}
+	if replyReferenceInRecent(data, recent) {
+		t.Fatal("reply_to.external_message_id should not make the original look present in recent history")
+	}
+}
+
 func TestArtifactRefsFromContentParts(t *testing.T) {
 	raw, _ := json.Marshal(map[string]any{
 		"parts": []map[string]any{
@@ -1253,8 +1306,8 @@ func TestRecommendationSensitiveProductMixUsesImplicitContext(t *testing.T) {
 	mock.ExpectQuery("SELECT channel_context").WithArgs("run-1").WillReturnError(pgx.ErrNoRows)
 	mock.ExpectQuery("SELECT customer_id").WithArgs("c", "s").WillReturnError(pgx.ErrNoRows)
 	mock.ExpectQuery("SELECT id").WithArgs("c", "s", 6).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "role", "content", "created_at"}).
-			AddRow("msg-1", "user", []byte(`{"parts":[{"type":"text","text":"Aku sedih habis shalat."}]}`), time.Now()))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "run_id", "role", "content", "created_at"}).
+			AddRow("msg-1", "run-1", "user", []byte(`{"parts":[{"type":"text","text":"Aku sedih habis shalat."}]}`), time.Now()))
 
 	recCtx, mode, err := w.recommendationInputContext(context.Background(), run, scopeJudgement{Intent: "implicit"}, "boleh rekomendasikan yang cocok?")
 	if err != nil {

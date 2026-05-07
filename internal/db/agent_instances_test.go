@@ -73,6 +73,10 @@ func TestValidateAgentInstanceVersionSpecAllowsKnownConfigKeys(t *testing.T) {
 					"reasoning":  map[string]any{"max_tokens": 64},
 				},
 			},
+			"reply_context": map[string]any{
+				"quote_original":  "when_missing_recent",
+				"max_quote_chars": 800,
+			},
 		},
 	})
 	if err != nil {
@@ -155,6 +159,10 @@ func TestValidateAgentInstanceVersionSpecRejectsInvalidToolSelectionValues(t *te
 		{"tool_selection": map[string]any{"max_tools": 1.5}},
 		{"tool_selection": map[string]any{"confidence_threshold": 2}},
 		{"tool_selection": map[string]any{"options": "bad"}},
+		{"reply_context": "bad"},
+		{"reply_context": map[string]any{"quote_original": "sometimes"}},
+		{"reply_context": map[string]any{"max_quote_chars": 1.5}},
+		{"reply_context": map[string]any{"max_quote_chars": 4001}},
 	}
 	for _, profileConfig := range cases {
 		err := ValidateAgentInstanceVersionSpecForTest(AgentInstanceVersionSpec{

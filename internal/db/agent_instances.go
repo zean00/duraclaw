@@ -226,7 +226,7 @@ func validateAgentInstanceVersionSpec(spec AgentInstanceVersionSpec) error {
 	if err := validatePolicyConfigValues(spec.PolicyConfig); err != nil {
 		return err
 	}
-	if err := validateObjectConfig("profile_config", spec.ProfileConfig, []string{"personality", "communication_style", "language_capabilities", "domain_scope", "recommendation", "moderation", "tool_selection", "agent_delegation"}); err != nil {
+	if err := validateObjectConfig("profile_config", spec.ProfileConfig, []string{"personality", "communication_style", "language_capabilities", "domain_scope", "recommendation", "moderation", "tool_selection", "agent_delegation", "reply_context"}); err != nil {
 		return err
 	}
 	if err := validateProfileConfigValues(spec.ProfileConfig); err != nil {
@@ -465,6 +465,32 @@ func validateProfileConfigValues(value any) error {
 		if raw, ok := delegation["max_mentions_per_message"]; ok {
 			if err := validateNonNegativeInteger("profile_config.agent_delegation.max_mentions_per_message", raw); err != nil {
 				return err
+			}
+		}
+	}
+	if raw, ok := obj["reply_context"]; ok {
+		replyContext, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("profile_config.reply_context must be an object")
+		}
+		if raw, ok := replyContext["quote_original"]; ok {
+			value, ok := raw.(string)
+			if !ok {
+				return fmt.Errorf("profile_config.reply_context.quote_original must be a string")
+			}
+			switch strings.ToLower(strings.TrimSpace(value)) {
+			case "", "never", "when_missing_recent", "always":
+			default:
+				return fmt.Errorf("profile_config.reply_context.quote_original must be never, when_missing_recent, or always")
+			}
+		}
+		if raw, ok := replyContext["max_quote_chars"]; ok {
+			if err := validateNonNegativeInteger("profile_config.reply_context.max_quote_chars", raw); err != nil {
+				return err
+			}
+			value, _ := numericValue(raw)
+			if value > 4000 {
+				return fmt.Errorf("profile_config.reply_context.max_quote_chars must be less than or equal to 4000")
 			}
 		}
 	}

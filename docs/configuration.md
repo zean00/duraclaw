@@ -311,6 +311,21 @@ Methods:
 
 If `model` is empty, router fallback and hypothetical capability generation use the run's normal `model_config`. Router failures are non-fatal; Duraclaw falls back to the deterministic shortlist and records a `tool_selection.completed` run event. When an embedder is configured, hypothetical ranking caches authorized tool-document embeddings in process and recomputes only the per-turn hypothetical query embeddings. Tool selection only controls which tools are exposed to the main model; Duraclaw does not force `tool_choice: required` solely because one write-capable tool remains visible.
 
+Explicit reply context can quote the referenced original message only when needed:
+
+```json
+{
+  "profile_config": {
+    "reply_context": {
+      "quote_original": "when_missing_recent",
+      "max_quote_chars": 800
+    }
+  }
+}
+```
+
+`quote_original` accepts `never`, `when_missing_recent`, or `always`. The default is `when_missing_recent`, which keeps normal prompt history compact while recovering a capped original-message excerpt when a direct reply points at a message that has already fallen out of recent history or been summarized. Recovered excerpts are labeled as untrusted data; `max_quote_chars` has a hard maximum of 4000.
+
 ## Decision Eval CLI
 
 Use `cmd/duraclaw-eval` to compare models on the pre-response decisions that most affect runtime behavior:

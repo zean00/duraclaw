@@ -79,9 +79,16 @@ type RunStep struct {
 
 type Message struct {
 	ID        string          `json:"id"`
+	RunID     string          `json:"run_id,omitempty"`
 	Role      string          `json:"role"`
 	Content   json.RawMessage `json:"content"`
 	CreatedAt time.Time       `json:"created_at"`
+}
+
+type ReplyReference struct {
+	MessageID         string `json:"message_id,omitempty"`
+	ExternalMessageID string `json:"external_message_id,omitempty"`
+	RunID             string `json:"run_id,omitempty"`
 }
 
 type Event struct {
@@ -617,9 +624,9 @@ func (s *Store) RecentMessages(ctx context.Context, customerID, sessionID string
 		limit = 12
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT id::text, role, content, created_at
+		SELECT id::text, COALESCE(run_id::text,''), role, content, created_at
 		FROM (
-			SELECT id, role, content, created_at
+			SELECT id, run_id, role, content, created_at
 			FROM messages
 			WHERE customer_id=$1 AND session_id=$2
 			ORDER BY created_at DESC
@@ -633,12 +640,50 @@ func (s *Store) RecentMessages(ctx context.Context, customerID, sessionID string
 	var out []Message
 	for rows.Next() {
 		var m Message
-		if err := rows.Scan(&m.ID, &m.Role, &m.Content, &m.CreatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.RunID, &m.Role, &m.Content, &m.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) MessageByReplyReference(ctx context.Context, customerID, sessionID string, ref ReplyReference) (*Message, error) {
+	ref.MessageID = strings.TrimSpace(ref.MessageID)
+	ref.ExternalMessageID = strings.TrimSpace(ref.ExternalMessageID)
+	ref.RunID = strings.TrimSpace(ref.RunID)
+	if ref.MessageID == "" && ref.ExternalMessageID == "" && ref.RunID == "" {
+		return nil, pgx.ErrNoRows
+	}
+	var m Message
+	err := s.pool.QueryRow(ctx, messageByReplyReferenceSQL(),
+		customerID, sessionID, ref.MessageID, ref.RunID, ref.ExternalMessageID).
+		Scan(&m.ID, &m.RunID, &m.Role, &m.Content, &m.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+func messageByReplyReferenceSQL() string {
+	return `
+		SELECT id::text, COALESCE(run_id::text,''), role, content, created_at
+		FROM messages
+		WHERE customer_id=$1 AND session_id=$2
+		AND (
+			($3<>'' AND id::text=$3)
+			OR ($4<>'' AND run_id::text=$4)
+			OR ($5<>'' AND (
+				content->>'external_message_id'=$5
+				OR content->'metadata'->>'external_message_id'=$5
+			))
+		)
+		ORDER BY created_at DESC
+		LIMIT 1`
+}
+
+func messageByReplyReferenceSQLForTest() string {
+	return messageByReplyReferenceSQL()
 }
 
 func (s *Store) CompleteRunWithMessage(ctx context.Context, runID, messageID string) error {

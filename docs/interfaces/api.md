@@ -45,7 +45,7 @@ Channel headers are persisted on the run and exposed to the agent prompt context
 }
 ```
 
-Duraclaw stores only compact reply references and injects them as trusted runtime context for prompts, scope/recommendation checks, policies, and workflows. A reply reference must include `message_id`, `external_message_id`, or `run_id`; metadata such as `role` or `kind` alone is ignored. Duraclaw does not append or quote the original message body into the conversation context; clients should pass artifact IDs when the reply is meant to update a prior side effect such as a reminder.
+Duraclaw stores compact reply references and injects them as trusted runtime context for prompts, scope/recommendation checks, policies, and workflows. A reply reference must include `message_id`, `external_message_id`, or `run_id`; metadata such as `role` or `kind` alone is ignored. To keep normal turns small, Duraclaw does not quote the original body when the referenced message is already present in recent prompt history. If the reference is missing from recent history, Duraclaw looks up the exact raw message and injects a capped excerpt by default (`profile_config.reply_context.quote_original: "when_missing_recent"`) so direct replies still work after session compaction. The recovered excerpt is labeled as untrusted data and capped at `max_quote_chars` with a hard maximum of 4000 characters. Set `quote_original` to `never` or `always` to override this behavior. Clients should still pass artifact IDs when the reply is meant to update a prior side effect such as a reminder.
 
 ## Core ACP Routes
 

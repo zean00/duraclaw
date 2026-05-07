@@ -98,6 +98,31 @@ func TestStoreCoreRunMutationMethodsWithPgxMock(t *testing.T) {
 	}
 }
 
+func TestMessageByReplyReferenceWithPgxMock(t *testing.T) {
+	store, mock := newMockStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	mock.ExpectQuery("SELECT id::text, COALESCE").
+		WithArgs("c1", "s1", "msg-1", "", "").
+		WillReturnRows(pgxmock.NewRows([]string{"id", "run_id", "role", "content", "created_at"}).
+			AddRow("msg-1", "run-1", "assistant", []byte(`{"text":"original answer"}`), now))
+	message, err := store.MessageByReplyReference(ctx, "c1", "s1", ReplyReference{MessageID: "msg-1"})
+	if err != nil || message == nil || message.ID != "msg-1" {
+		t.Fatalf("message=%#v err=%v", message, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMessageByReplyReferenceDoesNotMatchReplyToExternalID(t *testing.T) {
+	sql := messageByReplyReferenceSQLForTest()
+	if strings.Contains(sql, "reply_to'->>'external_message_id'") {
+		t.Fatalf("external message lookup must not match reply_to references: %s", sql)
+	}
+}
+
 func TestDeferRunIfActiveReturnsDeferredAck(t *testing.T) {
 	store, mock := newMockStore(t)
 	ctx := context.Background()
@@ -157,9 +182,9 @@ func TestStoreMessagesCheckpointsAndStepsWithPgxMock(t *testing.T) {
 		t.Fatal(err)
 	}
 	mock.ExpectQuery("SELECT id").WithArgs("c1", "s1", 12).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "role", "content", "created_at"}).AddRow("msg-1", "user", []byte(`{"text":"hi"}`), now))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "run_id", "role", "content", "created_at"}).AddRow("msg-1", "run-1", "user", []byte(`{"text":"hi"}`), now))
 	messages, err := store.RecentMessages(ctx, "c1", "s1", 0)
-	if err != nil || len(messages) != 1 {
+	if err != nil || len(messages) != 1 || messages[0].RunID != "run-1" {
 		t.Fatalf("messages=%#v err=%v", messages, err)
 	}
 
