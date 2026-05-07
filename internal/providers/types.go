@@ -14,27 +14,29 @@ import (
 )
 
 type Message struct {
-	Role         string        `json:"role"`
-	Content      string        `json:"-"`
-	ContentParts []ContentPart `json:"-"`
-	ToolCalls    []ToolCall    `json:"-"`
-	ToolCallID   string        `json:"-"`
+	Role             string        `json:"role"`
+	Content          string        `json:"-"`
+	ContentParts     []ContentPart `json:"-"`
+	ReasoningContent string        `json:"-"`
+	ToolCalls        []ToolCall    `json:"-"`
+	ToolCallID       string        `json:"-"`
 }
 
 func (m Message) MarshalJSON() ([]byte, error) {
 	type wire struct {
-		Role       string     `json:"role"`
-		Content    any        `json:"content,omitempty"`
-		ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-		ToolCallID string     `json:"tool_call_id,omitempty"`
+		Role             string     `json:"role"`
+		Content          any        `json:"content,omitempty"`
+		ReasoningContent string     `json:"reasoning_content,omitempty"`
+		ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
+		ToolCallID       string     `json:"tool_call_id,omitempty"`
 	}
 	if m.Role == "tool" {
 		return json.Marshal(wire{Role: m.Role, Content: m.Content, ToolCallID: m.ToolCallID})
 	}
 	if len(m.ContentParts) > 0 {
-		return json.Marshal(wire{Role: m.Role, Content: m.ContentParts, ToolCalls: m.ToolCalls})
+		return json.Marshal(wire{Role: m.Role, Content: m.ContentParts, ReasoningContent: m.ReasoningContent, ToolCalls: m.ToolCalls})
 	}
-	return json.Marshal(wire{Role: m.Role, Content: m.Content, ToolCalls: m.ToolCalls})
+	return json.Marshal(wire{Role: m.Role, Content: m.Content, ReasoningContent: m.ReasoningContent, ToolCalls: m.ToolCalls})
 }
 
 func (m Message) Text() string {
@@ -199,18 +201,20 @@ func costMicros(raw any) int {
 }
 
 type LLMResponse struct {
-	Content      string     `json:"content"`
-	ToolCalls    []ToolCall `json:"tool_calls,omitempty"`
-	FinishReason string     `json:"finish_reason,omitempty"`
-	Usage        UsageInfo  `json:"usage,omitempty"`
+	Content          string     `json:"content"`
+	ReasoningContent string     `json:"reasoning_content,omitempty"`
+	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
+	FinishReason     string     `json:"finish_reason,omitempty"`
+	Usage            UsageInfo  `json:"usage,omitempty"`
 }
 
 type StreamDelta struct {
-	Content        string          `json:"content,omitempty"`
-	ToolCalls      []ToolCall      `json:"tool_calls,omitempty"`
-	ToolCallDeltas []ToolCallDelta `json:"tool_call_deltas,omitempty"`
-	FinishReason   string          `json:"finish_reason,omitempty"`
-	Usage          UsageInfo       `json:"usage,omitempty"`
+	Content          string          `json:"content,omitempty"`
+	ReasoningContent string          `json:"reasoning_content,omitempty"`
+	ToolCalls        []ToolCall      `json:"tool_calls,omitempty"`
+	ToolCallDeltas   []ToolCallDelta `json:"tool_call_deltas,omitempty"`
+	FinishReason     string          `json:"finish_reason,omitempty"`
+	Usage            UsageInfo       `json:"usage,omitempty"`
 }
 
 type ToolCallDelta struct {

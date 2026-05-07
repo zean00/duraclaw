@@ -218,6 +218,26 @@ func TestSeventeenthMigrationContainsUserQuotasAndUsage(t *testing.T) {
 	}
 }
 
+func TestTwentySeventhMigrationContainsMemoryPreferenceUsage(t *testing.T) {
+	raw, err := migrationFS.ReadFile("migrations/0027_memory_preference_usage.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw)
+	for _, want := range []string{
+		"ALTER TABLE memories ADD COLUMN IF NOT EXISTS last_used_at",
+		"ALTER TABLE memories ADD COLUMN IF NOT EXISTS usage_count",
+		"ALTER TABLE preferences ADD COLUMN IF NOT EXISTS last_used_at",
+		"ALTER TABLE preferences ADD COLUMN IF NOT EXISTS usage_count",
+		"memories_customer_user_usage_idx",
+		"preferences_customer_user_usage_idx",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("migration missing %q", want)
+		}
+	}
+}
+
 func TestTwentiethMigrationContainsBuiltInToolAccess(t *testing.T) {
 	raw, err := migrationFS.ReadFile("migrations/0020_builtin_tool_access.sql")
 	if err != nil {

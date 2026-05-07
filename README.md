@@ -506,6 +506,7 @@ The persistence layer also includes:
 - Session agent-instance transfer records; session ensure and run creation use the persisted session agent unless the explicit reassignment route changes it.
 - Memory records for stable facts scoped by customer/user/session.
 - Preference records for conditional preferences scoped by customer/user/session.
+- Prompt-fed memory and preference context is relevance-ranked with semantic/text matching plus recency and usage frequency.
 - Reminder subscriptions fan out into deterministic durable runs; one-shot workflow timer wake jobs are backed by scheduler jobs.
 - Knowledge documents and vector-ready chunks with pgvector search helpers.
 - Outbound intents queued through `async_outbox` for Nexus-owned delivery.

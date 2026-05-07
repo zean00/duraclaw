@@ -55,7 +55,8 @@ func TestMessageMarshalsContentParts(t *testing.T) {
 
 func TestMessageMarshalsToolCallsAndToolCallID(t *testing.T) {
 	raw, err := json.Marshal(Message{
-		Role: "assistant",
+		Role:             "assistant",
+		ReasoningContent: "hidden chain",
 		ToolCalls: []ToolCall{{
 			ID:   "call-1",
 			Type: "function",
@@ -74,6 +75,9 @@ func TestMessageMarshalsToolCallsAndToolCallID(t *testing.T) {
 	}
 	if _, ok := assistant["tool_calls"].([]any); !ok {
 		t.Fatalf("assistant tool calls missing: %s", raw)
+	}
+	if assistant["reasoning_content"] != "hidden chain" {
+		t.Fatalf("assistant reasoning content missing: %s", raw)
 	}
 	call := assistant["tool_calls"].([]any)[0].(map[string]any)
 	fn := call["function"].(map[string]any)

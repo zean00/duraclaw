@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pashagolub/pgxmock/v4"
 )
@@ -22,17 +23,18 @@ func TestStoreMemoryAndPreferenceMethodsWithPgxMock(t *testing.T) {
 		t.Fatalf("id=%q err=%v", id, err)
 	}
 
+	now := time.Now().UTC()
 	mock.ExpectQuery("SELECT id").WithArgs("c1", "u1", 20).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "customer_id", "user_id", "session_id", "memory_type", "content", "metadata"}).
-			AddRow("mem-1", "c1", "u1", &sessionID, "fact", "likes tea", []byte(`{}`)))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "customer_id", "user_id", "session_id", "memory_type", "content", "metadata", "updated_at", "last_used_at", "usage_count"}).
+			AddRow("mem-1", "c1", "u1", &sessionID, "fact", "likes tea", []byte(`{}`), now, nil, 0))
 	memories, err := store.ListMemories(ctx, "c1", "u1", 0)
 	if err != nil || len(memories) != 1 || memories[0].ID != "mem-1" {
 		t.Fatalf("memories=%#v err=%v", memories, err)
 	}
 
 	mock.ExpectQuery("SELECT id").WithArgs("c1", "u1", "[1,2]", 2).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "customer_id", "user_id", "session_id", "memory_type", "content", "metadata"}).
-			AddRow("mem-2", "c1", "u1", nil, "summary", "vector hit", []byte(`{}`)))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "customer_id", "user_id", "session_id", "memory_type", "content", "metadata", "updated_at", "last_used_at", "usage_count"}).
+			AddRow("mem-2", "c1", "u1", nil, "summary", "vector hit", []byte(`{}`), now, nil, 0))
 	found, err := store.SearchMemories(ctx, "c1", "u1", []float32{1, 2}, 2)
 	if err != nil || len(found) != 1 || found[0].Content != "vector hit" {
 		t.Fatalf("found=%#v err=%v", found, err)
@@ -57,8 +59,8 @@ func TestStoreMemoryAndPreferenceMethodsWithPgxMock(t *testing.T) {
 	}
 
 	mock.ExpectQuery("SELECT id").WithArgs("c1", "u1", 20).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "customer_id", "user_id", "session_id", "category", "content", "condition", "metadata"}).
-			AddRow("pref-1", "c1", "u1", nil, "general", "prefers concise answers", []byte(`null`), []byte(`null`)))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "customer_id", "user_id", "session_id", "category", "content", "condition", "metadata", "updated_at", "last_used_at", "usage_count"}).
+			AddRow("pref-1", "c1", "u1", nil, "general", "prefers concise answers", []byte(`null`), []byte(`null`), now, nil, 0))
 	prefs, err := store.ListPreferences(ctx, "c1", "u1", 0)
 	if err != nil || len(prefs) != 1 || prefs[0].Category != "general" {
 		t.Fatalf("prefs=%#v err=%v", prefs, err)
@@ -70,6 +72,44 @@ func TestStoreMemoryAndPreferenceMethodsWithPgxMock(t *testing.T) {
 	}
 	mock.ExpectExec("DELETE FROM preferences").WithArgs("pref-1", "c1", "u1").WillReturnResult(pgxmock.NewResult("DELETE", 1))
 	if err := store.DeletePreference(ctx, "pref-1", "c1", "u1"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRankMemoriesAndPreferencesWithPgxMock(t *testing.T) {
+	store, mock := newMockStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	mock.ExpectQuery("FROM memories").
+		WithArgs("c1", "u1", []string{"%child%", "%pickup%", "%school%"}, 50).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "customer_id", "user_id", "session_id", "memory_type", "content", "metadata", "updated_at", "last_used_at", "usage_count", "vector_distance"}).
+			AddRow("mem-school", "c1", "u1", nil, "fact", "User has a child in school", []byte(`{}`), now.Add(-24*time.Hour), nil, 0, nil).
+			AddRow("mem-tea", "c1", "u1", nil, "fact", "User likes tea", []byte(`{}`), now, nil, 10, nil))
+	memories, err := store.RankMemories(ctx, "c1", "u1", "school pickup for child", nil, 1)
+	if err != nil || len(memories) != 1 || memories[0].ID != "mem-school" {
+		t.Fatalf("memories=%#v err=%v", memories, err)
+	}
+
+	mock.ExpectQuery("FROM preferences").
+		WithArgs("c1", "u1", "[0.1]", 50, []string{"%answer%", "%style%"}).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "customer_id", "user_id", "session_id", "category", "content", "condition", "metadata", "updated_at", "last_used_at", "usage_count", "vector_distance"}).
+			AddRow("pref-close", "c1", "u1", nil, "style", "Use short answers", []byte(`{}`), []byte(`{}`), now, nil, 0, 0.1).
+			AddRow("pref-far", "c1", "u1", nil, "food", "Likes spicy food", []byte(`{}`), []byte(`{}`), now, nil, 99, 3.0))
+	prefs, err := store.RankPreferences(ctx, "c1", "u1", "answer style", []float32{0.1}, 1)
+	if err != nil || len(prefs) != 1 || prefs[0].ID != "pref-close" {
+		t.Fatalf("prefs=%#v err=%v", prefs, err)
+	}
+
+	mock.ExpectExec("UPDATE memories").WithArgs("c1", "u1", []string{"mem-school"}).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	if err := store.MarkMemoriesUsed(ctx, "c1", "u1", []string{"mem-school", "mem-school", ""}); err != nil {
+		t.Fatal(err)
+	}
+	mock.ExpectExec("UPDATE preferences").WithArgs("c1", "u1", []string{"pref-close"}).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	if err := store.MarkPreferencesUsed(ctx, "c1", "u1", []string{"pref-close"}); err != nil {
 		t.Fatal(err)
 	}
 

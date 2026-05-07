@@ -820,6 +820,15 @@ func (w *Worker) agentLoopPhase(ctx context.Context, run *db.Run, text string, m
 		}
 		toolCalls, suppressedToolCalls := toolCallsForExecution(resp.ToolCalls, interleaveToolCalls, allowedToolCallNames(toolDefs))
 		if len(toolCalls) == 0 {
+			if strings.TrimSpace(resp.Content) == "" && suppressedToolCalls > 0 {
+				if err := w.store.Checkpoint(ctx, run.ID, "tools_suppressed", map[string]any{"model_tool_calls": len(resp.ToolCalls), "suppressed_tool_calls": suppressedToolCalls, "iteration": iteration}); err != nil {
+					return nil, err
+				}
+				w.emitAgentActivity(ctx, run, "tool", "suppressed", map[string]any{"iteration": iteration, "model_tool_calls": len(resp.ToolCalls), "suppressed_tool_calls": suppressedToolCalls})
+				messages = append(messages, providers.Message{Role: "system", Content: "The previous tool call request was unavailable. Use the tool results and conversation context already provided to answer directly without calling tools."})
+				toolDefs = nil
+				continue
+			}
 			messages = append(messages, providers.Message{Role: "assistant", Content: resp.Content})
 			if err := w.store.Checkpoint(ctx, run.ID, "tools_suppressed", map[string]any{"model_tool_calls": len(resp.ToolCalls), "suppressed_tool_calls": suppressedToolCalls, "iteration": iteration}); err != nil {
 				return nil, err
@@ -832,7 +841,7 @@ func (w *Worker) agentLoopPhase(ctx context.Context, run *db.Run, text string, m
 			return nil, err
 		}
 		w.emitAgentActivity(ctx, run, "tool", "batch_started", map[string]any{"iteration": iteration, "tool_calls": len(toolCalls), "model_tool_calls": len(resp.ToolCalls), "suppressed_tool_calls": suppressedToolCalls, "interleaved": interleaveToolCalls && suppressedToolCalls > 0})
-		messages = append(messages, providers.Message{Role: "assistant", Content: resp.Content, ToolCalls: toolCalls})
+		messages = append(messages, providers.Message{Role: "assistant", Content: resp.Content, ReasoningContent: resp.ReasoningContent, ToolCalls: toolCalls})
 		toolResults, err := w.executeToolCalls(ctx, run, toolStepID, toolCalls)
 		if err != nil {
 			msg := err.Error()
@@ -1384,6 +1393,7 @@ func (w *Worker) chatStream(ctx context.Context, run *db.Run, provider providers
 		return nil, err
 	}
 	var content strings.Builder
+	var reasoning strings.Builder
 	var deltaChunk strings.Builder
 	deltaEvents := 0
 	droppedDeltaBytes := 0
@@ -1404,6 +1414,9 @@ func (w *Worker) chatStream(ctx context.Context, run *db.Run, provider providers
 				}
 				deltaChunk.Reset()
 			}
+		}
+		if delta.ReasoningContent != "" {
+			reasoning.WriteString(delta.ReasoningContent)
 		}
 		if len(delta.ToolCalls) > 0 {
 			calls = append(calls, delta.ToolCalls...)
@@ -1452,7 +1465,7 @@ func (w *Worker) chatStream(ctx context.Context, run *db.Run, provider providers
 	if len(partials) > 0 {
 		calls = append(calls, finishStreamToolCalls(partials)...)
 	}
-	return &providers.LLMResponse{Content: content.String(), ToolCalls: calls, FinishReason: finish, Usage: usage}, nil
+	return &providers.LLMResponse{Content: content.String(), ReasoningContent: reasoning.String(), ToolCalls: calls, FinishReason: finish, Usage: usage}, nil
 }
 
 func sanitizeAssistantVisibleContent(content string) string {
@@ -1688,7 +1701,7 @@ func (w *Worker) providerMessages(ctx context.Context, run *db.Run, currentText 
 	if policyInstructions != "" {
 		promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: policyInstructions})
 	}
-	userProfile, err := w.userProfileContext(ctx, run)
+	userProfile, err := w.userProfileContext(ctx, run, currentText)
 	if err != nil {
 		return nil, err
 	}
@@ -1742,7 +1755,15 @@ func messageExcludedFromContext(raw json.RawMessage) bool {
 	if _, ok := payload["agent_delegation"]; ok {
 		return true
 	}
+	if isAgentDelegationInstructionText(messageText(raw)) {
+		return true
+	}
 	return false
+}
+
+func isAgentDelegationInstructionText(text string) bool {
+	text = strings.TrimSpace(text)
+	return strings.HasPrefix(text, "You are receiving an asynchronous delegated task from another agent")
 }
 
 func boolMapValue(data map[string]any, keys ...string) bool {
@@ -3211,24 +3232,33 @@ func nonEmptyStrings(values ...string) []string {
 	return out
 }
 
-func (w *Worker) userProfileContext(ctx context.Context, run *db.Run) (string, error) {
+func (w *Worker) userProfileContext(ctx context.Context, run *db.Run, currentText string) (string, error) {
 	metadata, err := w.store.UserMetadata(ctx, run.CustomerID, run.UserID)
 	if err != nil {
 		return "", err
 	}
-	memories, err := w.store.ListMemories(ctx, run.CustomerID, run.UserID, 8)
+	query := strings.TrimSpace(currentText)
+	if summary, err := w.sessionSummaryContext(ctx, run); err == nil && strings.TrimSpace(summary) != "" {
+		query = strings.TrimSpace(query + "\n" + summary)
+	}
+	embedding := w.profileQueryEmbedding(ctx, query)
+	memories, err := w.store.RankMemories(ctx, run.CustomerID, run.UserID, query, embedding, 8)
 	if err != nil {
 		return "", err
 	}
-	allPreferences, err := w.store.ListPreferences(ctx, run.CustomerID, run.UserID, 20)
+	rankedPreferences, err := w.store.RankPreferences(ctx, run.CustomerID, run.UserID, query, embedding, 50)
 	if err != nil {
 		return "", err
 	}
-	matchedPreferences := preferences.Match(allPreferences, preferenceContext(time.Now()))
+	matchedPreferences := preferences.Match(rankedPreferences, preferenceContext(time.Now()))
+	if len(matchedPreferences) > 8 {
+		matchedPreferences = matchedPreferences[:8]
+	}
 	allowedProfile := profiles.AllowedProfile(metadata, w.profileFields)
 	if len(allowedProfile) == 0 && len(memories) == 0 && len(matchedPreferences) == 0 {
 		return "", nil
 	}
+	w.markProfileContextUsed(run.CustomerID, run.UserID, memories, matchedPreferences)
 	var b strings.Builder
 	if len(allowedProfile) > 0 {
 		b.WriteString("External user profile:\n")
@@ -3259,6 +3289,37 @@ func (w *Worker) userProfileContext(ctx context.Context, run *db.Run) (string, e
 		}
 	}
 	return strings.TrimSpace(b.String()), nil
+}
+
+func (w *Worker) profileQueryEmbedding(ctx context.Context, query string) []float32 {
+	if w == nil || w.embedder == nil || strings.TrimSpace(query) == "" {
+		return nil
+	}
+	embedding, err := w.embedder.Embed(ctx, query)
+	if err != nil {
+		return nil
+	}
+	return embedding
+}
+
+func (w *Worker) markProfileContextUsed(customerID, userID string, memories []db.Memory, preferences []db.Preference) {
+	if w == nil || w.store == nil || customerID == "" || userID == "" {
+		return
+	}
+	memoryIDs := make([]string, 0, len(memories))
+	for _, m := range memories {
+		memoryIDs = append(memoryIDs, m.ID)
+	}
+	preferenceIDs := make([]string, 0, len(preferences))
+	for _, p := range preferences {
+		preferenceIDs = append(preferenceIDs, p.ID)
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = w.store.MarkMemoriesUsed(ctx, customerID, userID, memoryIDs)
+		_ = w.store.MarkPreferencesUsed(ctx, customerID, userID, preferenceIDs)
+	}()
 }
 
 func sortedMapKeys(m map[string]any) []string {
@@ -3669,6 +3730,7 @@ func (w *Worker) executeToolCalls(ctx context.Context, run *db.Run, stepID strin
 			}
 			return nil, fmt.Errorf("%s", result.ForLLM)
 		}
+		w.embedProfileToolArtifacts(ctx, run, result.Artifacts)
 		if _, err := w.policyEngine().Enforce(ctx, "post_tool", w.policyContext(run, stepID, call.Function.Name, result.ForLLM)); err != nil {
 			w.emitAgentActivity(ctx, run, "tool", "failed", map[string]any{"tool_name": call.Function.Name, "tool_call_id": call.ID, "error": err.Error()})
 			return nil, err
@@ -3690,6 +3752,34 @@ func (w *Worker) executeToolCalls(ctx context.Context, run *db.Run, stepID strin
 		}
 	}
 	return results, nil
+}
+
+func (w *Worker) embedProfileToolArtifacts(ctx context.Context, run *db.Run, refs []tools.Reference) {
+	if w == nil || w.store == nil || w.embedder == nil || run == nil || len(refs) == 0 {
+		return
+	}
+	for _, ref := range refs {
+		switch ref.Type {
+		case "memory_reference":
+			content, _ := ref.Data["content"].(string)
+			if strings.TrimSpace(content) == "" {
+				continue
+			}
+			embedding, err := w.embedder.Embed(ctx, content)
+			if err == nil {
+				_ = w.store.SetMemoryEmbedding(ctx, ref.ID, run.CustomerID, run.UserID, embedding)
+			}
+		case "preference_reference":
+			content, _ := ref.Data["content"].(string)
+			if strings.TrimSpace(content) == "" {
+				continue
+			}
+			embedding, err := w.embedder.Embed(ctx, content)
+			if err == nil {
+				_ = w.store.SetPreferenceEmbedding(ctx, ref.ID, run.CustomerID, run.UserID, embedding)
+			}
+		}
+	}
 }
 
 func mustMarshalJSON(value any) json.RawMessage {
@@ -3760,7 +3850,7 @@ func (w *Worker) toolAliasesForRun(ctx context.Context, run *db.Run) (toolAliasS
 }
 
 func appliedToolAliasesForDefinitions(defs []providers.ToolDefinition, configured toolAliasSet) (toolAliasSet, error) {
-	if len(defs) == 0 || len(configured.OriginalToAlias) == 0 {
+	if len(defs) == 0 {
 		return toolAliasSet{OriginalToAlias: map[string]string{}, AliasToOriginal: map[string]string{}}, nil
 	}
 	applied := toolAliasSet{OriginalToAlias: map[string]string{}, AliasToOriginal: map[string]string{}}
@@ -3768,6 +3858,9 @@ func appliedToolAliasesForDefinitions(defs []providers.ToolDefinition, configure
 	for _, def := range defs {
 		original := def.Function.Name
 		providerName := configured.ProviderName(original)
+		if providerName == original && !providerSafeToolName(providerName) {
+			providerName = providerSafeDefaultToolAlias(original)
+		}
 		if prior, exists := seen[providerName]; exists && prior != original {
 			return applied, fmt.Errorf("provider tool alias %q conflicts between %q and %q", providerName, prior, original)
 		}
@@ -3780,8 +3873,36 @@ func appliedToolAliasesForDefinitions(defs []providers.ToolDefinition, configure
 	return applied, nil
 }
 
+func providerSafeToolName(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" || len(name) > 128 {
+		return false
+	}
+	for _, r := range name {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func providerSafeDefaultToolAlias(name string) string {
+	alias := providerToolNamePart(name)
+	if alias == "" {
+		alias = "tool"
+	}
+	if len(alias) <= 96 {
+		return alias
+	}
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte(name))
+	suffix := fmt.Sprintf("__%08x", hash.Sum32())
+	return strings.TrimRight(alias[:96-len(suffix)], "_") + suffix
+}
+
 func applyToolAliases(defs []providers.ToolDefinition, aliases toolAliasSet) ([]providers.ToolDefinition, error) {
-	if len(defs) == 0 || len(aliases.OriginalToAlias) == 0 {
+	if len(defs) == 0 {
 		return defs, nil
 	}
 	applied, err := appliedToolAliasesForDefinitions(defs, aliases)

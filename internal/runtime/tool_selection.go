@@ -198,7 +198,7 @@ func heuristicToolSelection(content string, scope scopeJudgement, defs []provide
 	var scored []scoredTool
 	for _, def := range defs {
 		name := def.Function.Name
-		meta := normalizeToolSelectionMetadata(metadata[name])
+		meta := metadataForToolDefinition(def, metadata)
 		score := lexicalToolScore(text, def, meta)
 		reason := toolSelectionReason(score)
 		phraseScore := phraseToolScore(text, meta)
@@ -335,7 +335,7 @@ func (w *Worker) routeToolSelection(ctx context.Context, run *db.Run, cfg toolSe
 		candidates = append(candidates, map[string]any{
 			"name":        name,
 			"description": def.Function.Description,
-			"metadata":    metadata[name],
+			"metadata":    metadataForToolDefinition(def, metadata),
 		})
 	}
 	rawCandidates, _ := json.Marshal(candidates)
@@ -362,6 +362,24 @@ func (w *Worker) routeToolSelection(ctx context.Context, run *db.Run, cfg toolSe
 		decision.Confidence = defaultToolSelectionConfidence
 	}
 	return decision, nil
+}
+
+func metadataForToolDefinition(def providers.ToolDefinition, metadata map[string]toolSelectionMetadata) toolSelectionMetadata {
+	name := strings.TrimSpace(def.Function.Name)
+	if meta, ok := metadata[name]; ok {
+		return normalizeToolSelectionMetadata(meta)
+	}
+	for configuredName, meta := range metadata {
+		configuredName = strings.TrimSpace(configuredName)
+		if configuredName == "" {
+			continue
+		}
+		part := providerToolNamePart(configuredName)
+		if part != "" && strings.Contains(name, part) {
+			return normalizeToolSelectionMetadata(meta)
+		}
+	}
+	return toolSelectionMetadata{}
 }
 
 func toolSelectionRouterPrompt(scope scopeJudgement, content, rawCandidates string) string {

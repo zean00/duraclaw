@@ -52,6 +52,8 @@ Memory writes are policy-controlled and can be created by tools, workflows, admi
 
 When the model-loop `remember` tool writes a memory, the tool result includes a `memory_reference` artifact with the memory ID plus admin update/delete route references.
 
+Prompt context injects a bounded, relevance-ranked set of memories. Duraclaw ranks candidates against the current user message plus the session summary using semantic embeddings when available, text overlap as a fallback, usage frequency, and recency. The cap is not simply the most recently written memories.
+
 ## Preferences
 
 Preferences are user choices that may be conditional.
@@ -65,6 +67,8 @@ Examples:
 Preferences include a `condition` JSON object. Prompt context includes only preferences that match the current context, such as season, month, or hour.
 
 When the model-loop `save_preference` tool writes a preference, the tool result includes a `preference_reference` artifact with the preference ID plus admin update/delete route references. The runtime prompt instructs the agent not to claim a preference was saved unless the `save_preference` tool succeeds; user-visible "saved" confirmations should therefore include the tool artifact in the final outbound message.
+
+Prompt context ranks matching preferences by relevance before injection. A preference's usage counter is updated when it is selected for prompt context; explicit list APIs still return stored preferences for inspection and management.
 
 ## Knowledge
 

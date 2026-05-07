@@ -657,6 +657,29 @@ func TestHeuristicToolSelectionUsesOriginalNamesBeforeAliases(t *testing.T) {
 	}
 }
 
+func TestHeuristicToolSelectionUsesMetadataForHashedMCPNames(t *testing.T) {
+	defs := []providers.ToolDefinition{
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "mcp__wulan_integrations__quran_search_sources__376678c8", Description: "MCP wulan_integrations.quran.search_sources: Search Quran sources."}},
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "mcp__wulan_integrations__quran_manage_bookmark__fcedc1cb", Description: "MCP wulan_integrations.quran.manage_bookmark: Manage Quran bookmarks."}},
+	}
+	metadata := map[string]toolSelectionMetadata{
+		"quran.search_sources": {
+			Tags:           []string{"quran", "ayat", "tema"},
+			TriggerPhrases: []string{"ayat tentang", "carikan ayat"},
+			SideEffect:     "read",
+		},
+		"quran.manage_bookmark": {
+			Tags:            []string{"bookmark ayat", "simpan ayat"},
+			NegativePhrases: []string{"ayat tentang", "carikan ayat"},
+			SideEffect:      "write",
+		},
+	}
+	decision := heuristicToolSelection("@quran tolong carikan ayat tentang lebah", scopeJudgement{Intent: "direct"}, defs, metadata, toolSelectionProfileConfig{MaxTools: 2})
+	if len(decision.SelectedTools) == 0 || decision.SelectedTools[0] != defs[0].Function.Name {
+		t.Fatalf("selected=%#v reason=%s", decision.SelectedTools, decision.Reason)
+	}
+}
+
 func TestRouterToolSelectionCanSelectNoTools(t *testing.T) {
 	defs := []providers.ToolDefinition{{Type: "function", Function: providers.ToolFunctionDefinition{Name: "remember"}}}
 	selected := filterToolDefinitionsByNames(defs, nil)
@@ -763,6 +786,27 @@ func TestApplyToolAliasesRenamesProviderDefinitions(t *testing.T) {
 	}
 	aliases := toolAliasSet{AliasToOriginal: map[string]string{"duraclaw_ask_user": "duraclaw.ask_user"}}
 	if got := aliases.OriginalName("duraclaw_ask_user"); got != "duraclaw.ask_user" {
+		t.Fatalf("original name=%q", got)
+	}
+}
+
+func TestApplyToolAliasesAutomaticallyRenamesProviderUnsafeDefinitions(t *testing.T) {
+	defs := []providers.ToolDefinition{
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "duraclaw.current_time"}},
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "echo"}},
+	}
+	got, err := applyToolAliases(defs, toolAliasSet{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].Function.Name != "duraclaw_current_time" || got[1].Function.Name != "echo" {
+		t.Fatalf("automatic aliases not applied: %#v", got)
+	}
+	applied, err := appliedToolAliasesForDefinitions(defs, toolAliasSet{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := applied.OriginalName("duraclaw_current_time"); got != "duraclaw.current_time" {
 		t.Fatalf("original name=%q", got)
 	}
 }

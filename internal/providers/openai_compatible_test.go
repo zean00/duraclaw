@@ -84,6 +84,9 @@ func TestOpenAICompatibleProviderDoesNotPromoteReasoning(t *testing.T) {
 	if resp.Content != "" {
 		t.Fatalf("content leaked reasoning: %q", resp.Content)
 	}
+	if resp.ReasoningContent != "hidden reasoning content" {
+		t.Fatalf("reasoning_content not preserved for provider continuity: %q", resp.ReasoningContent)
+	}
 }
 
 func TestUsageInfoParsesCostAliases(t *testing.T) {

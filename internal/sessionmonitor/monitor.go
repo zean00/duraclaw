@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"duraclaw/internal/db"
+	"duraclaw/internal/embeddings"
 	"duraclaw/internal/policy"
 	"duraclaw/internal/providers"
 )
@@ -23,8 +24,10 @@ type Store interface {
 	UpsertSessionSummary(ctx context.Context, customerID, sessionID, sourceRunID, summary string, metadata any) error
 	ListMemories(ctx context.Context, customerID, userID string, limit int) ([]db.Memory, error)
 	AddMemory(ctx context.Context, customerID, userID, sessionID, memoryType, content string, metadata any) (string, error)
+	SetMemoryEmbedding(ctx context.Context, memoryID, customerID, userID string, embedding []float32) error
 	ListPreferences(ctx context.Context, customerID, userID string, limit int) ([]db.Preference, error)
 	AddPreference(ctx context.Context, customerID, userID, sessionID, category, content string, condition, metadata any) (string, error)
+	SetPreferenceEmbedding(ctx context.Context, preferenceID, customerID, userID string, embedding []float32) error
 	AddObservabilityEvent(ctx context.Context, customerID, runID, eventType string, payload any) error
 	PolicyRulesForScope(ctx context.Context, customerID, agentInstanceID, enforcementMode string) ([]db.PolicyRule, error)
 	RecordPolicyEvaluation(ctx context.Context, ev db.PolicyEvaluation) error
@@ -34,6 +37,7 @@ type Service struct {
 	store               Store
 	providers           *providers.Registry
 	modelConfig         providers.ModelConfig
+	embedder            embeddings.Provider
 	policy              *policy.Engine
 	owner               string
 	idleFor             time.Duration
@@ -78,6 +82,13 @@ func NewService(store Store, registry *providers.Registry, modelConfig providers
 		store: store, providers: registry, modelConfig: modelConfig, policy: policy.NewEngine(store),
 		owner: owner, idleFor: 30 * time.Minute, leaseFor: 5 * time.Minute, limit: 25, messageLimit: 40, compactionThreshold: 12000,
 	}
+}
+
+func (s *Service) WithEmbedder(embedder embeddings.Provider) *Service {
+	if embedder != nil {
+		s.embedder = embedder
+	}
+	return s
 }
 
 func (s *Service) WithIdleFor(d time.Duration) *Service {
@@ -324,9 +335,11 @@ func (s *Service) extractMemoryAndPreferences(ctx context.Context, now time.Time
 		if memoryType == "" {
 			memoryType = "fact"
 		}
-		if _, err := s.store.AddMemory(ctx, session.CustomerID, session.UserID, session.SessionID, memoryType, content, map[string]any{"source": "session_monitor", "extracted_at": now.Format(time.RFC3339), "provider": resp.Provider, "model": resp.Model}); err != nil {
+		memoryID, err := s.store.AddMemory(ctx, session.CustomerID, session.UserID, session.SessionID, memoryType, content, map[string]any{"source": "session_monitor", "extracted_at": now.Format(time.RFC3339), "provider": resp.Provider, "model": resp.Model})
+		if err != nil {
 			return writtenMemories, writtenPreferences, err
 		}
+		s.setMemoryEmbeddingBestEffort(ctx, session, memoryID, content)
 		seenMemories[normalize(content)] = true
 		for _, key := range profileSemanticKeys(content, memoryType) {
 			seenMemories[key] = true
@@ -347,9 +360,11 @@ func (s *Service) extractMemoryAndPreferences(ctx context.Context, now time.Time
 		if _, err := s.policy.Enforce(ctx, "pre_memory_write", policy.Context{CustomerID: session.CustomerID, UserID: session.UserID, AgentInstanceID: session.AgentInstanceID, SessionID: session.SessionID, Content: content}); err != nil {
 			continue
 		}
-		if _, err := s.store.AddPreference(ctx, session.CustomerID, session.UserID, session.SessionID, category, content, p.Condition, map[string]any{"source": "session_monitor", "extracted_at": now.Format(time.RFC3339), "provider": resp.Provider, "model": resp.Model}); err != nil {
+		preferenceID, err := s.store.AddPreference(ctx, session.CustomerID, session.UserID, session.SessionID, category, content, p.Condition, map[string]any{"source": "session_monitor", "extracted_at": now.Format(time.RFC3339), "provider": resp.Provider, "model": resp.Model})
+		if err != nil {
 			return writtenMemories, writtenPreferences, err
 		}
+		s.setPreferenceEmbeddingBestEffort(ctx, session, preferenceID, content)
 		seenPreferences[key] = true
 		for _, semanticKey := range profileSemanticKeys(content, category) {
 			seenPreferences[semanticKey] = true
@@ -358,6 +373,28 @@ func (s *Service) extractMemoryAndPreferences(ctx context.Context, now time.Time
 	}
 	_ = s.store.AddObservabilityEvent(ctx, session.CustomerID, "", "session_memory_extracted", map[string]any{"session_id": session.SessionID, "memories": writtenMemories, "preferences": writtenPreferences})
 	return writtenMemories, writtenPreferences, nil
+}
+
+func (s *Service) setMemoryEmbeddingBestEffort(ctx context.Context, session db.MonitoredSession, memoryID, content string) {
+	if s == nil || s.embedder == nil || strings.TrimSpace(memoryID) == "" || strings.TrimSpace(content) == "" {
+		return
+	}
+	embedding, err := s.embedder.Embed(ctx, content)
+	if err != nil {
+		return
+	}
+	_ = s.store.SetMemoryEmbedding(ctx, memoryID, session.CustomerID, session.UserID, embedding)
+}
+
+func (s *Service) setPreferenceEmbeddingBestEffort(ctx context.Context, session db.MonitoredSession, preferenceID, content string) {
+	if s == nil || s.embedder == nil || strings.TrimSpace(preferenceID) == "" || strings.TrimSpace(content) == "" {
+		return
+	}
+	embedding, err := s.embedder.Embed(ctx, content)
+	if err != nil {
+		return
+	}
+	_ = s.store.SetPreferenceEmbedding(ctx, preferenceID, session.CustomerID, session.UserID, embedding)
 }
 
 func memoryTypeForCandidate(memoryType string) string {
@@ -582,7 +619,15 @@ func messageExcludedFromTranscript(raw json.RawMessage) bool {
 	if _, ok := payload["agent_delegation"]; ok {
 		return true
 	}
+	if isAgentDelegationInstructionText(messageText(raw)) {
+		return true
+	}
 	return false
+}
+
+func isAgentDelegationInstructionText(text string) bool {
+	text = strings.TrimSpace(text)
+	return strings.HasPrefix(text, "You are receiving an asynchronous delegated task from another agent")
 }
 
 func boolMapValue(data map[string]any, keys ...string) bool {

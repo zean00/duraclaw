@@ -95,6 +95,7 @@ func main() {
 	}()
 	schedulerService := scheduler.NewService(store, cfg.Hostname)
 	sessionMonitor := sessionmonitor.NewService(store, providerRegistry, modelConfig, cfg.Hostname).
+		WithEmbedder(embedder).
 		WithIdleFor(cfg.SessionMonitorIdleFor).
 		WithLimit(cfg.SessionMonitorLimit).
 		WithMessageLimit(cfg.SessionMonitorMessageLimit).

@@ -45,14 +45,20 @@ func (s *compactStore) ListMemories(context.Context, string, string, int) ([]db.
 }
 func (s *compactStore) AddMemory(_ context.Context, _, _, _, _, content string, _ any) (string, error) {
 	s.memories = append(s.memories, content)
-	return "", nil
+	return "mem-1", nil
+}
+func (s *compactStore) SetMemoryEmbedding(context.Context, string, string, string, []float32) error {
+	return nil
 }
 func (s *compactStore) ListPreferences(context.Context, string, string, int) ([]db.Preference, error) {
 	return nil, nil
 }
 func (s *compactStore) AddPreference(_ context.Context, _, _, _, _, content string, _ any, _ any) (string, error) {
 	s.preferences = append(s.preferences, content)
-	return "", nil
+	return "pref-1", nil
+}
+func (s *compactStore) SetPreferenceEmbedding(context.Context, string, string, string, []float32) error {
+	return nil
 }
 func (s *compactStore) AddObservabilityEvent(_ context.Context, _, _, eventType string, _ any) error {
 	s.events = append(s.events, eventType)

@@ -41,8 +41,9 @@ func (p OpenAICompatibleProvider) Chat(ctx context.Context, messages []Message, 
 	var payload struct {
 		Choices []struct {
 			Message struct {
-				Content   any        `json:"content"`
-				ToolCalls []ToolCall `json:"tool_calls"`
+				Content          any        `json:"content"`
+				ReasoningContent string     `json:"reasoning_content"`
+				ToolCalls        []ToolCall `json:"tool_calls"`
 			} `json:"message"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
@@ -57,10 +58,11 @@ func (p OpenAICompatibleProvider) Chat(ctx context.Context, messages []Message, 
 	choice := payload.Choices[0]
 	content := responseContentText(choice.Message.Content)
 	return &LLMResponse{
-		Content:      content,
-		ToolCalls:    choice.Message.ToolCalls,
-		FinishReason: choice.FinishReason,
-		Usage:        payload.Usage,
+		Content:          content,
+		ReasoningContent: choice.Message.ReasoningContent,
+		ToolCalls:        choice.Message.ToolCalls,
+		FinishReason:     choice.FinishReason,
+		Usage:            payload.Usage,
 	}, nil
 }
 
@@ -164,8 +166,9 @@ func parseStreamDelta(raw []byte) (StreamDelta, bool) {
 	var payload struct {
 		Choices []struct {
 			Delta struct {
-				Content   string `json:"content"`
-				ToolCalls []struct {
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content"`
+				ToolCalls        []struct {
 					Index    int    `json:"index"`
 					ID       string `json:"id"`
 					Type     string `json:"type"`
@@ -186,6 +189,7 @@ func parseStreamDelta(raw []byte) (StreamDelta, bool) {
 	if len(payload.Choices) > 0 {
 		choice := payload.Choices[0]
 		delta.Content = choice.Delta.Content
+		delta.ReasoningContent = choice.Delta.ReasoningContent
 		delta.FinishReason = choice.FinishReason
 		for _, call := range choice.Delta.ToolCalls {
 			delta.ToolCallDeltas = append(delta.ToolCallDeltas, ToolCallDelta{
@@ -197,7 +201,7 @@ func parseStreamDelta(raw []byte) (StreamDelta, bool) {
 			})
 		}
 	}
-	return delta, delta.Content != "" || len(delta.ToolCalls) > 0 || len(delta.ToolCallDeltas) > 0 || delta.FinishReason != "" || delta.Usage.TotalTokens > 0
+	return delta, delta.Content != "" || delta.ReasoningContent != "" || len(delta.ToolCalls) > 0 || len(delta.ToolCallDeltas) > 0 || delta.FinishReason != "" || delta.Usage.TotalTokens > 0
 }
 
 func (p OpenAICompatibleProvider) TranscribeAudio(ctx context.Context, req AudioTranscriptionRequest) (*AudioTranscriptionResult, error) {

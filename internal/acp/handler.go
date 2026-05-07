@@ -2664,7 +2664,7 @@ func (h *Handler) compactSession(w http.ResponseWriter, r *http.Request) {
 	}
 	service := h.sessionMonitor
 	if service == nil {
-		service = sessionmonitor.NewService(h.store, h.providers, h.modelConfig, "duraclaw-manual-session-compaction")
+		service = sessionmonitor.NewService(h.store, h.providers, h.modelConfig, "duraclaw-manual-session-compaction").WithEmbedder(h.embedder)
 	}
 	result, err := service.CompactSession(r.Context(), sessionmonitor.CompactRequest{
 		CustomerID:     payload.CustomerID,
