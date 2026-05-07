@@ -1800,7 +1800,7 @@ func (w *Worker) providerMessages(ctx context.Context, run *db.Run, currentText 
 	if channelContext := w.channelPromptContext(ctx, run); channelContext != "" {
 		promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: channelContext})
 	}
-	promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: currentTimePromptContext(time.Now())})
+	promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: w.currentTimePromptContext(ctx, run, time.Now())})
 	promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: persistenceToolPromptContext()})
 	if locationContext := locationPromptContext(run.Input); locationContext != "" {
 		promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: locationContext})
@@ -3568,11 +3568,130 @@ func (w *Worker) channelPromptContext(ctx context.Context, run *db.Run) string {
 }
 
 func (w *Worker) trustedRuntimeContext(ctx context.Context, run *db.Run) string {
-	return strings.Join(nonEmptyStrings(w.channelPromptContext(ctx, run), currentTimePromptContext(time.Now()), locationPromptContext(run.Input), emailPromptContext(run.Input), replyPromptContext(run.Input)), "\n\n")
+	return strings.Join(nonEmptyStrings(w.channelPromptContext(ctx, run), w.currentTimePromptContext(ctx, run, time.Now()), locationPromptContext(run.Input), emailPromptContext(run.Input), replyPromptContext(run.Input)), "\n\n")
 }
 
 func currentTimePromptContext(now time.Time) string {
-	return "Trusted runtime time context: current time is " + now.Format(time.RFC3339) + " (" + now.Location().String() + "). Convert relative dates such as today, tomorrow, and next week from this timestamp, and never create scheduled reminders in the past. When a precise local timezone conversion is needed for a scheduled action, use duraclaw.current_time with the user's timezone if available."
+	return trustedCurrentTimePrompt(now, nil)
+}
+
+func (w *Worker) currentTimePromptContext(ctx context.Context, run *db.Run, now time.Time) string {
+	return trustedCurrentTimePrompt(now, w.trustedTimeMetadata(ctx, run))
+}
+
+func trustedCurrentTimePrompt(now time.Time, metadata map[string]any) string {
+	timezone := trustedTimeTimezone(metadata)
+	loc := time.UTC
+	if timezone != "" {
+		if parsed, err := time.LoadLocation(timezone); err == nil {
+			loc = parsed
+		}
+	}
+	local := now.In(loc)
+	_, offsetSeconds := local.Zone()
+	lines := []string{
+		"Trusted runtime time context:",
+		"- UTC time: " + now.UTC().Format(time.RFC3339),
+		"- User timezone: " + loc.String(),
+		"- User local time: " + local.Format(time.RFC3339),
+		"- User local date: " + local.Format("2006-01-02") + " (" + local.Weekday().String() + ")",
+		"- UTC offset seconds: " + strconv.Itoa(offsetSeconds),
+	}
+	if label := trustedTimeLocationLabel(metadata); label != "" {
+		lines = append(lines, "- Active location: "+label)
+	}
+	lines = append(lines, "Convert relative dates such as today, tomorrow, tonight, next week, hari ini, besok, nanti malam, and pagi from the user local time above. Never create scheduled reminders or calendar events in the past. When a precise conversion for a different timezone or location is needed, use duraclaw.current_time.")
+	return strings.Join(lines, "\n")
+}
+
+func (w *Worker) trustedTimeMetadata(ctx context.Context, run *db.Run) map[string]any {
+	out := map[string]any{}
+	for key, value := range trustedTimeInputMetadata(run.Input) {
+		out[key] = value
+	}
+	if w.store != nil && run != nil {
+		if metadata, err := w.store.UserMetadata(ctx, run.CustomerID, run.UserID); err == nil {
+			if profile := mapValue(metadata, "profile"); len(profile) > 0 {
+				for key, value := range profile {
+					out[key] = value
+				}
+			}
+			for _, key := range []string{"timezone", "active_location", "base_location", "locale", "preferred_chat_language", "chat_language"} {
+				if value, ok := metadata[key]; ok {
+					out[key] = value
+				}
+			}
+		}
+	}
+	return out
+}
+
+func trustedTimeInputMetadata(raw json.RawMessage) map[string]any {
+	var input map[string]any
+	_ = json.Unmarshal(raw, &input)
+	if len(input) == 0 {
+		return nil
+	}
+	out := map[string]any{}
+	for _, source := range []map[string]any{mapValue(input, "metadata"), mapValue(input, "runtime_context"), mapValue(input, "trusted_runtime_context")} {
+		for key, value := range source {
+			out[key] = value
+		}
+	}
+	return out
+}
+
+func trustedTimeTimezone(metadata map[string]any) string {
+	for _, source := range []map[string]any{mapValue(metadata, "active_location"), metadata, mapValue(metadata, "base_location")} {
+		if timezone := stringMapValue(source, "timezone"); timezone != "" {
+			return timezone
+		}
+	}
+	return "UTC"
+}
+
+func trustedTimeLocationLabel(metadata map[string]any) string {
+	for _, key := range []string{"active_location", "base_location"} {
+		location := mapValue(metadata, key)
+		if len(location) == 0 {
+			continue
+		}
+		label := stringMapValue(location, "label")
+		city := stringMapValue(location, "city")
+		district := stringMapValue(location, "district")
+		kind := stringMapValue(location, "kind")
+		parts := uniqueNonEmptyStrings(label, city, district)
+		if len(parts) == 0 {
+			continue
+		}
+		out := strings.Join(parts, ", ")
+		if kind != "" {
+			out += " (" + kind + ")"
+		}
+		if timezone := stringMapValue(location, "timezone"); timezone != "" {
+			out += ", " + timezone
+		}
+		return out
+	}
+	return ""
+}
+
+func uniqueNonEmptyStrings(values ...string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		key := strings.ToLower(value)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 type locationContext struct {
@@ -4806,7 +4925,7 @@ func (w *Worker) isInternalTool(name string) bool {
 func (w *Worker) executeInternalTool(ctx context.Context, run *db.Run, stepID string, call providers.ToolCall) (string, error) {
 	switch call.Function.Name {
 	case "duraclaw.current_time":
-		return currentTimeToolResult(call.Function.Arguments, time.Now())
+		return w.currentTimeToolResult(ctx, run, call.Function.Arguments, time.Now())
 	case "duraclaw.ask_user":
 		question, _ := call.Function.Arguments["question"].(string)
 		if strings.TrimSpace(question) == "" {
@@ -4881,6 +5000,18 @@ func (w *Worker) executeInternalTool(ctx context.Context, run *db.Run, stepID st
 	}
 }
 
+func (w *Worker) currentTimeToolResult(ctx context.Context, run *db.Run, args map[string]any, now time.Time) (string, error) {
+	if strings.TrimSpace(stringArgFromMap(args, "timezone")) == "" {
+		args = cloneStringAnyMap(args)
+		if timezone := trustedTimeTimezone(w.trustedTimeMetadata(ctx, run)); timezone != "" {
+			if _, err := time.LoadLocation(timezone); err == nil {
+				args["timezone"] = timezone
+			}
+		}
+	}
+	return currentTimeToolResult(args, now)
+}
+
 func currentTimeToolResult(args map[string]any, now time.Time) (string, error) {
 	timezone, _ := args["timezone"].(string)
 	timezone = strings.TrimSpace(timezone)
@@ -4927,6 +5058,14 @@ func stringArgFromMap(args map[string]any, key string) string {
 	}
 	value, _ := args[key].(string)
 	return value
+}
+
+func cloneStringAnyMap(in map[string]any) map[string]any {
+	out := make(map[string]any, len(in)+1)
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func (w *Worker) completedNonRetryableTools(ctx context.Context, runID string) (map[string]db.ToolCallRecord, error) {

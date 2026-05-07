@@ -723,6 +723,54 @@ func TestCurrentTimeToolResultUsesTimezoneAndRelativeDates(t *testing.T) {
 	}
 }
 
+func TestTrustedCurrentTimePromptUsesUserTimezoneAndLocation(t *testing.T) {
+	now := time.Date(2026, 5, 5, 18, 30, 0, 0, time.UTC)
+	got := trustedCurrentTimePrompt(now, map[string]any{
+		"timezone": "UTC",
+		"active_location": map[string]any{
+			"label":    "Yogyakarta",
+			"city":     "Yogyakarta",
+			"kind":     "travel",
+			"timezone": "Asia/Jakarta",
+		},
+	})
+	for _, want := range []string{
+		"UTC time: 2026-05-05T18:30:00Z",
+		"User timezone: Asia/Jakarta",
+		"User local time: 2026-05-06T01:30:00+07:00",
+		"User local date: 2026-05-06 (Wednesday)",
+		"Active location: Yogyakarta (travel), Asia/Jakarta",
+		"besok",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %q in %s", want, got)
+		}
+	}
+}
+
+func TestTrustedCurrentTimePromptFallsBackToUTC(t *testing.T) {
+	now := time.Date(2026, 5, 5, 18, 30, 0, 0, time.UTC)
+	got := trustedCurrentTimePrompt(now, map[string]any{"timezone": "Mars/Olympus"})
+	for _, want := range []string{"User timezone: UTC", "User local time: 2026-05-05T18:30:00Z"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %q in %s", want, got)
+		}
+	}
+}
+
+func TestCurrentTimeToolIgnoresInvalidTrustedTimezone(t *testing.T) {
+	now := time.Date(2026, 5, 5, 18, 30, 0, 0, time.UTC)
+	w := &Worker{}
+	run := &db.Run{Input: json.RawMessage(`{"metadata":{"timezone":"Mars/Olympus"}}`)}
+	got, err := w.currentTimeToolResult(context.Background(), run, map[string]any{}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, `"timezone":"UTC"`) {
+		t.Fatalf("expected UTC fallback, got %s", got)
+	}
+}
+
 func TestCurrentTimeToolResultRejectsInvalidTimezone(t *testing.T) {
 	if _, err := currentTimeToolResult(map[string]any{"timezone": "Mars/Olympus"}, time.Now()); err == nil {
 		t.Fatal("expected invalid timezone error")
