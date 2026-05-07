@@ -256,8 +256,9 @@ Agent profile configuration is distinct from policy packs. Profiles describe how
 - Allowed and forbidden domains.
 - Guidance for out-of-scope responses.
 - Optional scope-judge model and confidence threshold.
+- Optional moderation rules, policies, confidence threshold, and warning response.
 
-Before the normal assistant model, tools, workflows, or MCP calls run, Duraclaw may call a scope judge model using the snapshotted profile configuration. If the judge determines the request is out of scope, the run completes with the configured out-of-scope response and no side-effecting tool/workflow/MCP execution occurs. The denied user message and refusal response are persisted for audit/display with `context_excluded`, so they are not used as future main-agent model context. Scope judging can still read denied turns during implicit follow-up checks to prevent a follow-up from bypassing the original denial.
+Before the normal assistant model, tools, workflows, recommendations, delegation, or MCP calls run, Duraclaw may call a combined scope, intent, and moderation judge using the snapshotted profile configuration. Local moderation word/pattern rules can block before that LLM call. If moderation denies a request, the raw user message is persisted for audit with `visible_in_history:false` and `context_excluded`, while the visible warning response is also `context_excluded`; both are skipped by prompt and session-summary context builders. If the judge determines the request is out of scope, the run completes with the configured out-of-scope response and no side-effecting execution occurs. The denied user message and refusal response are persisted for audit/display with `context_excluded`, so they are not used as future main-agent model context. Scope judging can still read scope-denied turns during implicit follow-up checks to prevent a follow-up from bypassing the original denial.
 
 A session belongs to one user and is shared across channels. The same user on WhatsApp, webchat, or another channel should map to the same Duraclaw session when Nexus resolves them as the same user.
 

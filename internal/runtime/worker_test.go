@@ -146,6 +146,46 @@ func TestScopeContextKeepsScopeDeniedMessages(t *testing.T) {
 	}
 }
 
+func TestLocalModerationBlocksConfiguredWordAndPattern(t *testing.T) {
+	cfg := agentProfileConfig{Moderation: moderationProfileConfig{
+		Enabled:             true,
+		BlockedWords:        []string{"kasar banget"},
+		BlockedPatterns:     []string{`(?i)dangerous\s+request`},
+		ConfidenceThreshold: 0.7,
+		ResponsePolicy:      moderationResponsePolicyCfg{Message: "Please keep it safe."},
+	}}
+	judgement, ok := localModerationJudgement("Ini kasar banget ya", cfg)
+	if !ok || judgement.Safe || judgement.ModerationConfidence != 1 || judgement.RecommendedResponse != "Please keep it safe." {
+		t.Fatalf("judgement=%#v ok=%v", judgement, ok)
+	}
+	judgement, ok = localModerationJudgement("This is a dangerous request", cfg)
+	if !ok || judgement.Safe || judgement.ModerationCategory != "blocked_pattern" {
+		t.Fatalf("judgement=%#v ok=%v", judgement, ok)
+	}
+	if _, ok := localModerationJudgement("assistant should not match class", agentProfileConfig{Moderation: moderationProfileConfig{Enabled: true, BlockedWords: []string{"ass"}}}); ok {
+		t.Fatal("blocked word matching should not match inside another word")
+	}
+}
+
+func TestModerationThresholdAndVisibilityFiltering(t *testing.T) {
+	cfg := agentProfileConfig{Moderation: moderationProfileConfig{Enabled: true, ConfidenceThreshold: 0.8}}
+	judgement := applyModerationThreshold(scopeJudgement{Safe: false, ModerationConfidence: 0.5}, cfg)
+	if !judgement.Safe {
+		t.Fatal("below-threshold moderation should not block")
+	}
+	judgement = applyModerationThreshold(scopeJudgement{Safe: false, ModerationConfidence: 0.9}, cfg)
+	if judgement.Safe {
+		t.Fatal("above-threshold moderation should block")
+	}
+	hidden, _ := json.Marshal(map[string]any{
+		"visible_in_history": false,
+		"parts":              []map[string]any{{"type": "text", "text": "hidden"}},
+	})
+	if !messageExcludedFromContext(hidden) {
+		t.Fatal("hidden visible history messages should be excluded from context")
+	}
+}
+
 func TestExtractTextForReminderDueRunUsesReminderMessageFromTrustedPrompt(t *testing.T) {
 	raw, _ := json.Marshal(map[string]any{
 		"event_type": "reminder_due",

@@ -48,6 +48,18 @@ func TestValidateAgentInstanceVersionSpecAllowsKnownConfigKeys(t *testing.T) {
 				"allow_sponsored":  true,
 				"disclosure_style": "soft",
 			},
+			"moderation": map[string]any{
+				"enabled":              true,
+				"mode":                 "hybrid",
+				"blocked_words":        []string{"bad word"},
+				"blocked_patterns":     []string{`(?i)dangerous\s+request`},
+				"blocked_topics":       []string{"harassment"},
+				"confidence_threshold": 0.7,
+				"model":                "openrouter/openai/gpt-4.1-mini",
+				"options":              map[string]any{"max_tokens": 128},
+				"policies":             []map[string]any{{"id": "harassment", "description": "Harassing or abusive content"}},
+				"response_policy":      map[string]any{"message": "Please keep it safe.", "guidance": "Be brief."},
+			},
 			"tool_selection": map[string]any{
 				"enabled":              true,
 				"mode":                 "hybrid",
@@ -87,12 +99,21 @@ func TestValidateAgentInstanceVersionSpecRejectsEnabledRecommendationWithoutTime
 }
 
 func TestValidateAgentInstanceVersionSpecRejectsInvalidProfileConfigValues(t *testing.T) {
-	err := ValidateAgentInstanceVersionSpecForTest(AgentInstanceVersionSpec{
-		CustomerID: "c", AgentInstanceID: "a",
-		ProfileConfig: map[string]any{"domain_scope": map[string]any{"allowed_domains": "support"}},
-	})
-	if err == nil {
-		t.Fatal("expected validation error")
+	cases := []map[string]any{
+		{"domain_scope": map[string]any{"allowed_domains": "support"}},
+		{"moderation": map[string]any{"confidence_threshold": 2}},
+		{"moderation": map[string]any{"blocked_patterns": []string{"["}}},
+		{"moderation": map[string]any{"policies": []any{"bad"}}},
+		{"moderation": map[string]any{"response_policy": "bad"}},
+	}
+	for _, profileConfig := range cases {
+		err := ValidateAgentInstanceVersionSpecForTest(AgentInstanceVersionSpec{
+			CustomerID: "c", AgentInstanceID: "a",
+			ProfileConfig: profileConfig,
+		})
+		if err == nil {
+			t.Fatalf("expected validation error for %#v", profileConfig)
+		}
 	}
 }
 

@@ -16,6 +16,15 @@ Policy packs remain the reusable enforcement and audit mechanism. Profiles are t
 - `domain_scope.out_of_scope_guidance`
 - `domain_scope.scope_judge_model`
 - `domain_scope.confidence_threshold`
+- `moderation.enabled`
+- `moderation.mode`
+- `moderation.blocked_words`
+- `moderation.blocked_patterns`
+- `moderation.blocked_topics`
+- `moderation.policies`
+- `moderation.confidence_threshold`
+- `moderation.model`
+- `moderation.response_policy`
 - `recommendation.enabled`
 - `recommendation.timeout_ms`
 - `recommendation.model`
@@ -38,6 +47,22 @@ Example:
     "scope_judge_model": "openrouter/openai/gpt-4.1-mini",
     "confidence_threshold": 0.6
   },
+  "moderation": {
+    "enabled": true,
+    "mode": "hybrid",
+    "blocked_words": ["configured disallowed phrase"],
+    "blocked_patterns": ["(?i)dangerous\\s+request"],
+    "blocked_topics": ["harassment", "dangerous instructions"],
+    "policies": [
+      {"id": "harassment", "description": "Harassing, abusive, or degrading messages"}
+    ],
+    "confidence_threshold": 0.7,
+    "model": "openrouter/openai/gpt-4.1-mini",
+    "response_policy": {
+      "message": "I cannot help with that message. Please keep the conversation respectful and safe.",
+      "guidance": "Be brief and do not repeat the unsafe content."
+    }
+  },
   "recommendation": {
     "enabled": true,
     "timeout_ms": 1500,
@@ -52,18 +77,32 @@ Example:
 
 Model refs are parsed as `provider/model`. If an agent is served through OpenRouter only, qualify profile model refs with `openrouter/`, for example `openrouter/openai/gpt-4.1-mini` or `openrouter/qwen/qwen3.6-35b-a3b`. Using `openai/gpt-4.1-mini` selects the Duraclaw `openai` provider, not the OpenRouter model namespace.
 
-## Scope Judge
+## Scope And Moderation Judge
 
-When a profile defines domain scope, Duraclaw calls an LLM scope judge before the main assistant model, tools, workflows, or MCP calls. The judge returns strict JSON:
+When a profile defines domain scope or LLM-backed moderation, Duraclaw calls a combined scope, intent, and moderation judge before the main assistant model, tools, workflows, recommendations, delegation, or MCP calls. Local `moderation.blocked_words` and `moderation.blocked_patterns` run first and can block without an LLM call. The combined judge returns strict JSON:
 
 ```json
 {
+  "intent": "direct",
   "in_scope": true,
   "confidence": 0.94,
   "reason": "The request is about product usage.",
-  "recommended_response": ""
+  "recommended_response": "",
+  "safe": true,
+  "moderation_confidence": 0.05,
+  "moderation_category": "",
+  "moderation_policy_id": "",
+  "moderation_reason": ""
 }
 ```
+
+If moderation marks a message unsafe above `moderation.confidence_threshold`, Duraclaw:
+
+- Persists moderation events and observability metadata.
+- Hides the user message from visible history with `visible_in_history: false` and excludes it from all future prompt, recommendation, and session-summary context with `context_excluded`.
+- Inserts a visible assistant warning from `moderation.response_policy.message` or the default safety warning.
+- Marks the warning `context_excluded`, so it remains visible but does not affect future model context.
+- Marks the run completed and skips the main model/tool/workflow/recommendation/MCP path.
 
 If the request is out of scope or below threshold, Duraclaw:
 

@@ -155,7 +155,7 @@ func TestScopeJudgeUsesTwoPassImplicitIntent(t *testing.T) {
 	}
 	src := string(raw)
 	for _, want := range []string{
-		`Intent              string  ` + "`json:\"intent\"`",
+		`Intent               string  ` + "`json:\"intent\"`",
 		`Classify intent as "direct"`,
 		`intent is "implicit", set in_scope to true`,
 		"trusted_policy",
@@ -202,6 +202,11 @@ func TestScopeRunsBeforeSideEffects(t *testing.T) {
 	if buildContext < 0 || mergeRisk < buildContext || toolGate < mergeRisk {
 		t.Fatalf("built context injection risk should be merged before side-effect gates")
 	}
+	moderation := strings.Index(src, "if moderationDenied(scope)")
+	outOfScope := strings.Index(src, "if !scope.InScope")
+	if moderation < 0 || outOfScope < 0 || moderation > outOfScope {
+		t.Fatalf("moderation denial should be handled before out-of-scope denial")
+	}
 }
 
 func TestOutOfScopeTurnsAreContextExcluded(t *testing.T) {
@@ -232,6 +237,24 @@ func TestOutOfScopeTurnsAreContextExcluded(t *testing.T) {
 	}
 	if strings.Contains(body, "finalizeAssistantResponse") {
 		t.Fatal("out-of-scope completion should not use normal finalizer")
+	}
+}
+
+func TestSessionSummarySkipsContextExcludedMessages(t *testing.T) {
+	raw, err := os.ReadFile("worker.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(raw)
+	start := strings.Index(src, "func (w *Worker) updateSessionSummary")
+	if start < 0 {
+		t.Fatal("updateSessionSummary not found")
+	}
+	body := src[start:]
+	check := strings.Index(body, "messageExcludedFromContext(msg.Content)")
+	text := strings.Index(body, "trimForSummary(messageText(msg.Content))")
+	if check < 0 || text < 0 || check > text {
+		t.Fatal("updateSessionSummary must filter context-excluded messages before summarizing text")
 	}
 }
 

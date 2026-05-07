@@ -138,6 +138,12 @@ Agent instance `model_config.primary`, `model_config.fallbacks`, and `profile_co
   "profile_config": {
     "domain_scope": {
       "scope_judge_model": "openrouter/openai/gpt-4.1-mini"
+    },
+    "moderation": {
+      "enabled": true,
+      "mode": "hybrid",
+      "model": "openrouter/openai/gpt-4.1-mini",
+      "confidence_threshold": 0.7
     }
   }
 }
@@ -145,7 +151,7 @@ Agent instance `model_config.primary`, `model_config.fallbacks`, and `profile_co
 
 The first path segment is parsed as the Duraclaw provider. Use `openrouter/openai/gpt-4.1-mini`, not `openai/gpt-4.1-mini`, when the runtime only registers the OpenRouter provider.
 
-For personal-assistant style profiles, use small, low-latency models for short chat, reminders, policy checks, and scope judging. Keep reasoning disabled unless a workflow step explicitly needs more deliberation.
+For personal-assistant style profiles, use small, low-latency models for short chat, reminders, policy checks, combined scope/moderation judging, and tool selection. Keep reasoning disabled unless a workflow step explicitly needs more deliberation.
 
 | Use case | Recommended model config |
 | --- | --- |

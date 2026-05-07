@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"regexp"
 	"strings"
 	"time"
 
@@ -225,7 +226,7 @@ func validateAgentInstanceVersionSpec(spec AgentInstanceVersionSpec) error {
 	if err := validatePolicyConfigValues(spec.PolicyConfig); err != nil {
 		return err
 	}
-	if err := validateObjectConfig("profile_config", spec.ProfileConfig, []string{"personality", "communication_style", "language_capabilities", "domain_scope", "recommendation", "tool_selection", "agent_delegation"}); err != nil {
+	if err := validateObjectConfig("profile_config", spec.ProfileConfig, []string{"personality", "communication_style", "language_capabilities", "domain_scope", "recommendation", "moderation", "tool_selection", "agent_delegation"}); err != nil {
 		return err
 	}
 	if err := validateProfileConfigValues(spec.ProfileConfig); err != nil {
@@ -312,6 +313,92 @@ func validateProfileConfigValues(value any) error {
 		if raw, ok := rec["block_sensitive_product_mix"]; ok {
 			if _, ok := raw.(bool); !ok {
 				return fmt.Errorf("profile_config.recommendation.block_sensitive_product_mix must be a boolean")
+			}
+		}
+	}
+	if raw, ok := obj["moderation"]; ok {
+		moderation, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("profile_config.moderation must be an object")
+		}
+		if raw, ok := moderation["enabled"]; ok {
+			if _, ok := raw.(bool); !ok {
+				return fmt.Errorf("profile_config.moderation.enabled must be a boolean")
+			}
+		}
+		if raw, ok := moderation["mode"]; ok {
+			mode, ok := raw.(string)
+			if !ok {
+				return fmt.Errorf("profile_config.moderation.mode must be a string")
+			}
+			switch strings.ToLower(strings.TrimSpace(mode)) {
+			case "", "hybrid", "rules", "llm":
+			default:
+				return fmt.Errorf("profile_config.moderation.mode must be hybrid, rules, or llm")
+			}
+		}
+		for _, key := range []string{"blocked_words", "blocked_patterns", "blocked_topics"} {
+			if raw, ok := moderation[key]; ok {
+				if err := validateStringArray("profile_config.moderation."+key, raw); err != nil {
+					return err
+				}
+			}
+		}
+		if raw, ok := moderation["blocked_patterns"]; ok {
+			items, _ := raw.([]any)
+			for _, item := range items {
+				pattern, _ := item.(string)
+				if _, err := regexp.Compile(pattern); err != nil {
+					return fmt.Errorf("profile_config.moderation.blocked_patterns contains invalid regex %q: %w", pattern, err)
+				}
+			}
+		}
+		if raw, ok := moderation["policies"]; ok {
+			items, ok := raw.([]any)
+			if !ok {
+				return fmt.Errorf("profile_config.moderation.policies must be an array")
+			}
+			for i, item := range items {
+				obj, ok := item.(map[string]any)
+				if !ok {
+					return fmt.Errorf("profile_config.moderation.policies[%d] must be an object", i)
+				}
+				for _, key := range []string{"id", "description"} {
+					if raw, ok := obj[key]; ok {
+						if _, ok := raw.(string); !ok {
+							return fmt.Errorf("profile_config.moderation.policies[%d].%s must be a string", i, key)
+						}
+					}
+				}
+			}
+		}
+		if raw, ok := moderation["confidence_threshold"]; ok {
+			threshold, ok := numericValue(raw)
+			if !ok || threshold < 0 || threshold > 1 {
+				return fmt.Errorf("profile_config.moderation.confidence_threshold must be between 0 and 1")
+			}
+		}
+		if raw, ok := moderation["model"]; ok {
+			if _, ok := raw.(string); !ok {
+				return fmt.Errorf("profile_config.moderation.model must be a string")
+			}
+		}
+		if raw, ok := moderation["options"]; ok {
+			if _, ok := raw.(map[string]any); !ok {
+				return fmt.Errorf("profile_config.moderation.options must be an object")
+			}
+		}
+		if raw, ok := moderation["response_policy"]; ok {
+			policy, ok := raw.(map[string]any)
+			if !ok {
+				return fmt.Errorf("profile_config.moderation.response_policy must be an object")
+			}
+			for _, key := range []string{"message", "guidance", "language"} {
+				if raw, ok := policy[key]; ok {
+					if _, ok := raw.(string); !ok {
+						return fmt.Errorf("profile_config.moderation.response_policy.%s must be a string", key)
+					}
+				}
 			}
 		}
 	}

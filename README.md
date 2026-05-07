@@ -21,7 +21,7 @@ Fast paths:
 - [Architecture overview](docs/architecture-overview.md)
 - [ACP and Admin API](docs/interfaces/api.md)
 - [Durable runs](docs/concepts/durable-runs.md)
-- [Agent profiles, scope, and recommendations](docs/concepts/agent-profiles.md)
+- [Agent profiles, scope, moderation, and recommendations](docs/concepts/agent-profiles.md)
 - [Reminders, scheduler jobs, and background runs](docs/concepts/reminders-jobs.md)
 - [Workflows](docs/concepts/workflows.md)
 - [Memory, preferences, and knowledge](docs/concepts/memory-preferences-knowledge.md)

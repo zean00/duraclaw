@@ -152,6 +152,10 @@ func TestStoreMessagesCheckpointsAndStepsWithPgxMock(t *testing.T) {
 	if err := store.MarkRunMessagesContextExcluded(ctx, "run-1", "user", map[string]any{"source": "scope_denied"}); err != nil {
 		t.Fatal(err)
 	}
+	mock.ExpectExec("UPDATE messages").WithArgs("run-1", pgxmock.AnyArg(), "user").WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	if err := store.MarkRunMessagesHiddenFromHistory(ctx, "run-1", "user", map[string]any{"source": "moderation_denied"}); err != nil {
+		t.Fatal(err)
+	}
 	mock.ExpectQuery("SELECT id").WithArgs("c1", "s1", 12).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "role", "content", "created_at"}).AddRow("msg-1", "user", []byte(`{"text":"hi"}`), now))
 	messages, err := store.RecentMessages(ctx, "c1", "s1", 0)
