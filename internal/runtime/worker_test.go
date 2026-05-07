@@ -125,6 +125,55 @@ func TestMessageExcludedFromContext(t *testing.T) {
 	}
 }
 
+func TestPromptHistoryPolicyForScope(t *testing.T) {
+	cfg := promptContextProfileConfig{
+		DirectHistory:     "none",
+		ImplicitHistory:   "summary_and_recent",
+		MaxRecentMessages: 8,
+	}
+	direct := promptHistoryPolicyForScope(cfg, scopeJudgement{Intent: "direct"})
+	if direct.IncludeSummary || direct.IncludeRecent {
+		t.Fatalf("direct policy=%#v", direct)
+	}
+	implicit := promptHistoryPolicyForScope(cfg, scopeJudgement{Intent: "implicit"})
+	if !implicit.IncludeSummary || !implicit.IncludeRecent {
+		t.Fatalf("implicit policy=%#v", implicit)
+	}
+	summaryOnly := promptHistoryPolicyForScope(promptContextProfileConfig{DirectHistory: "summary_only"}, scopeJudgement{Intent: "direct"})
+	if !summaryOnly.IncludeSummary || summaryOnly.IncludeRecent {
+		t.Fatalf("summary-only policy=%#v", summaryOnly)
+	}
+	recentOnly := promptHistoryPolicyForScope(promptContextProfileConfig{DirectHistory: "recent_only"}, scopeJudgement{Intent: "direct"})
+	if recentOnly.IncludeSummary || !recentOnly.IncludeRecent {
+		t.Fatalf("recent-only policy=%#v", recentOnly)
+	}
+}
+
+func TestNormalizePromptContextConfigDefaultsToCompatibility(t *testing.T) {
+	cfg := normalizePromptContextConfig(promptContextProfileConfig{})
+	if cfg.DirectHistory != "summary_and_recent" || cfg.ImplicitHistory != "summary_and_recent" || cfg.MaxRecentMessages != 8 {
+		t.Fatalf("cfg=%#v", cfg)
+	}
+	if promptContextNeedsIntentJudge(cfg) {
+		t.Fatal("compatible default should not force intent classification")
+	}
+	if !promptContextNeedsIntentJudge(promptContextProfileConfig{DirectHistory: "none", ImplicitHistory: "summary_and_recent"}) {
+		t.Fatal("distinct direct/implicit history modes should force intent classification")
+	}
+}
+
+func TestProfileContextQueryRespectsHistoryPolicy(t *testing.T) {
+	current := "remind me tomorrow"
+	summary := "Durable session summary:\nold unrelated discussion"
+	if got := profileContextQuery(current, summary, false); got != current {
+		t.Fatalf("direct no-summary query=%q", got)
+	}
+	got := profileContextQuery(current, summary, true)
+	if !strings.Contains(got, current) || !strings.Contains(got, "old unrelated discussion") {
+		t.Fatalf("summary query=%q", got)
+	}
+}
+
 func TestScopeContextKeepsScopeDeniedMessages(t *testing.T) {
 	denied, _ := json.Marshal(map[string]any{
 		"context_excluded": true,

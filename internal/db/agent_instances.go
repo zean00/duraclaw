@@ -226,7 +226,7 @@ func validateAgentInstanceVersionSpec(spec AgentInstanceVersionSpec) error {
 	if err := validatePolicyConfigValues(spec.PolicyConfig); err != nil {
 		return err
 	}
-	if err := validateObjectConfig("profile_config", spec.ProfileConfig, []string{"personality", "communication_style", "language_capabilities", "domain_scope", "recommendation", "moderation", "tool_selection", "agent_delegation", "reply_context"}); err != nil {
+	if err := validateObjectConfig("profile_config", spec.ProfileConfig, []string{"personality", "communication_style", "language_capabilities", "domain_scope", "recommendation", "moderation", "tool_selection", "agent_delegation", "reply_context", "prompt_context"}); err != nil {
 		return err
 	}
 	if err := validateProfileConfigValues(spec.ProfileConfig); err != nil {
@@ -456,6 +456,30 @@ func validateProfileConfigValues(value any) error {
 		if raw, ok := selection["options"]; ok {
 			if _, ok := raw.(map[string]any); !ok {
 				return fmt.Errorf("profile_config.tool_selection.options must be an object")
+			}
+		}
+	}
+	if raw, ok := obj["prompt_context"]; ok {
+		promptContext, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("profile_config.prompt_context must be an object")
+		}
+		for _, key := range []string{"direct_history", "implicit_history"} {
+			if raw, ok := promptContext[key]; ok {
+				mode, ok := raw.(string)
+				if !ok {
+					return fmt.Errorf("profile_config.prompt_context.%s must be a string", key)
+				}
+				switch strings.ToLower(strings.TrimSpace(mode)) {
+				case "", "none", "summary_only", "recent_only", "summary_and_recent":
+				default:
+					return fmt.Errorf("profile_config.prompt_context.%s must be none, summary_only, recent_only, or summary_and_recent", key)
+				}
+			}
+		}
+		if raw, ok := promptContext["max_recent_messages"]; ok {
+			if err := validateNonNegativeInteger("profile_config.prompt_context.max_recent_messages", raw); err != nil {
+				return err
 			}
 		}
 	}

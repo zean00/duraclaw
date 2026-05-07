@@ -83,6 +83,11 @@ func TestValidateAgentInstanceVersionSpecAllowsKnownConfigKeys(t *testing.T) {
 				"quote_original":  "when_missing_recent",
 				"max_quote_chars": 800,
 			},
+			"prompt_context": map[string]any{
+				"direct_history":      "none",
+				"implicit_history":    "summary_and_recent",
+				"max_recent_messages": 8,
+			},
 		},
 	})
 	if err != nil {
@@ -168,6 +173,12 @@ func TestValidateAgentInstanceVersionSpecRejectsInvalidToolSelectionValues(t *te
 		{"tool_selection": map[string]any{"tool_like_phrases": "search"}},
 		{"tool_selection": map[string]any{"followup_context_phrases": "when"}},
 		{"tool_selection": map[string]any{"router_guidance": []string{"bad"}}},
+		{"prompt_context": "bad"},
+		{"prompt_context": map[string]any{"direct_history": 1}},
+		{"prompt_context": map[string]any{"direct_history": "everything"}},
+		{"prompt_context": map[string]any{"implicit_history": "everything"}},
+		{"prompt_context": map[string]any{"max_recent_messages": -1}},
+		{"prompt_context": map[string]any{"max_recent_messages": 1.5}},
 		{"reply_context": "bad"},
 		{"reply_context": map[string]any{"quote_original": "sometimes"}},
 		{"reply_context": map[string]any{"max_quote_chars": 1.5}},

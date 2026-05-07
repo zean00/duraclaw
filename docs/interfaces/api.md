@@ -323,6 +323,8 @@ Agent versions may enable `profile_config.tool_selection` to shortlist authorize
 
 Agent versions may set `tool_config.interleave_tool_calls: true` to experiment with reasoning between tool calls. When enabled, a model response containing multiple tool calls is not executed as a full batch; Duraclaw executes only the first call, sends that result back into the loop, and requires the model to choose the next tool after seeing the result. The default is `false`.
 
+Agent versions may set `profile_config.prompt_context` to control ordinary session-summary and recent-message injection by scope intent. `direct_history` and `implicit_history` accept `none`, `summary_only`, `recent_only`, or `summary_and_recent`; both default to `summary_and_recent` for compatibility. `max_recent_messages` controls the recent-message fetch limit, defaulting to `8`. Distinct direct/implicit modes require intent classification even when no domain scope is configured.
+
 Agent delegation routes:
 
 - `PUT /admin/agent-delegation/handles/{handle}`

@@ -703,7 +703,7 @@ Retrieval should combine:
 - Shared knowledge.
 - Active run state.
 
-Implementation status: prompt context now includes agent profile instructions, recent messages, durable session summaries, stable memories, conditional preferences, text/hybrid-vector customer and shared knowledge, workflow manifests, MCP tool manifests, transfer notes, policy prompt instructions, and durable artifact representations. Knowledge chunks have full-text and pgvector index migrations, knowledge documents/chunks carry explicit `customer` or `shared` scope, workflow retrieval nodes prefer hybrid vector/text retrieval when an embedder is configured, and the idle session monitor can compact context, extract memories/preferences, and update active-time patterns.
+Implementation status: prompt context now includes agent profile instructions, configurable recent-message/session-summary history by scope intent, stable memories, conditional preferences, text/hybrid-vector customer and shared knowledge, workflow manifests, MCP tool manifests, transfer notes, policy prompt instructions, and durable artifact representations. Knowledge chunks have full-text and pgvector index migrations, knowledge documents/chunks carry explicit `customer` or `shared` scope, workflow retrieval nodes prefer hybrid vector/text retrieval when an embedder is configured, and the idle session monitor can compact context, extract memories/preferences, and update active-time patterns.
 
 ## Database Architecture
 

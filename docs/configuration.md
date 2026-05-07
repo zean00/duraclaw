@@ -331,6 +331,22 @@ Explicit reply context can quote the referenced original message only when neede
 
 `quote_original` accepts `never`, `when_missing_recent`, or `always`. The default is `when_missing_recent`, which keeps normal prompt history compact while recovering a capped original-message excerpt when a direct reply points at a message that has already fallen out of recent history or been summarized. Recovered excerpts are labeled as untrusted data; `max_quote_chars` has a hard maximum of 4000.
 
+Main assistant prompt history can be configured by scope intent:
+
+```json
+{
+  "profile_config": {
+    "prompt_context": {
+      "direct_history": "none",
+      "implicit_history": "summary_and_recent",
+      "max_recent_messages": 8
+    }
+  }
+}
+```
+
+Supported history modes are `none`, `summary_only`, `recent_only`, and `summary_and_recent`. The default is `summary_and_recent` for both direct and implicit turns to preserve existing behavior. Set `direct_history` to `none` when self-contained requests should not receive ordinary session summary or recent conversation in the main prompt; memories, preferences, policies, trusted runtime context, explicit reply context, knowledge, workflows, and run-local tool results still apply. If these modes differ on an agent without domain scope or LLM moderation, Duraclaw runs the intent classifier so implicit follow-ups still use the configured implicit history mode.
+
 ## Decision Eval CLI
 
 Use `cmd/duraclaw-eval` to compare models on the pre-response decisions that most affect runtime behavior:

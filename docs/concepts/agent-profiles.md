@@ -32,6 +32,9 @@ Policy packs remain the reusable enforcement and audit mechanism. Profiles are t
 - `recommendation.max_candidates`
 - `recommendation.allow_sponsored`
 - `recommendation.disclosure_style`
+- `prompt_context.direct_history`
+- `prompt_context.implicit_history`
+- `prompt_context.max_recent_messages`
 
 Example:
 
@@ -71,11 +74,22 @@ Example:
     "max_candidates": 5,
     "allow_sponsored": true,
     "disclosure_style": "soft"
+  },
+  "prompt_context": {
+    "direct_history": "none",
+    "implicit_history": "summary_and_recent",
+    "max_recent_messages": 8
   }
 }
 ```
 
 Model refs are parsed as `provider/model`. If an agent is served through OpenRouter only, qualify profile model refs with `openrouter/`, for example `openrouter/openai/gpt-4.1-mini` or `openrouter/qwen/qwen3.6-35b-a3b`. Using `openai/gpt-4.1-mini` selects the Duraclaw `openai` provider, not the OpenRouter model namespace.
+
+## Main Prompt Context
+
+The scope judge classifies each turn as `direct` or `implicit`. By default, the main assistant prompt remains backward-compatible and includes both durable session summary and recent conversation for both intents. Agent versions can override that with `profile_config.prompt_context`.
+
+History modes are `none`, `summary_only`, `recent_only`, and `summary_and_recent`. `direct_history: "none"` keeps self-contained requests focused on the current message plus stable profile context, memories, preferences, trusted runtime context, policies, workflows, knowledge, and explicit reply context. `implicit_history` should usually stay `summary_and_recent` because those turns depend on prior conversation. If an agent has no domain scope or LLM moderation but configures different direct/implicit history modes, Duraclaw still runs the intent classifier so follow-up turns are not treated as direct by default.
 
 ## Scope And Moderation Judge
 

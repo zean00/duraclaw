@@ -402,7 +402,7 @@ func (w *Worker) process(ctx context.Context, run *db.Run) (err error) {
 	} else {
 		w.enqueueAsyncRunEvent(ctx, run, "prompt_injection.recommendation_blocked", map[string]any{"reason": scope.InjectionReason})
 	}
-	messages, err := w.providerMessages(ctx, run, text)
+	messages, err := w.providerMessages(ctx, run, text, scope)
 	if err != nil {
 		return err
 	}
@@ -1774,8 +1774,14 @@ func (e runStoppedError) Error() string {
 	return fmt.Sprintf("run %s stopped: %s", e.runID, e.state)
 }
 
-func (w *Worker) providerMessages(ctx context.Context, run *db.Run, currentText string) ([]providers.Message, error) {
-	history, err := w.store.RecentMessages(ctx, run.CustomerID, run.SessionID, 8)
+func (w *Worker) providerMessages(ctx context.Context, run *db.Run, currentText string, scope scopeJudgement) ([]providers.Message, error) {
+	profileConfig, err := w.agentProfile(ctx, run)
+	if err != nil {
+		return nil, err
+	}
+	promptContext := normalizePromptContextConfig(profileConfig.PromptContext)
+	historyPolicy := promptHistoryPolicyForScope(promptContext, scope)
+	history, err := w.store.RecentMessages(ctx, run.CustomerID, run.SessionID, promptContext.MaxRecentMessages)
 	if err != nil {
 		return nil, err
 	}
@@ -1787,10 +1793,7 @@ func (w *Worker) providerMessages(ctx context.Context, run *db.Run, currentText 
 	if versionInstructions != "" {
 		promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: versionInstructions})
 	}
-	profileInstructions, err := w.agentProfileInstructions(ctx, run)
-	if err != nil {
-		return nil, err
-	}
+	profileInstructions := agentProfileInstructionsFromConfig(profileConfig)
 	if profileInstructions != "" {
 		promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: profileInstructions})
 	}
@@ -1815,12 +1818,14 @@ func (w *Worker) providerMessages(ctx context.Context, run *db.Run, currentText 
 	if strings.TrimSpace(workflowManifest) != "" {
 		promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: workflowManifest})
 	}
-	sessionSummary, err := w.sessionSummaryContext(ctx, run)
-	if err != nil {
-		return nil, err
-	}
-	if sessionSummary != "" {
-		promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: sessionSummary})
+	if historyPolicy.IncludeSummary {
+		sessionSummary, err := w.sessionSummaryContext(ctx, run)
+		if err != nil {
+			return nil, err
+		}
+		if sessionSummary != "" {
+			promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: sessionSummary})
+		}
 	}
 	knowledgeContext, err := w.knowledgeContext(ctx, run, currentText)
 	if err != nil {
@@ -1843,7 +1848,7 @@ func (w *Worker) providerMessages(ctx context.Context, run *db.Run, currentText 
 	if policyInstructions != "" {
 		promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: policyInstructions})
 	}
-	userProfile, err := w.userProfileContext(ctx, run, currentText)
+	userProfile, err := w.userProfileContext(ctx, run, currentText, historyPolicy.IncludeSummary)
 	if err != nil {
 		return nil, err
 	}
@@ -1857,15 +1862,17 @@ func (w *Worker) providerMessages(ctx context.Context, run *db.Run, currentText 
 	if len(instructions) > 0 {
 		promptMessages = append(promptMessages, prompt.Message{Role: "system", Content: strings.Join(instructions, "\n")})
 	}
-	for _, msg := range history {
-		if messageExcludedFromContext(msg.Content) {
-			continue
+	if historyPolicy.IncludeRecent {
+		for _, msg := range history {
+			if messageExcludedFromContext(msg.Content) {
+				continue
+			}
+			content := messageText(msg.Content)
+			if strings.TrimSpace(content) == "" {
+				continue
+			}
+			promptMessages = append(promptMessages, prompt.Message{Role: msg.Role, Content: content})
 		}
-		content := messageText(msg.Content)
-		if strings.TrimSpace(content) == "" {
-			continue
-		}
-		promptMessages = append(promptMessages, prompt.Message{Role: msg.Role, Content: content})
 	}
 	promptMessages = append(promptMessages, prompt.Message{Role: "user", Content: currentText})
 	compacted := prompt.CompactMessages(promptMessages, 24000)
@@ -2089,6 +2096,7 @@ type agentProfileConfig struct {
 	ToolSelection   toolSelectionProfileConfig   `json:"tool_selection"`
 	AgentDelegation agentDelegationProfileConfig `json:"agent_delegation"`
 	ReplyContext    replyContextProfileConfig    `json:"reply_context"`
+	PromptContext   promptContextProfileConfig   `json:"prompt_context"`
 }
 
 type moderationProfileConfig struct {
@@ -2151,6 +2159,17 @@ type replyContextProfileConfig struct {
 	MaxQuoteChars int    `json:"max_quote_chars"`
 }
 
+type promptContextProfileConfig struct {
+	DirectHistory     string `json:"direct_history"`
+	ImplicitHistory   string `json:"implicit_history"`
+	MaxRecentMessages int    `json:"max_recent_messages"`
+}
+
+type promptHistoryPolicy struct {
+	IncludeSummary bool
+	IncludeRecent  bool
+}
+
 func (w *Worker) agentProfile(ctx context.Context, run *db.Run) (agentProfileConfig, error) {
 	var cfg agentProfileConfig
 	version, err := w.store.AgentInstanceVersion(ctx, run.AgentInstanceVersionID)
@@ -2163,11 +2182,64 @@ func (w *Worker) agentProfile(ctx context.Context, run *db.Run) (agentProfileCon
 	return cfg, nil
 }
 
+func (w *Worker) promptContextConfig(ctx context.Context, run *db.Run) (promptContextProfileConfig, error) {
+	cfg, err := w.agentProfile(ctx, run)
+	if err != nil {
+		return promptContextProfileConfig{}, err
+	}
+	return normalizePromptContextConfig(cfg.PromptContext), nil
+}
+
+func normalizePromptContextConfig(cfg promptContextProfileConfig) promptContextProfileConfig {
+	cfg.DirectHistory = normalizePromptHistoryMode(cfg.DirectHistory)
+	cfg.ImplicitHistory = normalizePromptHistoryMode(cfg.ImplicitHistory)
+	if cfg.MaxRecentMessages <= 0 {
+		cfg.MaxRecentMessages = 8
+	}
+	return cfg
+}
+
+func normalizePromptHistoryMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "none", "summary_only", "recent_only", "summary_and_recent":
+		return strings.ToLower(strings.TrimSpace(mode))
+	default:
+		return "summary_and_recent"
+	}
+}
+
+func promptHistoryPolicyForScope(cfg promptContextProfileConfig, scope scopeJudgement) promptHistoryPolicy {
+	cfg = normalizePromptContextConfig(cfg)
+	mode := cfg.DirectHistory
+	if strings.EqualFold(strings.TrimSpace(scope.Intent), "implicit") {
+		mode = cfg.ImplicitHistory
+	}
+	switch mode {
+	case "none":
+		return promptHistoryPolicy{}
+	case "summary_only":
+		return promptHistoryPolicy{IncludeSummary: true}
+	case "recent_only":
+		return promptHistoryPolicy{IncludeRecent: true}
+	default:
+		return promptHistoryPolicy{IncludeSummary: true, IncludeRecent: true}
+	}
+}
+
+func promptContextNeedsIntentJudge(cfg promptContextProfileConfig) bool {
+	cfg = normalizePromptContextConfig(cfg)
+	return cfg.DirectHistory != cfg.ImplicitHistory
+}
+
 func (w *Worker) agentProfileInstructions(ctx context.Context, run *db.Run) (string, error) {
 	cfg, err := w.agentProfile(ctx, run)
 	if err != nil {
 		return "", err
 	}
+	return agentProfileInstructionsFromConfig(cfg), nil
+}
+
+func agentProfileInstructionsFromConfig(cfg agentProfileConfig) string {
 	var lines []string
 	if strings.TrimSpace(cfg.Personality) != "" {
 		lines = append(lines, "Personality: "+strings.TrimSpace(cfg.Personality))
@@ -2188,9 +2260,9 @@ func (w *Worker) agentProfileInstructions(ctx context.Context, run *db.Run) (str
 		lines = append(lines, "Out-of-scope response guidance: "+strings.TrimSpace(cfg.DomainScope.OutOfScopeGuidance))
 	}
 	if len(lines) == 0 {
-		return "", nil
+		return ""
 	}
-	return "Agent profile:\n- " + strings.Join(lines, "\n- "), nil
+	return "Agent profile:\n- " + strings.Join(lines, "\n- ")
 }
 
 type scopeJudgement struct {
@@ -2221,9 +2293,10 @@ func (w *Worker) judgeScope(ctx context.Context, run *db.Run, content string) (s
 		}
 	}
 	hasDomainScope := len(cfg.DomainScope.AllowedDomains) > 0 || len(cfg.DomainScope.ForbiddenDomains) > 0
+	needsPromptIntent := !trustedSystemRun(run.Input) && promptContextNeedsIntentJudge(cfg.PromptContext)
 	if !hasDomainScope {
 		risk := detectPromptInjectionRisk(content)
-		if !moderationEnabled || !moderationNeedsLLM(cfg.Moderation) {
+		if (!moderationEnabled || !moderationNeedsLLM(cfg.Moderation)) && !needsPromptIntent {
 			return scopeJudgement{Intent: "direct", InScope: true, Safe: true, Confidence: 1, Reason: "no domain scope configured", InjectionRisk: risk.Risky, InjectionReason: risk.Reason}, nil
 		}
 	}
@@ -3929,15 +4002,18 @@ func nonEmptyStrings(values ...string) []string {
 	return out
 }
 
-func (w *Worker) userProfileContext(ctx context.Context, run *db.Run, currentText string) (string, error) {
+func (w *Worker) userProfileContext(ctx context.Context, run *db.Run, currentText string, includeSessionSummary bool) (string, error) {
 	metadata, err := w.store.UserMetadata(ctx, run.CustomerID, run.UserID)
 	if err != nil {
 		return "", err
 	}
-	query := strings.TrimSpace(currentText)
-	if summary, err := w.sessionSummaryContext(ctx, run); err == nil && strings.TrimSpace(summary) != "" {
-		query = strings.TrimSpace(query + "\n" + summary)
+	var summary string
+	if includeSessionSummary {
+		if summary, err := w.sessionSummaryContext(ctx, run); err == nil && strings.TrimSpace(summary) != "" {
+			summary = strings.TrimSpace(summary)
+		}
 	}
+	query := profileContextQuery(currentText, summary, includeSessionSummary)
 	embedding := w.profileQueryEmbedding(ctx, query)
 	memories, err := w.store.RankMemories(ctx, run.CustomerID, run.UserID, query, embedding, 8)
 	if err != nil {
@@ -3986,6 +4062,14 @@ func (w *Worker) userProfileContext(ctx context.Context, run *db.Run, currentTex
 		}
 	}
 	return strings.TrimSpace(b.String()), nil
+}
+
+func profileContextQuery(currentText, sessionSummary string, includeSessionSummary bool) string {
+	query := strings.TrimSpace(currentText)
+	if includeSessionSummary && strings.TrimSpace(sessionSummary) != "" {
+		query = strings.TrimSpace(query + "\n" + strings.TrimSpace(sessionSummary))
+	}
+	return query
 }
 
 func (w *Worker) profileQueryEmbedding(ctx context.Context, query string) []float32 {
