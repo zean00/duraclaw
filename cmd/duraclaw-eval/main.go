@@ -547,15 +547,15 @@ func mockToolDecision(tc toolEvalCase) toolDecision {
 
 func toolCandidates() []toolDefinition {
 	return []toolDefinition{
-		{Name: "create_reminder", Description: "Create a reminder, alarm, or scheduled notification.", Metadata: map[string]any{"tags": []string{"reminder", "schedule", "alarm", "future", "recurring", "repeat"}, "side_effect": "write"}},
-		{Name: "update_reminder", Description: "Update an existing reminder by reference or recent reminder context.", Metadata: map[string]any{"tags": []string{"reminder", "schedule", "alarm", "update", "recurring", "repeat"}, "side_effect": "write"}},
-		{Name: "remember", Description: "Persist a stable user fact for future context.", Metadata: map[string]any{"tags": []string{"memory", "stable_fact", "profile"}, "side_effect": "write"}},
-		{Name: "save_preference", Description: "Persist a durable user preference, style, habit, or choice.", Metadata: map[string]any{"tags": []string{"preference", "style", "habit"}, "side_effect": "write"}},
-		{Name: "list_memories", Description: "List recent stable factual memories for the current user.", Metadata: map[string]any{"tags": []string{"memory", "read"}, "side_effect": "read"}},
-		{Name: "list_preferences", Description: "List recent conditional preferences for the current user.", Metadata: map[string]any{"tags": []string{"preference", "read"}, "side_effect": "read"}},
-		{Name: "duraclaw.current_time", Description: "Return current time and date for relative scheduling.", Metadata: map[string]any{"tags": []string{"time", "date", "timezone", "relative_time", "schedule", "reminder"}, "trigger_phrases": []string{"today", "tomorrow", "tonight", "next week", "besok", "lusa", "nanti", "pagi", "malam", "jam"}, "side_effect": "read"}},
-		{Name: "duraclaw.ask_user", Description: "Pause the run and ask the user for clarification before side effects.", Metadata: map[string]any{"tags": []string{"clarification", "missing_details"}, "side_effect": "control"}},
-		{Name: "duraclaw.run_workflow", Description: "Start a configured durable workflow.", Metadata: map[string]any{"tags": []string{"workflow", "process"}, "side_effect": "write"}},
+		{Name: "create_reminder", Description: "Create a reminder, alarm, or scheduled notification.", Metadata: map[string]any{"tags": []string{"reminder", "schedule", "alarm", "future", "recurring", "repeat"}, "intent_labels": []string{"create_reminder", "schedule_reminder"}, "side_effect": "write"}},
+		{Name: "update_reminder", Description: "Update an existing reminder by reference or recent reminder context.", Metadata: map[string]any{"tags": []string{"reminder", "schedule", "alarm", "update", "recurring", "repeat"}, "intent_labels": []string{"update_reminder", "reschedule_reminder"}, "side_effect": "write"}},
+		{Name: "remember", Description: "Persist a stable user fact for future context.", Metadata: map[string]any{"tags": []string{"memory", "stable_fact", "profile"}, "intent_labels": []string{"remember", "save_memory"}, "side_effect": "write"}},
+		{Name: "save_preference", Description: "Persist a durable user preference, style, habit, or choice.", Metadata: map[string]any{"tags": []string{"preference", "style", "habit"}, "intent_labels": []string{"save_preference", "set_preference"}, "side_effect": "write"}},
+		{Name: "list_memories", Description: "List recent stable factual memories for the current user.", Metadata: map[string]any{"tags": []string{"memory", "read"}, "intent_labels": []string{"list_memories", "read_memory"}, "side_effect": "read"}},
+		{Name: "list_preferences", Description: "List recent conditional preferences for the current user.", Metadata: map[string]any{"tags": []string{"preference", "read"}, "intent_labels": []string{"list_preferences", "read_preferences"}, "side_effect": "read"}},
+		{Name: "duraclaw.current_time", Description: "Return current time and date for relative scheduling.", Metadata: map[string]any{"tags": []string{"time", "date", "timezone", "relative_time", "schedule", "reminder"}, "trigger_phrases": []string{"today", "tomorrow", "tonight", "next week", "besok", "lusa", "nanti", "pagi", "malam", "jam"}, "intent_labels": []string{"current_time", "resolve_time"}, "side_effect": "read"}},
+		{Name: "duraclaw.ask_user", Description: "Pause the run and ask the user for clarification before side effects.", Metadata: map[string]any{"tags": []string{"clarification", "missing_details"}, "intent_labels": []string{"ask_user", "clarify"}, "side_effect": "control"}},
+		{Name: "duraclaw.run_workflow", Description: "Start a configured durable workflow.", Metadata: map[string]any{"tags": []string{"workflow", "process"}, "intent_labels": []string{"run_workflow", "start_workflow"}, "side_effect": "write"}},
 	}
 }
 

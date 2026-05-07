@@ -56,6 +56,7 @@ When `profile_config.tool_selection.enabled` is true, Duraclaw shortlists the al
   "tool_metadata": {
     "customer_notes.capture": {
       "tags": ["note", "todo", "capture"],
+      "intent_labels": ["capture_note", "save_todo"],
       "trigger_phrases": ["note this", "add todo", "capture this"],
       "negative_phrases": ["remind me"],
       "examples": ["save this as a customer note", "capture this follow-up item"],
@@ -68,9 +69,11 @@ When `profile_config.tool_selection.enabled` is true, Duraclaw shortlists the al
 
 These hints affect ranking only. They cannot expose tools hidden by agent version config, admin access rules, MCP access rules, prompt-injection blocking, or policy enforcement.
 
-Use `profile_config.tool_selection.tool_like_phrases` for agent-level verbs that indicate the user likely wants a tool, `followup_context_phrases` for short clarification-answer detection, and `router_guidance` for trusted LLM-router instructions such as how to distinguish memories, preferences, notes, or customer-specific workflow tools. Use `tool_config.tool_metadata.trigger_phrases` and `negative_phrases` for per-tool routing hints.
+Use `profile_config.tool_selection.tool_like_phrases` for agent-level verbs that indicate the user likely wants a tool, `followup_context_phrases` for short clarification-answer detection, and `router_guidance` for trusted LLM-router instructions such as how to distinguish memories, preferences, notes, or customer-specific workflow tools. Use `tool_config.tool_metadata.trigger_phrases` and `negative_phrases` for per-tool lexical routing hints, and `intent_labels` for stable business intents that can be classified by the optional intent-classifier method.
 
 For slang, mixed-language, or indirect wording experiments, set `profile_config.tool_selection.method` to `hypothetical`. Duraclaw then asks the configured selection model to describe needed tool capabilities and ranks those descriptions against the authorized tool catalog plus `tool_metadata.examples`; the existing `mode: hybrid` / `mode: llm` router behavior remains available for fallback and benchmarking.
+
+For agents with a known intent taxonomy, set `profile_config.tool_selection.method` to `intent_classifier` and add `intent_labels` to candidate tools. Duraclaw asks the configured selection model to classify the turn against those labels, then exposes only matching authorized tools above the configured confidence threshold. This keeps domain wording out of runtime code while giving the selector a compact target set.
 
 For experiments with dependent tools, set `tool_config.interleave_tool_calls` to `true`. This changes only multi-call model responses: Duraclaw executes the first proposed tool, returns its result to the model, and lets the model decide the next call instead of executing the whole proposed batch. Leave it disabled for the lowest-latency path.
 

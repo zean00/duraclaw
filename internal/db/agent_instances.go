@@ -437,9 +437,9 @@ func validateProfileConfigValues(value any) error {
 		if raw, ok := selection["method"]; ok {
 			method := strings.ToLower(strings.TrimSpace(fmt.Sprint(raw)))
 			switch method {
-			case "", "heuristic", "hypothetical":
+			case "", "heuristic", "hypothetical", "intent_classifier":
 			default:
-				return fmt.Errorf("profile_config.tool_selection.method must be heuristic or hypothetical")
+				return fmt.Errorf("profile_config.tool_selection.method must be heuristic, hypothetical, or intent_classifier")
 			}
 		}
 		if raw, ok := selection["max_tools"]; ok {
@@ -642,7 +642,7 @@ func validateToolConfigValues(value any) error {
 			if !ok {
 				return fmt.Errorf("tool_config.tool_metadata.%s must be an object", name)
 			}
-			for _, key := range []string{"tags", "trigger_phrases", "negative_phrases", "examples", "conflicts_with"} {
+			for _, key := range []string{"tags", "trigger_phrases", "negative_phrases", "examples", "conflicts_with", "intent_labels"} {
 				if raw, ok := meta[key]; ok {
 					if err := validateStringArray("tool_config.tool_metadata."+name+"."+key, raw); err != nil {
 						return err

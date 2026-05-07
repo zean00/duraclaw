@@ -288,7 +288,7 @@ Duraclaw's built-in shortlist metadata is intentionally domain-neutral. Domain p
     "tool_selection": {
       "enabled": true,
       "mode": "hybrid",
-      "method": "heuristic",
+      "method": "intent_classifier",
       "model": "openrouter/openai/gpt-4.1-mini",
       "max_tools": 6,
       "confidence_threshold": 0.65,
@@ -311,8 +311,9 @@ Methods:
 
 - `heuristic`: current lexical metadata scorer over tool name, description, tags, trigger phrases, and negative phrases.
 - `hypothetical`: experimental query-rewrite scorer. Duraclaw asks the configured model to describe hypothetical tool capabilities needed for the turn, then locally ranks those descriptions against authorized tool descriptions, tags, trigger phrases, and examples. This keeps the existing `llm` router available for benchmarking and fallback.
+- `intent_classifier`: experimental intent-label scorer. Duraclaw asks the configured model to classify the turn against the `intent_labels` declared on authorized tools, then locally exposes tools whose labels match above `confidence_threshold`. This is useful when users use slang, mixed language, or indirect wording but the agent owner can define stable business intents such as `create_reminder`, `update_reminder`, or `search_catalog`. If no authorized candidate declares intent labels, Duraclaw falls back to the normal shortlist/router path instead of suppressing every tool.
 
-If `model` is empty, router fallback and hypothetical capability generation use the run's normal `model_config`. Router failures are non-fatal; Duraclaw falls back to the deterministic shortlist and records a `tool_selection.completed` run event. When an embedder is configured, hypothetical ranking caches authorized tool-document embeddings in process and recomputes only the per-turn hypothetical query embeddings. Tool selection only controls which tools are exposed to the main model; Duraclaw does not force `tool_choice: required` solely because one write-capable tool remains visible.
+If `model` is empty, router fallback, hypothetical capability generation, and intent classification use the run's normal `model_config`. Router failures are non-fatal; Duraclaw falls back to the deterministic shortlist and records a `tool_selection.completed` run event. When an embedder is configured, hypothetical ranking caches authorized tool-document embeddings in process and recomputes only the per-turn hypothetical query embeddings. Tool selection only controls which tools are exposed to the main model; Duraclaw does not force `tool_choice: required` solely because one write-capable tool remains visible.
 
 `tool_like_phrases` controls short-turn detection for obvious tool requests, `followup_context_phrases` controls when a short reply should include recent conversation for tool routing, and `router_guidance` adds trusted, domain-specific instructions to the LLM router prompt. Keep language, slang, customer-domain terms, and personal-assistant routing policy in these fields or in `tool_config.tool_metadata`; runtime defaults stay domain-neutral.
 
@@ -373,17 +374,20 @@ Tool metadata can add deterministic domain hints without granting access:
     "tool_metadata": {
       "create_reminder": {
         "tags": ["reminder", "schedule", "alarm"],
+        "intent_labels": ["create_reminder", "schedule_reminder"],
         "trigger_phrases": ["remind me", "ingatkan", "besok", "tomorrow"],
         "negative_phrases": ["reminder_reference", "change reminder", "update reminder"],
         "conflicts_with": ["remember", "update_reminder"]
       },
       "update_reminder": {
         "tags": ["reminder", "schedule", "update"],
+        "intent_labels": ["update_reminder", "reschedule_reminder"],
         "trigger_phrases": ["reminder_reference", "change reminder", "update reminder", "ubah", "ganti"],
         "conflicts_with": ["create_reminder", "remember"]
       },
       "duraclaw.ask_user": {
         "tags": ["clarification", "missing_details"],
+        "intent_labels": ["ask_user", "clarify"],
         "trigger_phrases": ["tomorrow morning", "besok pagi"],
         "conflicts_with": ["create_reminder"]
       }

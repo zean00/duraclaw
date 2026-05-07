@@ -24,6 +24,7 @@ func TestValidateAgentInstanceVersionSpecAllowsKnownConfigKeys(t *testing.T) {
 				"trigger_phrases":  []string{"ping"},
 				"negative_phrases": []string{"ignore"},
 				"examples":         []string{"run a ping check"},
+				"intent_labels":    []string{"debug_echo"},
 				"side_effect":      "read",
 				"conflicts_with":   []string{"remember"},
 			}},
@@ -203,6 +204,7 @@ func TestValidateAgentInstanceVersionSpecRejectsInvalidToolMetadata(t *testing.T
 		{"tool_metadata": map[string]any{"echo": map[string]any{"trigger_phrases": "ping"}}},
 		{"tool_metadata": map[string]any{"echo": map[string]any{"negative_phrases": "ignore"}}},
 		{"tool_metadata": map[string]any{"echo": map[string]any{"examples": "ping"}}},
+		{"tool_metadata": map[string]any{"echo": map[string]any{"intent_labels": "debug_echo"}}},
 		{"tool_metadata": map[string]any{"echo": map[string]any{"side_effect": true}}},
 	}
 	for _, toolConfig := range cases {

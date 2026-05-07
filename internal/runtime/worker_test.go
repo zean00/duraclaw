@@ -988,6 +988,72 @@ func TestHypotheticalToolSelectionRanksCapabilityDescriptions(t *testing.T) {
 	}
 }
 
+func TestIntentToolSelectionRanksIntentLabels(t *testing.T) {
+	defs := []providers.ToolDefinition{
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "create_reminder", Description: "Create a scheduled reminder."}},
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "remember", Description: "Persist a memory."}},
+	}
+	metadata := map[string]toolSelectionMetadata{
+		"create_reminder": {IntentLabels: []string{"schedule_reminder"}, SideEffect: "write"},
+		"remember":        {IntentLabels: []string{"save_memory"}, SideEffect: "write"},
+	}
+	decision := rankIntentToolSelection(defs, metadata, intentToolSelectionResponse{
+		MatchedIntents: []matchedToolIntent{{Label: "schedule_reminder", Confidence: 0.91}},
+		Confidence:     0.91,
+		Reason:         "schedule intent",
+	}, toolSelectionProfileConfig{MaxTools: 2, ConfidenceThreshold: 0.65})
+	if len(decision.SelectedTools) != 1 || decision.SelectedTools[0] != "create_reminder" || !decision.ForceToolUse {
+		t.Fatalf("decision=%#v", decision)
+	}
+	if len(decision.MatchedIntents) != 1 || decision.MatchedIntents[0].Label != "schedule_reminder" {
+		t.Fatalf("matched=%#v", decision.MatchedIntents)
+	}
+}
+
+func TestIntentToolSelectionNoConfidentIntentSuppressesTools(t *testing.T) {
+	defs := []providers.ToolDefinition{
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "create_reminder", Description: "Create a scheduled reminder."}},
+	}
+	metadata := map[string]toolSelectionMetadata{"create_reminder": {IntentLabels: []string{"schedule_reminder"}, SideEffect: "write"}}
+	decision := rankIntentToolSelection(defs, metadata, intentToolSelectionResponse{
+		MatchedIntents: []matchedToolIntent{{Label: "schedule_reminder", Confidence: 0.2}},
+		Confidence:     0.9,
+		Reason:         "plain chat",
+	}, toolSelectionProfileConfig{ConfidenceThreshold: 0.65})
+	if len(decision.SelectedTools) != 0 || decision.Confidence < 0.65 {
+		t.Fatalf("decision=%#v", decision)
+	}
+}
+
+func TestIntentLabelsForHashedMCPNames(t *testing.T) {
+	defs := []providers.ToolDefinition{
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "mcp__wulan_integrations__quran_search_sources__376678c8", Description: "MCP wulan_integrations.quran.search_sources: Search Quran sources."}},
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "mcp__wulan_integrations__quran_write_note__11111111", Description: "MCP wulan_integrations.quran.write_note: Write Quran note."}},
+	}
+	metadata := map[string]toolSelectionMetadata{
+		"quran.search_sources": {IntentLabels: []string{"search_quran"}, SideEffect: "write", ConflictsWith: []string{"quran.write_note"}},
+		"quran.write_note":     {IntentLabels: []string{"write_quran_note"}, SideEffect: "write"},
+	}
+	materialized := materializeToolSelectionMetadata(defs, metadata)
+	labels := intentLabelsForToolDefinitions(defs, materialized)
+	if len(labels) != 2 || labels[0] != "search_quran" || labels[1] != "write_quran_note" {
+		t.Fatalf("labels=%#v", labels)
+	}
+	decision := rankIntentToolSelection(defs, materialized, intentToolSelectionResponse{
+		MatchedIntents: []matchedToolIntent{
+			{Label: "search_quran", Confidence: 0.92},
+			{Label: "write_quran_note", Confidence: 0.91},
+		},
+		Confidence: 0.92,
+	}, toolSelectionProfileConfig{MaxTools: 2, ConfidenceThreshold: 0.65})
+	if len(decision.SelectedTools) != 1 || decision.SelectedTools[0] != "mcp__wulan_integrations__quran_search_sources__376678c8" {
+		t.Fatalf("selected=%#v", decision.SelectedTools)
+	}
+	if !decision.ForceToolUse {
+		t.Fatalf("expected alias-matched write metadata to force tool use: %#v", decision)
+	}
+}
+
 type countingEmbedder struct {
 	embeddings.Provider
 	counts map[string]int
