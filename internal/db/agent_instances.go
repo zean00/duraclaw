@@ -412,10 +412,17 @@ func validateProfileConfigValues(value any) error {
 				return fmt.Errorf("profile_config.tool_selection.enabled must be a boolean")
 			}
 		}
-		for _, key := range []string{"mode", "method", "model"} {
+		for _, key := range []string{"mode", "method", "model", "router_guidance"} {
 			if raw, ok := selection[key]; ok {
 				if _, ok := raw.(string); !ok {
 					return fmt.Errorf("profile_config.tool_selection.%s must be a string", key)
+				}
+			}
+		}
+		for _, key := range []string{"tool_like_phrases", "followup_context_phrases"} {
+			if raw, ok := selection[key]; ok {
+				if err := validateStringArray("profile_config.tool_selection."+key, raw); err != nil {
+					return err
 				}
 			}
 		}

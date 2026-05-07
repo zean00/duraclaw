@@ -68,6 +68,12 @@ func TestValidateAgentInstanceVersionSpecAllowsKnownConfigKeys(t *testing.T) {
 				"model":                "openrouter/openai/gpt-4.1-mini",
 				"max_tools":            6,
 				"confidence_threshold": 0.65,
+				"tool_like_phrases":    []string{"search", "cari"},
+				"followup_context_phrases": []string{
+					"what time",
+					"jam berapa",
+				},
+				"router_guidance": "Select save_preference for durable style preferences.",
 				"options": map[string]any{
 					"max_tokens": 128,
 					"reasoning":  map[string]any{"max_tokens": 64},
@@ -159,6 +165,9 @@ func TestValidateAgentInstanceVersionSpecRejectsInvalidToolSelectionValues(t *te
 		{"tool_selection": map[string]any{"max_tools": 1.5}},
 		{"tool_selection": map[string]any{"confidence_threshold": 2}},
 		{"tool_selection": map[string]any{"options": "bad"}},
+		{"tool_selection": map[string]any{"tool_like_phrases": "search"}},
+		{"tool_selection": map[string]any{"followup_context_phrases": "when"}},
+		{"tool_selection": map[string]any{"router_guidance": []string{"bad"}}},
 		{"reply_context": "bad"},
 		{"reply_context": map[string]any{"quote_original": "sometimes"}},
 		{"reply_context": map[string]any{"max_quote_chars": 1.5}},

@@ -68,6 +68,8 @@ When `profile_config.tool_selection.enabled` is true, Duraclaw shortlists the al
 
 These hints affect ranking only. They cannot expose tools hidden by agent version config, admin access rules, MCP access rules, prompt-injection blocking, or policy enforcement.
 
+Use `profile_config.tool_selection.tool_like_phrases` for agent-level verbs that indicate the user likely wants a tool, `followup_context_phrases` for short clarification-answer detection, and `router_guidance` for trusted LLM-router instructions such as how to distinguish memories, preferences, notes, or customer-specific workflow tools. Use `tool_config.tool_metadata.trigger_phrases` and `negative_phrases` for per-tool routing hints.
+
 For slang, mixed-language, or indirect wording experiments, set `profile_config.tool_selection.method` to `hypothetical`. Duraclaw then asks the configured selection model to describe needed tool capabilities and ranks those descriptions against the authorized tool catalog plus `tool_metadata.examples`; the existing `mode: hybrid` / `mode: llm` router behavior remains available for fallback and benchmarking.
 
 For experiments with dependent tools, set `tool_config.interleave_tool_calls` to `true`. This changes only multi-call model responses: Duraclaw executes the first proposed tool, returns its result to the model, and lets the model decide the next call instead of executing the whole proposed batch. Leave it disabled for the lowest-latency path.

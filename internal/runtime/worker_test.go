@@ -705,6 +705,9 @@ func personalAssistantToolSelectionMetadata() map[string]toolSelectionMetadata {
 		TriggerPhrases:  []string{"preference", "prefer", "preferensi", "suka", "tidak suka", "call me", "panggil", "gaya bahasa", "format jawaban"},
 		NegativePhrases: []string{"ingatkan", "remind me"},
 	})
+	out["duraclaw.current_time"] = mergeToolSelectionMetadata(out["duraclaw.current_time"], toolSelectionMetadata{
+		TriggerPhrases: []string{"today", "tomorrow", "tonight", "next week", "besok", "lusa", "nanti", "pagi", "malam", "jam"},
+	})
 	return out
 }
 
@@ -921,12 +924,49 @@ func TestHypotheticalToolSelectionCachesToolDocumentEmbeddings(t *testing.T) {
 }
 
 func TestModelCallOptionsDoesNotForceSingleWriteTool(t *testing.T) {
-	options := modelCallOptions(map[string]any{"temperature": 0.2})
+	options := modelCallOptions(map[string]any{"temperature": 0.2}, []providers.ToolDefinition{
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "create_reminder"}},
+	}, false)
 	if _, ok := options["tool_choice"]; ok {
 		t.Fatalf("tool_choice should not be forced from visible tool count: %#v", options)
 	}
 	if options["temperature"] != 0.2 {
 		t.Fatalf("base options not preserved: %#v", options)
+	}
+}
+
+func TestModelCallOptionsForcesSelectedSingleWriteTool(t *testing.T) {
+	options := modelCallOptions(nil, []providers.ToolDefinition{
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "capture_progress"}},
+	}, true)
+	choice, ok := options["tool_choice"].(map[string]any)
+	if !ok || choice["type"] != "function" {
+		t.Fatalf("tool_choice=%#v", options["tool_choice"])
+	}
+	function, ok := choice["function"].(map[string]any)
+	if !ok || function["name"] != "capture_progress" {
+		t.Fatalf("function choice=%#v", choice["function"])
+	}
+	if options["parallel_tool_calls"] != false {
+		t.Fatalf("parallel_tool_calls=%#v", options["parallel_tool_calls"])
+	}
+}
+
+func TestForcedToolUseStopsAfterSuccessfulToolExecution(t *testing.T) {
+	defs := []providers.ToolDefinition{
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "create_reminder"}},
+	}
+	if !shouldRequireToolUse(true, false, 1, defs) {
+		t.Fatal("expected first forced iteration to require tool use")
+	}
+	if !shouldRequireToolUse(true, false, 2, defs) {
+		t.Fatal("expected one retry to require tool use when no tool was executed")
+	}
+	if shouldRequireToolUse(true, true, 2, defs) {
+		t.Fatal("successful tool execution must stop forced tool choice")
+	}
+	if shouldRequireToolUse(true, false, 3, defs) {
+		t.Fatal("forced tool choice should not continue indefinitely")
 	}
 }
 
@@ -936,6 +976,37 @@ func TestRouterToolSelectionCanSelectNoTools(t *testing.T) {
 	decision := toolSelectionDecision{Confidence: 0.9, Reason: "plain chat"}
 	if len(selected) != 0 || decision.Confidence < defaultToolSelectionConfidence {
 		t.Fatalf("expected confident no-tool decision to be representable")
+	}
+}
+
+func TestToolSelectionUsesHistoryForShortClarification(t *testing.T) {
+	history := []db.Message{
+		{Role: "assistant", Content: json.RawMessage(`{"parts":[{"type":"text","text":"Sebelum aku bikin pengingatnya, kamu di zona waktu apa ya?"}]}`)},
+		{Role: "user", Content: json.RawMessage(`{"text":"Jakarta"}`)},
+	}
+	cfg := toolSelectionProfileConfig{FollowupContextPhrases: []string{"zona waktu"}}
+	if !shouldUseRecentConversationForToolSelection("Jakarta", history, cfg) {
+		t.Fatal("expected short clarification answer to use recent conversation")
+	}
+}
+
+func TestToolSelectionDoesNotUseHistoryForThanks(t *testing.T) {
+	history := []db.Message{
+		{Role: "assistant", Content: json.RawMessage(`{"parts":[{"type":"text","text":"Siap, pengingatnya sudah dibuat."}]}`)},
+		{Role: "user", Content: json.RawMessage(`{"text":"terima kasih"}`)},
+	}
+	cfg := toolSelectionProfileConfig{FollowupContextPhrases: []string{"zona waktu"}}
+	if shouldUseRecentConversationForToolSelection("terima kasih", history, cfg) {
+		t.Fatal("generic thanks should not inherit old tool intent")
+	}
+}
+
+func TestToolSelectionDoesNotUseHistoryWithoutConfiguredFollowupPhrases(t *testing.T) {
+	history := []db.Message{
+		{Role: "assistant", Content: json.RawMessage(`{"parts":[{"type":"text","text":"Sebelum aku bikin pengingatnya, kamu di zona waktu apa ya?"}]}`)},
+	}
+	if shouldUseRecentConversationForToolSelection("Jakarta", history, toolSelectionProfileConfig{}) {
+		t.Fatal("follow-up phrase matching should be configured by agent metadata")
 	}
 }
 

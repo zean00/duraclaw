@@ -407,6 +407,7 @@ func (w *Worker) process(ctx context.Context, run *db.Run) (err error) {
 		return err
 	}
 	var toolDefs []providers.ToolDefinition
+	var forceToolUse bool
 	if broadcastGeneration {
 		w.enqueueAsyncRunEvent(ctx, run, "broadcast_generation.tools_blocked", map[string]any{"reason": "system broadcast generation must only produce message copy"})
 	} else if sessionGreeting {
@@ -418,18 +419,20 @@ func (w *Worker) process(ctx context.Context, run *db.Run) (err error) {
 		if err != nil {
 			return err
 		}
-		toolDefs, err = w.selectToolDefinitions(ctx, run, scope, text, toolDefs)
+		selectedTools, err := w.selectToolDefinitions(ctx, run, scope, text, toolDefs)
 		if err != nil {
 			return err
 		}
+		toolDefs = selectedTools.Defs
 		toolDefs, err = w.applyToolAliasesForRun(ctx, run, toolDefs)
 		if err != nil {
 			return err
 		}
+		forceToolUse = selectedTools.ForceToolUse
 	} else {
 		w.enqueueAsyncRunEvent(ctx, run, "prompt_injection.tools_blocked", map[string]any{"reason": scope.InjectionReason})
 	}
-	resp, err := w.agentLoopPhase(ctx, run, text, messages, toolDefs)
+	resp, err := w.agentLoopPhase(ctx, run, text, messages, toolDefs, forceToolUse)
 	if err != nil {
 		return err
 	}
@@ -859,7 +862,18 @@ func allowedToolCallNames(defs []providers.ToolDefinition) map[string]bool {
 	return out
 }
 
-func (w *Worker) agentLoopPhase(ctx context.Context, run *db.Run, text string, messages []providers.Message, toolDefs []providers.ToolDefinition) (*providers.LLMResponse, error) {
+func allowedToolCallNameList(defs []providers.ToolDefinition) []string {
+	out := make([]string, 0, len(defs))
+	for _, def := range defs {
+		name := strings.TrimSpace(def.Function.Name)
+		if name != "" {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+func (w *Worker) agentLoopPhase(ctx context.Context, run *db.Run, text string, messages []providers.Message, toolDefs []providers.ToolDefinition, forceToolUse bool) (*providers.LLMResponse, error) {
 	var resp *providers.LLMResponse
 	maxIterations, err := w.maxIterationsForRun(ctx, run)
 	if err != nil {
@@ -869,6 +883,7 @@ func (w *Worker) agentLoopPhase(ctx context.Context, run *db.Run, text string, m
 	if err != nil {
 		return nil, err
 	}
+	toolExecuted := false
 	for iteration := 1; iteration <= maxIterations; iteration++ {
 		w.emitAgentActivity(ctx, run, "model", "started", map[string]any{"iteration": iteration, "tools_available": len(toolDefs)})
 		modelStepID, err := w.store.StartRunStep(ctx, run.ID, "model_call", map[string]any{"messages": len(messages), "tools": len(toolDefs), "iteration": iteration})
@@ -881,7 +896,8 @@ func (w *Worker) agentLoopPhase(ctx context.Context, run *db.Run, text string, m
 			w.emitAgentActivity(ctx, run, "model", "failed", map[string]any{"iteration": iteration, "error": err.Error()})
 			return nil, err
 		}
-		resp, err = w.chat(ctx, run, messages, toolDefs, map[string]any{"messages": len(messages), "tools": len(toolDefs), "iteration": iteration})
+		requireToolUse := shouldRequireToolUse(forceToolUse, toolExecuted, iteration, toolDefs)
+		resp, err = w.chat(ctx, run, messages, toolDefs, map[string]any{"messages": len(messages), "tools": len(toolDefs), "iteration": iteration, "force_tool_use": requireToolUse}, requireToolUse)
 		if err != nil {
 			msg := err.Error()
 			_ = w.store.CompleteRunStep(context.Background(), run.ID, modelStepID, "failed", nil, &msg)
@@ -902,6 +918,11 @@ func (w *Worker) agentLoopPhase(ctx context.Context, run *db.Run, text string, m
 			return nil, err
 		}
 		if len(resp.ToolCalls) == 0 {
+			if requireToolUse {
+				w.emitAgentActivity(ctx, run, "tool", "required_missing", map[string]any{"iteration": iteration, "tools": allowedToolCallNameList(toolDefs)})
+				messages = append(messages, providers.Message{Role: "system", Content: "You must call the available tool to complete this user request. Do not claim the action is done until the tool result is available."})
+				continue
+			}
 			break
 		}
 		toolCalls, suppressedToolCalls := toolCallsForExecution(resp.ToolCalls, interleaveToolCalls, allowedToolCallNames(toolDefs))
@@ -935,6 +956,7 @@ func (w *Worker) agentLoopPhase(ctx context.Context, run *db.Run, text string, m
 			w.emitAgentActivity(ctx, run, "tool", "failed", map[string]any{"iteration": iteration, "error": err.Error()})
 			return nil, err
 		}
+		toolExecuted = true
 		if err := w.store.CompleteRunStep(ctx, run.ID, toolStepID, "succeeded", map[string]any{"tool_results": len(toolResults), "suppressed_tool_calls": suppressedToolCalls, "interleaved": interleaveToolCalls && suppressedToolCalls > 0, "iteration": iteration}, nil); err != nil {
 			return nil, err
 		}
@@ -951,6 +973,10 @@ func (w *Worker) agentLoopPhase(ctx context.Context, run *db.Run, text string, m
 		}
 	}
 	return resp, nil
+}
+
+func shouldRequireToolUse(forceToolUse bool, toolExecuted bool, iteration int, toolDefs []providers.ToolDefinition) bool {
+	return forceToolUse && !toolExecuted && iteration <= 2 && len(toolDefs) > 0
 }
 
 func (w *Worker) enqueueAsyncObservability(ctx context.Context, run *db.Run, eventType string, payload any) {
@@ -1400,7 +1426,7 @@ func (w *Worker) emitDelegationStopped(ctx context.Context, run *db.Run, delegat
 	return err
 }
 
-func (w *Worker) chat(ctx context.Context, run *db.Run, messages []providers.Message, toolDefs []providers.ToolDefinition, summary map[string]any) (*providers.LLMResponse, error) {
+func (w *Worker) chat(ctx context.Context, run *db.Run, messages []providers.Message, toolDefs []providers.ToolDefinition, summary map[string]any, requireToolUse bool) (*providers.LLMResponse, error) {
 	ctx, span := observability.StartSpan(ctx, "model_call", attribute.String("duraclaw.run_id", run.ID))
 	defer span.End()
 	modelConfig, err := w.modelConfigForRun(ctx, run)
@@ -1431,7 +1457,7 @@ func (w *Worker) chat(ctx context.Context, run *db.Run, messages []providers.Mes
 		} else {
 			var resp *providers.LLMResponse
 			started := time.Now()
-			options := modelCallOptions(modelConfig.Options)
+			options := modelCallOptions(modelConfig.Options, toolDefs, requireToolUse)
 			if streamer, ok := provider.(providers.StreamingProvider); ok {
 				resp, err = w.chatStream(ctx, run, streamer, messages, toolDefs, candidate.Model, options)
 			} else if durable, ok := provider.(providers.DurableProvider); ok {
@@ -1479,10 +1505,23 @@ func (w *Worker) chat(ctx context.Context, run *db.Run, messages []providers.Mes
 	return nil, lastErr
 }
 
-func modelCallOptions(base map[string]any) map[string]any {
+func modelCallOptions(base map[string]any, toolDefs []providers.ToolDefinition, requireToolUse bool) map[string]any {
 	options := map[string]any{}
 	for key, value := range base {
 		options[key] = value
+	}
+	if requireToolUse && len(toolDefs) > 0 {
+		if len(toolDefs) == 1 {
+			options["tool_choice"] = map[string]any{
+				"type": "function",
+				"function": map[string]any{
+					"name": toolDefs[0].Function.Name,
+				},
+			}
+		} else {
+			options["tool_choice"] = "required"
+		}
+		options["parallel_tool_calls"] = false
 	}
 	return options
 }
@@ -2090,13 +2129,16 @@ type recommendationProfileConfig struct {
 }
 
 type toolSelectionProfileConfig struct {
-	Enabled             bool           `json:"enabled"`
-	Mode                string         `json:"mode"`
-	Method              string         `json:"method"`
-	Model               string         `json:"model"`
-	MaxTools            int            `json:"max_tools"`
-	ConfidenceThreshold float64        `json:"confidence_threshold"`
-	Options             map[string]any `json:"options"`
+	Enabled                bool           `json:"enabled"`
+	Mode                   string         `json:"mode"`
+	Method                 string         `json:"method"`
+	Model                  string         `json:"model"`
+	MaxTools               int            `json:"max_tools"`
+	ConfidenceThreshold    float64        `json:"confidence_threshold"`
+	ToolLikePhrases        []string       `json:"tool_like_phrases"`
+	FollowupContextPhrases []string       `json:"followup_context_phrases"`
+	RouterGuidance         string         `json:"router_guidance"`
+	Options                map[string]any `json:"options"`
 }
 
 type agentDelegationProfileConfig struct {
