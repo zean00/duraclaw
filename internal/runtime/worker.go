@@ -635,7 +635,15 @@ func (w *Worker) completeModerationDeniedRun(ctx context.Context, run *db.Run, s
 	if err != nil {
 		return err
 	}
-	if err := w.emitFinalOutbound(ctx, run, msgID, response); err != nil {
+	if err := w.emitFinalOutboundWithMetadata(ctx, run, msgID, response, map[string]any{
+		"context_excluded":      true,
+		"visible_in_history":    true,
+		"source":                "moderation_warning",
+		"moderation_category":   scope.ModerationCategory,
+		"moderation_policy_id":  scope.ModerationPolicyID,
+		"moderation_confidence": scope.ModerationConfidence,
+		"moderation_reason":     scope.ModerationReason,
+	}); err != nil {
 		return err
 	}
 	if err := w.store.CompleteRunWithMessage(ctx, run.ID, msgID); err != nil {
@@ -1008,6 +1016,10 @@ func (w *Worker) enqueueAsyncRunEvent(ctx context.Context, run *db.Run, eventTyp
 }
 
 func (w *Worker) emitFinalOutbound(ctx context.Context, run *db.Run, messageID, text string) error {
+	return w.emitFinalOutboundWithMetadata(ctx, run, messageID, text, nil)
+}
+
+func (w *Worker) emitFinalOutboundWithMetadata(ctx context.Context, run *db.Run, messageID, text string, metadata map[string]any) error {
 	if w.outbound == nil {
 		return nil
 	}
@@ -1041,6 +1053,7 @@ func (w *Worker) emitFinalOutbound(ctx context.Context, run *db.Run, messageID, 
 			"text":       text,
 			"parts":      []map[string]any{{"type": "text", "text": text}},
 			"artifacts":  artifacts,
+			"metadata":   metadata,
 		},
 	})
 	return err

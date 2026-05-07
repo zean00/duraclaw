@@ -3313,9 +3313,24 @@ func (h *Handler) acpRunResponse(ctx context.Context, run *db.Run) map[string]an
 			if text := messageContentText(content); text != "" {
 				out["output"] = text
 			}
+			if metadata := messageContentMetadata(content); len(metadata) > 0 {
+				out["metadata"] = metadata
+			}
 		}
 	}
 	return out
+}
+
+func messageContentMetadata(content json.RawMessage) map[string]any {
+	var payload map[string]any
+	if err := json.Unmarshal(content, &payload); err != nil {
+		return nil
+	}
+	metadata, _ := payload["metadata"].(map[string]any)
+	if len(metadata) == 0 {
+		return nil
+	}
+	return metadata
 }
 
 func messageContentText(content json.RawMessage) string {

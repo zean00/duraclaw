@@ -208,7 +208,7 @@ DURACLAW_EVAL_MODEL=MiniMaxAI/MiniMax-M2.7 \
 go run ./cmd/duraclaw-eval -mode all
 ```
 
-The eval emits JSON lines for scope judgement and tool-selection cases and exits non-zero if any case fails.
+The eval emits JSON lines for combined scope/moderation judgement and tool-selection cases, includes latency/score summaries, and exits non-zero if any case fails. Use `-mode moderation` to run only moderation-focused cases; its `moderation_score` measures safe/unsafe accuracy separately from scope routing.
 
 Admin endpoints are open by default for local development. Set this in shared or production environments:
 

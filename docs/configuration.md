@@ -307,9 +307,9 @@ If `model` is empty, router fallback uses the run's normal `model_config`. Route
 
 ## Decision Eval CLI
 
-Use `cmd/duraclaw-eval` to compare models on the two pre-response decisions that most affect runtime behavior:
+Use `cmd/duraclaw-eval` to compare models on the pre-response decisions that most affect runtime behavior:
 
-- Scope judgement: direct versus implicit intent, in-scope versus out-of-scope classification, and second-pass implicit context handling.
+- Combined scope/moderation judgement: direct versus implicit intent, in-scope versus out-of-scope classification, safe versus unsafe classification, and second-pass implicit context handling.
 - Tool selection: selecting the smallest useful tool set for reminders, reminder updates, preferences, and plain chat.
 
 Example with Together AI:
@@ -321,7 +321,7 @@ DURACLAW_EVAL_MODEL=MiniMaxAI/MiniMax-M2.7 \
 go run ./cmd/duraclaw-eval -mode all
 ```
 
-The command prints one JSON object per case plus a final `summary` object. It exits non-zero when any case fails, which makes it suitable for CI or manual model comparison. Use `-mode scope` or `-mode tools` to run only one slice.
+The command prints one JSON object per case plus a final `summary` object. It exits non-zero when any case fails, which makes it suitable for CI or manual model comparison. Use `-mode scope`, `-mode moderation`, or `-mode tools` to run a slice. `-mode moderation` runs only moderation-focused cases, including benign policy mentions and unsafe implicit-context cases. The `summary` includes `scope_score`, `moderation_score`, `tool_score`, case counts, and total latency; `moderation_score` measures only safe/unsafe accuracy and is not diluted by intent or scope-routing points.
 
 Tool metadata can add deterministic domain hints without granting access:
 
