@@ -203,6 +203,37 @@ func TestScopeRunsBeforeSideEffects(t *testing.T) {
 	}
 }
 
+func TestOutOfScopeTurnsAreContextExcluded(t *testing.T) {
+	raw, err := os.ReadFile("worker.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(raw)
+	start := strings.Index(src, "func (w *Worker) completeOutOfScopeRun")
+	if start < 0 {
+		t.Fatal("completeOutOfScopeRun not found")
+	}
+	end := start + 1600
+	if end > len(src) {
+		end = len(src)
+	}
+	body := src[start:end]
+	for _, want := range []string{
+		"MarkRunMessagesContextExcluded(ctx, run.ID, \"user\"",
+		`"context_excluded": true`,
+		`"source":           "scope_denied"`,
+		"InsertMessage(ctx, run.CustomerID, run.SessionID, run.ID, \"assistant\"",
+		"completeDelegationChildRun(ctx, run, response)",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("out-of-scope completion missing %q", want)
+		}
+	}
+	if strings.Contains(body, "finalizeAssistantResponse") {
+		t.Fatal("out-of-scope completion should not use normal finalizer")
+	}
+}
+
 func TestChannelContextStaysOutOfBuiltUserText(t *testing.T) {
 	raw, err := os.ReadFile("worker.go")
 	if err != nil {

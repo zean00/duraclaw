@@ -569,7 +569,30 @@ func (w *Worker) completeOutOfScopeRun(ctx context.Context, run *db.Run, scope s
 	}
 	_ = w.store.AddEvent(ctx, run.ID, "scope.denied", map[string]any{"reason": scope.Reason, "confidence": scope.Confidence})
 	_ = w.store.AddObservabilityEvent(ctx, run.CustomerID, run.ID, "scope_denied", map[string]any{"reason": scope.Reason, "confidence": scope.Confidence})
-	return w.finalizeAssistantResponse(ctx, run, response)
+	exclusion := map[string]any{
+		"context_excluded": true,
+		"source":           "scope_denied",
+		"scope_reason":     scope.Reason,
+		"scope_confidence": scope.Confidence,
+	}
+	if err := w.store.MarkRunMessagesContextExcluded(ctx, run.ID, "user", exclusion); err != nil {
+		return err
+	}
+	msgID, err := w.store.InsertMessage(ctx, run.CustomerID, run.SessionID, run.ID, "assistant", map[string]any{
+		"context_excluded": true,
+		"parts":            []map[string]any{{"type": "text", "text": response}},
+		"metadata":         exclusion,
+	})
+	if err != nil {
+		return err
+	}
+	if err := w.emitFinalOutbound(ctx, run, msgID, response); err != nil {
+		return err
+	}
+	if err := w.store.CompleteRunWithMessage(ctx, run.ID, msgID); err != nil {
+		return err
+	}
+	return w.completeDelegationChildRun(ctx, run, response)
 }
 
 func (w *Worker) createMentionDelegations(ctx context.Context, run *db.Run, text string) ([]db.AgentDelegation, error) {
@@ -2078,12 +2101,58 @@ Return only JSON with keys: intent string ("direct" or "implicit"), in_scope boo
 	}
 	var judgement scopeJudgement
 	if err := json.Unmarshal([]byte(extractJSONObject(result.Response.Content)), &judgement); err != nil {
-		return scopeJudgement{Intent: "direct", InScope: false, Confidence: 0, Reason: "scope judge returned invalid JSON", RecommendedResponse: "I cannot determine whether that request is within my configured scope, so I cannot help with it."}, result, nil
+		return fallbackScopeJudgement(cfg, content, "scope judge returned invalid JSON"), result, nil
 	}
 	if strings.TrimSpace(judgement.Intent) == "" {
 		judgement.Intent = "direct"
 	}
 	return judgement, result, nil
+}
+
+func fallbackScopeJudgement(cfg agentProfileConfig, content, reason string) scopeJudgement {
+	if fallbackScopeAllowsPersonalCapture(cfg, content) {
+		return scopeJudgement{Intent: "direct", InScope: true, Confidence: 0.9, Reason: reason + "; allowed by deterministic personal-capture fallback"}
+	}
+	response := strings.TrimSpace(cfg.DomainScope.OutOfScopeGuidance)
+	if response == "" {
+		response = "I cannot help with that request because it is outside my configured scope."
+	}
+	return scopeJudgement{Intent: "direct", InScope: false, Confidence: 0.9, Reason: reason, RecommendedResponse: response}
+}
+
+func fallbackScopeAllowsPersonalCapture(cfg agentProfileConfig, content string) bool {
+	allowedText := strings.ToLower(strings.Join(cfg.DomainScope.AllowedDomains, " "))
+	if !strings.Contains(allowedText, "note") &&
+		!strings.Contains(allowedText, "catatan") &&
+		!strings.Contains(allowedText, "capture") &&
+		!strings.Contains(allowedText, "todo") &&
+		!strings.Contains(allowedText, "reminder") &&
+		!strings.Contains(allowedText, "pengingat") {
+		return false
+	}
+	text := strings.ToLower(strings.TrimSpace(content))
+	if text == "" {
+		return false
+	}
+	personalCaptureTerms := []string{
+		"catet",
+		"catat",
+		"note",
+		"save this",
+		"simpan",
+		"bookmark",
+		"todo",
+		"to-do",
+		"ingatkan",
+		"remind me",
+		"pengingat",
+	}
+	for _, term := range personalCaptureTerms {
+		if strings.Contains(text, term) {
+			return true
+		}
+	}
+	return false
 }
 
 func fallbackErrorPayload(result *providers.FallbackResult, err error) map[string]any {

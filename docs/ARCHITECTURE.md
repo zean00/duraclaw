@@ -257,7 +257,7 @@ Agent profile configuration is distinct from policy packs. Profiles describe how
 - Guidance for out-of-scope responses.
 - Optional scope-judge model and confidence threshold.
 
-Before the normal assistant model, tools, workflows, or MCP calls run, Duraclaw may call a scope judge model using the snapshotted profile configuration. If the judge determines the request is out of scope, the run completes with the configured out-of-scope response and no side-effecting tool/workflow/MCP execution occurs.
+Before the normal assistant model, tools, workflows, or MCP calls run, Duraclaw may call a scope judge model using the snapshotted profile configuration. If the judge determines the request is out of scope, the run completes with the configured out-of-scope response and no side-effecting tool/workflow/MCP execution occurs. The denied user message and refusal response are persisted for audit/display with `context_excluded`, so they are not used as future model context.
 
 A session belongs to one user and is shared across channels. The same user on WhatsApp, webchat, or another channel should map to the same Duraclaw session when Nexus resolves them as the same user.
 

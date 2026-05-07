@@ -562,6 +562,23 @@ func (s *Store) InsertMessage(ctx context.Context, customerID, sessionID, runID,
 	return id, err
 }
 
+func (s *Store) MarkRunMessagesContextExcluded(ctx context.Context, runID, role string, metadata any) error {
+	metadataJSON, _ := json.Marshal(metadata)
+	if string(metadataJSON) == "null" {
+		metadataJSON = []byte(`{}`)
+	}
+	_, err := s.pool.Exec(ctx, `
+		UPDATE messages
+		SET content = jsonb_set(
+			jsonb_set(COALESCE(content, '{}'::jsonb), '{context_excluded}', 'true'::jsonb, true),
+			'{metadata}',
+			COALESCE(content->'metadata', '{}'::jsonb) || $2::jsonb || '{"context_excluded":true}'::jsonb,
+			true
+		)
+		WHERE run_id=$1 AND ($3='' OR role=$3)`, runID, metadataJSON, strings.TrimSpace(role))
+	return err
+}
+
 func (s *Store) FinalMessageContent(ctx context.Context, runID string) (json.RawMessage, error) {
 	var content json.RawMessage
 	err := s.pool.QueryRow(ctx, `
