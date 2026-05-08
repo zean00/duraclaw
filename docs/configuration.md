@@ -315,6 +315,8 @@ Methods:
 
 If `model` is empty, router fallback, hypothetical capability generation, and intent classification use the run's normal `model_config`. Router failures are non-fatal; Duraclaw falls back to the deterministic shortlist and records a `tool_selection.completed` run event. When an embedder is configured, hypothetical ranking caches authorized tool-document embeddings in process and recomputes only the per-turn hypothetical query embeddings. Tool selection only controls which tools are exposed to the main model; Duraclaw does not force `tool_choice: required` solely because one write-capable tool remains visible.
 
+Scope judgement can provide coarse action routing hints before tool selection. Its JSON includes `requires_action: "yes" | "possible" | "no"` and `action_intents`. When `requires_action` is `no`, tool selection exposes no tools for that turn. When action intents are present, tools whose `tool_metadata.intent_labels` match those intents receive a routing boost, while whitelist/blacklist, MCP access, aliases, conflicts, and policy checks still apply.
+
 `tool_like_phrases` controls short-turn detection for obvious tool requests, `followup_context_phrases` controls when a short reply should include recent conversation for tool routing, and `router_guidance` adds trusted, domain-specific instructions to the LLM router prompt. Keep language, slang, customer-domain terms, and personal-assistant routing policy in these fields or in `tool_config.tool_metadata`; runtime defaults stay domain-neutral.
 
 ## Tool Correctness Evaluator

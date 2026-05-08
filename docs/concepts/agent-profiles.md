@@ -102,6 +102,8 @@ When a profile defines domain scope or LLM-backed moderation, Duraclaw calls a c
   "confidence": 0.94,
   "reason": "The request is about product usage.",
   "recommended_response": "",
+  "requires_action": "possible",
+  "action_intents": ["search"],
   "safe": true,
   "moderation_confidence": 0.05,
   "moderation_category": "",
@@ -109,6 +111,10 @@ When a profile defines domain scope or LLM-backed moderation, Duraclaw calls a c
   "moderation_reason": ""
 }
 ```
+
+`requires_action` is a coarse tool-routing signal: `yes` means the assistant likely needs an external action/tool, `possible` means a tool may help but a normal answer may also be valid, and `no` means the user likely expects only an answer, comment, or conversational response. `action_intents` are concise action labels such as `create_reminder`, `update_reminder`, `save_preference`, `remember`, `search`, or `current_time`.
+
+When tool selection is enabled, Duraclaw uses these fields before the main model sees tools. `requires_action: "no"` suppresses tool exposure for that turn. Matching `action_intents` boost tools whose `tool_config.tool_metadata.*.intent_labels` contain the same labels, while whitelist/blacklist, MCP access, aliases, conflicts, and policy checks still apply.
 
 If moderation marks a message unsafe above `moderation.confidence_threshold`, Duraclaw:
 

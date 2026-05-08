@@ -155,7 +155,7 @@ func TestScopeJudgeUsesTwoPassImplicitIntent(t *testing.T) {
 	}
 	src := string(raw)
 	for _, want := range []string{
-		`Intent               string  ` + "`json:\"intent\"`",
+		`Intent               string   ` + "`json:\"intent\"`",
 		`Classify intent as "direct"`,
 		`intent is "implicit", set in_scope to true`,
 		"trusted_policy",

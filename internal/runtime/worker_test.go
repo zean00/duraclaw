@@ -629,6 +629,16 @@ func TestFallbackScopeJudgementAllowsConfiguredPersonalCapture(t *testing.T) {
 	}
 }
 
+func TestFallbackScopeJudgementWithoutDomainScopeDoesNotSuppressTools(t *testing.T) {
+	got := fallbackScopeJudgement(agentProfileConfig{}, "remind me tomorrow", "invalid json")
+	if got.RequiresAction != "possible" {
+		t.Fatalf("requires_action=%q want possible", got.RequiresAction)
+	}
+	if got.RecommendedResponse != "" {
+		t.Fatalf("recommended response should stay empty without domain scope: %#v", got)
+	}
+}
+
 func TestNormalizeInitialScopeJudgementKeepsImplicitProvisionallyInScope(t *testing.T) {
 	got := normalizeInitialScopeJudgement(scopeJudgement{
 		Intent:     " implicit ",
@@ -922,6 +932,51 @@ func TestHeuristicToolSelectionCanExposeNoToolsForPlainChat(t *testing.T) {
 	decision := heuristicToolSelection("halo, apa kabar?", scopeJudgement{Intent: "direct"}, defs, builtInToolSelectionMetadata(), toolSelectionProfileConfig{MaxTools: 2, ConfidenceThreshold: 0.65})
 	if len(decision.SelectedTools) != 0 || decision.Confidence < 0.65 {
 		t.Fatalf("selected=%#v confidence=%f reason=%s", decision.SelectedTools, decision.Confidence, decision.Reason)
+	}
+}
+
+func TestToolSelectionHonorsScopeNoAction(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(mock.Close)
+	store := db.NewStore(mock)
+	defs := []providers.ToolDefinition{
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "remember", Description: "Persist a memory"}},
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "create_reminder", Description: "Create a reminder"}},
+	}
+	w := &Worker{store: store}
+	now := time.Now()
+	profileConfig, _ := json.Marshal(map[string]any{"tool_selection": map[string]any{"enabled": true}})
+	versionRows := pgxmock.NewRows([]string{"id", "customer_id", "agent_instance_id", "version", "name", "model_config", "system_instructions", "tool_config", "mcp_config", "workflow_config", "policy_config", "profile_config", "metadata", "created_at", "activated_at"}).
+		AddRow("ver-1", "c", "a", 1, "v1", []byte(`{}`), "", []byte(`{}`), []byte(`{}`), []byte(`{}`), []byte(`{}`), profileConfig, []byte(`{}`), now, &now)
+	mock.ExpectQuery("SELECT id").WithArgs("ver-1").WillReturnRows(versionRows)
+	versionRows = pgxmock.NewRows([]string{"id", "customer_id", "agent_instance_id", "version", "name", "model_config", "system_instructions", "tool_config", "mcp_config", "workflow_config", "policy_config", "profile_config", "metadata", "created_at", "activated_at"}).
+		AddRow("ver-1", "c", "a", 1, "v1", []byte(`{}`), "", []byte(`{}`), []byte(`{}`), []byte(`{}`), []byte(`{}`), profileConfig, []byte(`{}`), now, &now)
+	mock.ExpectQuery("SELECT id").WithArgs("ver-1").WillReturnRows(versionRows)
+	mock.ExpectQuery("FROM messages").WithArgs("c", "s", 6).WillReturnRows(pgxmock.NewRows([]string{"id", "run_id", "role", "content", "created_at"}))
+	mock.ExpectExec("INSERT INTO run_events").WithArgs("run-1", "tool_selection.completed", pgxmock.AnyArg()).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	got, err := w.selectToolDefinitions(context.Background(), &db.Run{ID: "run-1", CustomerID: "c", AgentInstanceVersionID: "ver-1", SessionID: "s"}, scopeJudgement{Intent: "direct", RequiresAction: "no", Confidence: 0.9}, "halo, apa kabar?", defs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Defs) != 0 || got.ForceToolUse {
+		t.Fatalf("selected=%#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHeuristicToolSelectionBoostsScopeActionIntents(t *testing.T) {
+	defs := []providers.ToolDefinition{
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "create_reminder", Description: "Create a reminder"}},
+		{Type: "function", Function: providers.ToolFunctionDefinition{Name: "remember", Description: "Persist a memory"}},
+	}
+	decision := heuristicToolSelection("besok pagi ya", scopeJudgement{Intent: "implicit", RequiresAction: "yes", ActionIntents: []string{"create_reminder"}}, defs, builtInToolSelectionMetadata(), toolSelectionProfileConfig{MaxTools: 2})
+	if len(decision.SelectedTools) == 0 || decision.SelectedTools[0] != "create_reminder" {
+		t.Fatalf("selected=%#v reason=%s", decision.SelectedTools, decision.Reason)
 	}
 }
 
