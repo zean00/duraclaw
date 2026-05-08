@@ -147,11 +147,11 @@ Outbox delivery defaults to a placeholder log sink. To push queued outbound inte
 
 ```bash
 DURACLAW_OUTBOX_SINK=nexus
-NEXUS_OUTBOUND_URL=http://nexus.internal/acp/outbound
+NEXUS_OUTBOUND_URL=http://nexus.internal/admin/outbound/push
 NEXUS_TOKEN=...
 ```
 
-Outbound payloads include `acp_session_id` plus a legacy `session_id` alias. Nexus should resolve that ACP session to all mapped channel sessions by default. Duraclaw only includes `channel_type` when a specific channel is requested.
+Outbound payloads include `acp_session_id` plus a legacy `session_id` alias. Current Nexus resolves that ACP session to all mapped channel sessions by default through `/admin/outbound/push`. Duraclaw only includes `channel_type` when a specific channel is requested.
 
 `/readyz` reports `outbox_pending`, `outbox_unclaimed`, `outbox_claimed`, and `outbox_stale`. If local validation creates outbound rows but Nexus does not receive them, check these fields and the `outbox delivery failed` logs to confirm the outbox worker is running with the Nexus sink and not waiting on a claim lease.
 

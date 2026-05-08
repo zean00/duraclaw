@@ -453,14 +453,14 @@ Log sink is the default. Nexus delivery:
 
 ```bash
 DURACLAW_OUTBOX_SINK=nexus
-NEXUS_OUTBOUND_URL=http://nexus.internal/acp/outbound
-NEXUS_OUTBOUND_BULK_URL=http://nexus.internal/acp/outbound/bulk
+NEXUS_OUTBOUND_URL=http://nexus.internal/admin/outbound/push
+NEXUS_OUTBOUND_BULK_URL=http://nexus.internal/admin/outbound/push/bulk
 NEXUS_TOKEN=...
 ```
 
 If `NEXUS_OUTBOUND_BULK_URL` is configured, the outbox worker groups claimed outbound rows by topic and posts a batch payload. Without it, Duraclaw posts one outbound intent per request to `NEXUS_OUTBOUND_URL`.
 
-Outbound payloads include `acp_session_id` and a legacy `session_id` alias for compatibility. Nexus should treat both as the Duraclaw ACP session ID, fan out to every mapped Nexus channel session by default, and honor `channel_type` only when Duraclaw or an external caller needs channel-specific delivery. Duraclaw omits `channel_type` for channel-neutral outbound intents; empty channel values should be treated as omitted. Reminder subscriptions use the same mechanism: omit `channel_type` for all active channels on the ACP session, or set it for a channel-specific reminder.
+Outbound payloads include `acp_session_id` and a legacy `session_id` alias for compatibility. Current Nexus treats both as the Duraclaw ACP session ID on `/admin/outbound/push`, fans out to every mapped Nexus channel session by default, and honors `channel_type` only when Duraclaw or an external caller needs channel-specific delivery. Duraclaw omits `channel_type` for channel-neutral outbound intents; empty channel values should be treated as omitted. Reminder subscriptions use the same mechanism: omit `channel_type` for all active channels on the ACP session, or set it for a channel-specific reminder. Nexus exposes `/admin/sessions/by-acp?acp_session_id=...` to inspect mapped Nexus sessions and channel availability.
 
 Delivery failures are logged by the outbox worker and released for retry. `/readyz` exposes `outbox_pending`, `outbox_unclaimed`, `outbox_claimed`, and `outbox_stale`; use these fields to detect a stopped worker, stuck sink call, or expired claim lease during local Nexus validation.
 

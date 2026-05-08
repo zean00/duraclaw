@@ -392,6 +392,12 @@ Accepted statuses:
 
 When `DURACLAW_OUTBOX_SINK=nexus`, Duraclaw pushes outbound intents to Nexus from the PostgreSQL outbox.
 
+Current Nexus endpoints:
+
+- `POST /admin/outbound/push` for single outbound intents.
+- `POST /admin/outbound/push/bulk` for topic-grouped batches.
+- `GET /admin/sessions/by-acp?acp_session_id={session_id}` to inspect Nexus sessions and channel availability mapped to a Duraclaw ACP session.
+
 Single endpoint payload is the stored outbound outbox payload:
 
 ```json
