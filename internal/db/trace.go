@@ -43,11 +43,12 @@ type MCPCallRecord struct {
 }
 
 type RunTrace struct {
-	Steps          []RunStep             `json:"steps"`
-	ModelCalls     []ModelCallRecord     `json:"model_calls"`
-	ToolCalls      []ToolCallRecord      `json:"tool_calls"`
-	ProcessorCalls []ProcessorCallRecord `json:"processor_calls"`
-	MCPCalls       []MCPCallRecord       `json:"mcp_calls"`
+	Steps           []RunStep             `json:"steps"`
+	ModelCalls      []ModelCallRecord     `json:"model_calls"`
+	ToolCalls       []ToolCallRecord      `json:"tool_calls"`
+	ProcessorCalls  []ProcessorCallRecord `json:"processor_calls"`
+	MCPCalls        []MCPCallRecord       `json:"mcp_calls"`
+	ToolEvaluations []ToolEvaluation      `json:"tool_evaluations,omitempty"`
 }
 
 func (s *Store) RunTrace(ctx context.Context, runID string) (*RunTrace, error) {
@@ -71,7 +72,11 @@ func (s *Store) RunTrace(ctx context.Context, runID string) (*RunTrace, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &RunTrace{Steps: steps, ModelCalls: models, ToolCalls: tools, ProcessorCalls: processors, MCPCalls: mcp}, nil
+	evaluations, err := s.toolEvaluationsForTrace(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	return &RunTrace{Steps: steps, ModelCalls: models, ToolCalls: tools, ProcessorCalls: processors, MCPCalls: mcp, ToolEvaluations: evaluations}, nil
 }
 
 func (s *Store) runSteps(ctx context.Context, runID string) ([]RunStep, error) {

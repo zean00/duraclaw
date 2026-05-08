@@ -226,7 +226,7 @@ func validateAgentInstanceVersionSpec(spec AgentInstanceVersionSpec) error {
 	if err := validatePolicyConfigValues(spec.PolicyConfig); err != nil {
 		return err
 	}
-	if err := validateObjectConfig("profile_config", spec.ProfileConfig, []string{"personality", "communication_style", "language_capabilities", "domain_scope", "recommendation", "moderation", "tool_selection", "agent_delegation", "reply_context", "prompt_context"}); err != nil {
+	if err := validateObjectConfig("profile_config", spec.ProfileConfig, []string{"personality", "communication_style", "language_capabilities", "domain_scope", "recommendation", "moderation", "tool_selection", "tool_evaluator", "agent_delegation", "reply_context", "prompt_context"}); err != nil {
 		return err
 	}
 	if err := validateProfileConfigValues(spec.ProfileConfig); err != nil {
@@ -456,6 +456,42 @@ func validateProfileConfigValues(value any) error {
 		if raw, ok := selection["options"]; ok {
 			if _, ok := raw.(map[string]any); !ok {
 				return fmt.Errorf("profile_config.tool_selection.options must be an object")
+			}
+		}
+	}
+	if raw, ok := obj["tool_evaluator"]; ok {
+		evaluator, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("profile_config.tool_evaluator must be an object")
+		}
+		if raw, ok := evaluator["enabled"]; ok {
+			if _, ok := raw.(bool); !ok {
+				return fmt.Errorf("profile_config.tool_evaluator.enabled must be a boolean")
+			}
+		}
+		for _, key := range []string{"model", "repair_mode"} {
+			if raw, ok := evaluator[key]; ok {
+				if _, ok := raw.(string); !ok {
+					return fmt.Errorf("profile_config.tool_evaluator.%s must be a string", key)
+				}
+			}
+		}
+		if raw, ok := evaluator["repair_mode"]; ok {
+			switch strings.ToLower(strings.TrimSpace(fmt.Sprint(raw))) {
+			case "", "record_only", "safe":
+			default:
+				return fmt.Errorf("profile_config.tool_evaluator.repair_mode must be record_only or safe")
+			}
+		}
+		if raw, ok := evaluator["confidence_threshold"]; ok {
+			threshold, ok := numericValue(raw)
+			if !ok || threshold < 0 || threshold > 1 {
+				return fmt.Errorf("profile_config.tool_evaluator.confidence_threshold must be between 0 and 1")
+			}
+		}
+		if raw, ok := evaluator["options"]; ok {
+			if _, ok := raw.(map[string]any); !ok {
+				return fmt.Errorf("profile_config.tool_evaluator.options must be an object")
 			}
 		}
 	}

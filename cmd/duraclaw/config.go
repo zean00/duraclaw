@@ -33,6 +33,12 @@ type config struct {
 	SessionMonitorMessageLimit  int
 	SessionCompactionThreshold  int
 	ProfileConsolidationEnabled bool
+	ToolEvaluatorEnabled        bool
+	ToolEvaluatorModel          string
+	ToolEvaluatorInterval       time.Duration
+	ToolEvaluatorLimit          int
+	ToolEvaluatorThreshold      float64
+	ToolEvaluatorRepairMode     string
 	RunInterruptWindow          time.Duration
 	RunMaxRefinementDepth       int
 	AgentActivityEnabled        bool
@@ -106,6 +112,12 @@ func loadConfig() (config, error) {
 		SessionMonitorMessageLimit:  envInt("DURACLAW_SESSION_MONITOR_MESSAGE_LIMIT", 40),
 		SessionCompactionThreshold:  envInt("DURACLAW_SESSION_COMPACTION_THRESHOLD_CHARS", 12000),
 		ProfileConsolidationEnabled: envBool("DURACLAW_PROFILE_CONSOLIDATION_ENABLED", true),
+		ToolEvaluatorEnabled:        envBool("DURACLAW_TOOL_EVALUATOR_ENABLED", false),
+		ToolEvaluatorModel:          os.Getenv("DURACLAW_TOOL_EVALUATOR_MODEL"),
+		ToolEvaluatorInterval:       time.Duration(envInt("DURACLAW_TOOL_EVALUATOR_INTERVAL_SECONDS", 60)) * time.Second,
+		ToolEvaluatorLimit:          envInt("DURACLAW_TOOL_EVALUATOR_LIMIT", 25),
+		ToolEvaluatorThreshold:      envFloat("DURACLAW_TOOL_EVALUATOR_CONFIDENCE_THRESHOLD", 0.75),
+		ToolEvaluatorRepairMode:     envDefault("DURACLAW_TOOL_EVALUATOR_REPAIR_MODE", "safe"),
 		RunInterruptWindow:          time.Duration(envInt("DURACLAW_RUN_INTERRUPT_WINDOW_MS", 2000)) * time.Millisecond,
 		RunMaxRefinementDepth:       envInt("DURACLAW_RUN_MAX_REFINEMENT_DEPTH", 2),
 		AgentActivityEnabled:        envBool("DURACLAW_AGENT_ACTIVITY_ENABLED", false),
@@ -232,6 +244,18 @@ func envInt(key string, fallback int) int {
 	}
 	var out int
 	if _, err := fmt.Sscanf(raw, "%d", &out); err != nil || out <= 0 {
+		return fallback
+	}
+	return out
+}
+
+func envFloat(key string, fallback float64) float64 {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	var out float64
+	if _, err := fmt.Sscanf(raw, "%f", &out); err != nil || out <= 0 {
 		return fallback
 	}
 	return out

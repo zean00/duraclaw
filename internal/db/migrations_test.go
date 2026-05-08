@@ -505,3 +505,23 @@ func TestTwentyFifthMigrationContainsBoundedReminderFields(t *testing.T) {
 		}
 	}
 }
+
+func TestTwentyEighthMigrationContainsToolEvaluations(t *testing.T) {
+	raw, err := migrationFS.ReadFile("migrations/0028_tool_evaluations.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw)
+	for _, want := range []string{
+		"CREATE TABLE IF NOT EXISTS tool_evaluations",
+		"UNIQUE (run_id)",
+		"tool_evaluations_claim_idx",
+		"tool_evaluations_customer_status_idx",
+		"expected_tools jsonb",
+		"suspicious_signals jsonb",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("migration missing %q", want)
+		}
+	}
+}

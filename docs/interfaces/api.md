@@ -323,6 +323,14 @@ If no rule exists, built-in tools follow the agent instance version `tool_config
 
 Agent versions may enable `profile_config.tool_selection` to shortlist authorized model-loop tools before the main model call. `tool_config.tool_metadata` can add ranking hints such as `tags`, `intent_labels`, `trigger_phrases`, `negative_phrases`, `examples`, `side_effect`, and `conflicts_with`; these hints do not override admin access rules or policy enforcement. Runtime defaults stay domain-neutral, so personal-assistant, commerce, support, or internal-ops routing phrases should be configured per agent version with `tool_config.tool_metadata` plus `profile_config.tool_selection.tool_like_phrases`, `followup_context_phrases`, and optional `router_guidance`. Set `profile_config.tool_selection.method` to `hypothetical` to experiment with LLM-generated capability descriptions ranked against the authorized tool catalog, or `intent_classifier` to classify turns against configured tool intent labels, while keeping the existing `mode` router behavior for fallback and benchmarking.
 
+Admin tool-evaluation routes:
+
+- `GET /admin/tool-evaluations?customer_id={customer_id}&status=completed&category=missed_tool`
+- `GET /admin/tool-evaluations/{evaluation_id}?customer_id={customer_id}`
+- `POST /admin/runs/{run_id}/tool-evaluation?customer_id={customer_id}`
+
+Tool evaluations are optional. Automatic evaluation only audits deterministic suspicious runs; manual evaluation can be requested for a specific run. `profile_config.tool_evaluator.model` selects the evaluator model separately from the main run model.
+
 Agent versions may set `tool_config.interleave_tool_calls: true` to experiment with reasoning between tool calls. When enabled, a model response containing multiple tool calls is not executed as a full batch; Duraclaw executes only the first call, sends that result back into the loop, and requires the model to choose the next tool after seeing the result. The default is `false`.
 
 Agent versions may set `profile_config.prompt_context` to control ordinary session-summary and recent-message injection by scope intent. `direct_history` and `implicit_history` accept `none`, `summary_only`, `recent_only`, or `summary_and_recent`; both default to `summary_and_recent` for compatibility. `max_recent_messages` controls the recent-message fetch limit, defaulting to `8`. Distinct direct/implicit modes require intent classification even when no domain scope is configured.

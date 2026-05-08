@@ -26,6 +26,7 @@ import (
 	"duraclaw/internal/runtime"
 	"duraclaw/internal/scheduler"
 	"duraclaw/internal/sessionmonitor"
+	"duraclaw/internal/toolevaluator"
 	"duraclaw/internal/tools"
 )
 
@@ -101,6 +102,13 @@ func main() {
 		WithMessageLimit(cfg.SessionMonitorMessageLimit).
 		WithCompactionThreshold(cfg.SessionCompactionThreshold).
 		WithProfileConsolidation(cfg.ProfileConsolidationEnabled)
+	toolEvaluator := toolevaluator.NewService(store, providerRegistry, modelConfig, cfg.Hostname, toolevaluator.Config{
+		Enabled:             cfg.ToolEvaluatorEnabled,
+		Model:               cfg.ToolEvaluatorModel,
+		ConfidenceThreshold: cfg.ToolEvaluatorThreshold,
+		RepairMode:          cfg.ToolEvaluatorRepairMode,
+		Limit:               cfg.ToolEvaluatorLimit,
+	})
 	go func() {
 		ticker := time.NewTicker(cfg.SchedulerInterval)
 		defer ticker.Stop()
@@ -129,6 +137,20 @@ func main() {
 			}
 		}
 	}()
+	go func() {
+		ticker := time.NewTicker(cfg.ToolEvaluatorInterval)
+		defer ticker.Stop()
+		for {
+			if _, err := toolEvaluator.RunOnce(ctx); err != nil && ctx.Err() == nil {
+				logger.ErrorContext(ctx, "tool evaluator tick failed", "error", err)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
 	outboxWorker := outbound.NewOutboxWorker(store, buildOutboxSink(cfg), cfg.Hostname).WithCounters(counters).WithErrorHandler(func(err error) {
 		logger.ErrorContext(ctx, "outbox delivery failed", "error", err)
 	})
@@ -144,7 +166,7 @@ func main() {
 	}()
 	server := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           observability.InstrumentHTTP(acp.NewHandler(store).WithAdminToken(cfg.AdminToken).WithACPToken(cfg.ACPToken).WithRequireAuth(cfg.RequireAuth).WithCounters(counters).WithEmbedder(embedder).WithMCPManager(mcpManager).WithProviders(providerRegistry, modelConfig).WithMediaBlobStore(mediaBlobStore).WithProfileRetriever(profileRetriever).WithSessionMonitor(sessionMonitor).WithLogger(logger).WithRunRefinement(cfg.RunInterruptWindow, cfg.RunMaxRefinementDepth).Routes()),
+		Handler:           observability.InstrumentHTTP(acp.NewHandler(store).WithAdminToken(cfg.AdminToken).WithACPToken(cfg.ACPToken).WithRequireAuth(cfg.RequireAuth).WithCounters(counters).WithEmbedder(embedder).WithMCPManager(mcpManager).WithProviders(providerRegistry, modelConfig).WithMediaBlobStore(mediaBlobStore).WithProfileRetriever(profileRetriever).WithSessionMonitor(sessionMonitor).WithToolEvaluator(toolEvaluator).WithLogger(logger).WithRunRefinement(cfg.RunInterruptWindow, cfg.RunMaxRefinementDepth).Routes()),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {

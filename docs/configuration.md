@@ -317,6 +317,39 @@ If `model` is empty, router fallback, hypothetical capability generation, and in
 
 `tool_like_phrases` controls short-turn detection for obvious tool requests, `followup_context_phrases` controls when a short reply should include recent conversation for tool routing, and `router_guidance` adds trusted, domain-specific instructions to the LLM router prompt. Keep language, slang, customer-domain terms, and personal-assistant routing policy in these fields or in `tool_config.tool_metadata`; runtime defaults stay domain-neutral.
 
+## Tool Correctness Evaluator
+
+The tool evaluator is disabled by default. When enabled, it does not audit every conversation. It first queues only suspicious completed runs using deterministic signals such as failed tools, suppressed tools, required-but-missing tools, or high-confidence tool-selection decisions with no actual tool call. Queued runs are then evaluated by a separate model and stored in `tool_evaluations`.
+
+Global defaults:
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `DURACLAW_TOOL_EVALUATOR_ENABLED` | `false` | Enables the background suspicious-run evaluator. |
+| `DURACLAW_TOOL_EVALUATOR_MODEL` | empty | Separate evaluator model. Empty falls back to the run's `model_config`. |
+| `DURACLAW_TOOL_EVALUATOR_INTERVAL_SECONDS` | `60` | Background evaluator tick interval. |
+| `DURACLAW_TOOL_EVALUATOR_LIMIT` | `25` | Runs/evaluations processed per tick. |
+| `DURACLAW_TOOL_EVALUATOR_CONFIDENCE_THRESHOLD` | `0.75` | Minimum confidence for queueing/evaluator repair decisions. |
+| `DURACLAW_TOOL_EVALUATOR_REPAIR_MODE` | `safe` | `record_only` stores findings only; `safe` may send clarification/correction outbound messages but does not auto-execute side-effect tools. |
+
+Per-agent override:
+
+```json
+{
+  "profile_config": {
+    "tool_evaluator": {
+      "enabled": true,
+      "model": "openrouter/openai/gpt-4.1-mini",
+      "confidence_threshold": 0.8,
+      "repair_mode": "safe",
+      "options": {
+        "max_tokens": 250
+      }
+    }
+  }
+}
+```
+
 Explicit reply context can quote the referenced original message only when needed:
 
 ```json

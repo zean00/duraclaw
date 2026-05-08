@@ -29,6 +29,8 @@ func TestStoreRunTraceWithPgxMock(t *testing.T) {
 	mock.ExpectQuery("FROM mcp_calls").WithArgs("run-1").
 		WillReturnRows(pgxmock.NewRows([]string{"id", "server_name", "tool_name", "state", "request_summary", "response_summary", "error", "created_at", "completed_at"}).
 			AddRow("mcp-1", "srv", "tool", "succeeded", []byte(`{}`), []byte(`{}`), nil, now, &now))
+	mock.ExpectQuery("FROM tool_evaluations").WithArgs("run-1").
+		WillReturnRows(pgxmock.NewRows([]string{"id", "run_id", "customer_id", "user_id", "agent_instance_id", "session_id", "status", "category", "confidence", "expected_tools", "actual_tools", "reason", "repair_action", "repair_status", "finding", "suspicious_signals", "lease_owner", "lease_expires_at", "completed_at", "created_at", "updated_at"}))
 
 	trace, err := store.RunTrace(ctx, "run-1")
 	if err != nil || len(trace.Steps) != 1 || len(trace.ModelCalls) != 1 || len(trace.ToolCalls) != 1 || len(trace.ProcessorCalls) != 1 || len(trace.MCPCalls) != 1 {

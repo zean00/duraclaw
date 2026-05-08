@@ -23,6 +23,7 @@ import (
 	"duraclaw/internal/providers"
 	"duraclaw/internal/scheduler"
 	"duraclaw/internal/sessionmonitor"
+	"duraclaw/internal/toolevaluator"
 	"duraclaw/internal/tools"
 	"duraclaw/internal/workflow"
 
@@ -68,6 +69,7 @@ type Handler struct {
 	mediaBlobStore   tools.MediaBlobStore
 	profileRetriever profiles.Retriever
 	sessionMonitor   *sessionmonitor.Service
+	toolEvaluator    *toolevaluator.Service
 	logger           *slog.Logger
 	interruptWindow  time.Duration
 	maxRefineDepth   int
@@ -163,6 +165,11 @@ func (h *Handler) WithProfileRetriever(retriever profiles.Retriever) *Handler {
 
 func (h *Handler) WithSessionMonitor(service *sessionmonitor.Service) *Handler {
 	h.sessionMonitor = service
+	return h
+}
+
+func (h *Handler) WithToolEvaluator(service *toolevaluator.Service) *Handler {
+	h.toolEvaluator = service
 	return h
 }
 
@@ -1735,6 +1742,60 @@ func (h *Handler) listObservabilityEvents(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"events": events})
+}
+
+func (h *Handler) listToolEvaluations(w http.ResponseWriter, r *http.Request) {
+	customerID := r.URL.Query().Get("customer_id")
+	if customerID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id is required"))
+		return
+	}
+	items, err := h.store.ListToolEvaluations(r.Context(), customerID, r.URL.Query().Get("status"), r.URL.Query().Get("category"), queryLimit(r, 100))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tool_evaluations": items})
+}
+
+func (h *Handler) getToolEvaluation(w http.ResponseWriter, r *http.Request) {
+	customerID := r.URL.Query().Get("customer_id")
+	if customerID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id is required"))
+		return
+	}
+	item, err := h.store.ToolEvaluation(r.Context(), customerID, r.PathValue("evaluation_id"))
+	if err != nil {
+		writeError(w, statusForError(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (h *Handler) evaluateRunTools(w http.ResponseWriter, r *http.Request) {
+	customerID := r.URL.Query().Get("customer_id")
+	if customerID == "" {
+		customerID = r.Header.Get("X-Customer-ID")
+	}
+	if customerID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id is required"))
+		return
+	}
+	run, err := h.store.GetRun(r.Context(), r.PathValue("run_id"))
+	if err != nil || run.CustomerID != customerID {
+		writeError(w, http.StatusNotFound, fmt.Errorf("run not found"))
+		return
+	}
+	service := h.toolEvaluator
+	if service == nil {
+		service = toolevaluator.NewService(h.store, h.providers, h.modelConfig, "duraclaw-manual-tool-evaluator", toolevaluator.Config{Enabled: true})
+	}
+	item, err := service.EvaluateRun(r.Context(), run.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
 }
 
 func (h *Handler) listOutboundIntents(w http.ResponseWriter, r *http.Request) {
