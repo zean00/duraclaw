@@ -164,22 +164,30 @@ func (s *Store) SetOutboundIntentStatus(ctx context.Context, id, customerID, sta
 }
 
 func (s *Store) ListOutboundIntents(ctx context.Context, customerID, status string, limit int) ([]OutboundIntent, error) {
+	return s.ListOutboundIntentsForUser(ctx, customerID, "", status, limit)
+}
+
+func (s *Store) ListOutboundIntentsForUser(ctx context.Context, customerID, userID, status string, limit int) ([]OutboundIntent, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
 	args := []any{customerID, limit}
-	statusFilter := ""
+	filters := ""
 	if status != "" {
 		if status == "sent" {
 			status = "sent_to_nexus"
 		}
 		args = append(args, status)
-		statusFilter = " AND status=$3"
+		filters += fmt.Sprintf(" AND status=$%d", len(args))
+	}
+	if userID != "" {
+		args = append(args, userID)
+		filters += fmt.Sprintf(" AND user_id=$%d", len(args))
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT id::text, customer_id, user_id, session_id, run_id::text, intent_type, payload, status, outbox_id, created_at, updated_at
 		FROM outbound_intents
-		WHERE customer_id=$1`+statusFilter+`
+		WHERE customer_id=$1`+filters+`
 		ORDER BY created_at DESC
 		LIMIT $2`, args...)
 	if err != nil {

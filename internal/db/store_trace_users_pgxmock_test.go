@@ -13,6 +13,8 @@ func TestStoreRunTraceWithPgxMock(t *testing.T) {
 	store, mock := newMockStore(t)
 	ctx := context.Background()
 	now := time.Now().UTC()
+	runID := "run-1"
+	selectedItemID := "item-1"
 
 	mock.ExpectQuery("FROM run_steps").WithArgs("run-1").
 		WillReturnRows(pgxmock.NewRows([]string{"id", "run_id", "kind", "state", "input", "output", "error", "started_at", "completed_at", "created_at"}).
@@ -31,9 +33,15 @@ func TestStoreRunTraceWithPgxMock(t *testing.T) {
 			AddRow("mcp-1", "srv", "tool", "succeeded", []byte(`{}`), []byte(`{}`), nil, now, &now))
 	mock.ExpectQuery("FROM tool_evaluations").WithArgs("run-1").
 		WillReturnRows(pgxmock.NewRows([]string{"id", "run_id", "customer_id", "user_id", "agent_instance_id", "session_id", "status", "category", "confidence", "expected_tools", "actual_tools", "reason", "repair_action", "repair_status", "finding", "suspicious_signals", "lease_owner", "lease_expires_at", "completed_at", "created_at", "updated_at"}))
+	mock.ExpectQuery("FROM run_events").WithArgs("run-1", int64(0), 1000).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "run_id", "event_type", "payload", "created_at"}).
+			AddRow(int64(1), "run-1", "scope.judged", []byte(`{"in_scope":true}`), now))
+	mock.ExpectQuery("FROM recommendation_decisions").WithArgs("run-1").
+		WillReturnRows(pgxmock.NewRows([]string{"id", "customer_id", "run_id", "user_id", "session_id", "scope_intent", "context_mode", "candidate_item_ids", "selected_item_id", "recommendation_text", "reason", "delivery_status", "error", "metadata", "created_at"}).
+			AddRow("rec-1", "c1", &runID, "u1", "s1", "direct", "current", []byte(`["item-1"]`), &selectedItemID, "Recommended", "helpful", "inline_merged", "", []byte(`{}`), now))
 
 	trace, err := store.RunTrace(ctx, "run-1")
-	if err != nil || len(trace.Steps) != 1 || len(trace.ModelCalls) != 1 || len(trace.ToolCalls) != 1 || len(trace.ProcessorCalls) != 1 || len(trace.MCPCalls) != 1 {
+	if err != nil || len(trace.Steps) != 1 || len(trace.ModelCalls) != 1 || len(trace.ToolCalls) != 1 || len(trace.ProcessorCalls) != 1 || len(trace.MCPCalls) != 1 || len(trace.Events) != 1 || len(trace.RecommendationDecisions) != 1 {
 		t.Fatalf("trace=%#v err=%v", trace, err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {

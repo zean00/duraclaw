@@ -1805,12 +1805,93 @@ func (h *Handler) listOutboundIntents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	intents, err := h.store.ListOutboundIntents(r.Context(), customerID, r.URL.Query().Get("status"), limit)
+	intents, err := h.store.ListOutboundIntentsForUser(r.Context(), customerID, r.URL.Query().Get("user_id"), r.URL.Query().Get("status"), limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"outbound_intents": intents})
+}
+
+func (h *Handler) listAdminSessions(w http.ResponseWriter, r *http.Request) {
+	customerID := r.URL.Query().Get("customer_id")
+	userID := r.URL.Query().Get("user_id")
+	if customerID == "" || userID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id and user_id are required"))
+		return
+	}
+	items, err := h.store.AdminSessions(r.Context(), customerID, userID, queryLimit(r, 100))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sessions": items})
+}
+
+func (h *Handler) listAdminSessionMessages(w http.ResponseWriter, r *http.Request) {
+	customerID := r.URL.Query().Get("customer_id")
+	userID := r.URL.Query().Get("user_id")
+	sessionID := r.PathValue("session_id")
+	if customerID == "" || userID == "" || sessionID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id, user_id, and session_id are required"))
+		return
+	}
+	items, err := h.store.AdminSessionMessages(r.Context(), customerID, userID, sessionID, queryLimit(r, 100))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"messages": items})
+}
+
+func (h *Handler) listAdminRuns(w http.ResponseWriter, r *http.Request) {
+	customerID := r.URL.Query().Get("customer_id")
+	userID := r.URL.Query().Get("user_id")
+	if customerID == "" || userID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id and user_id are required"))
+		return
+	}
+	items, err := h.store.AdminRuns(r.Context(), customerID, userID, r.URL.Query().Get("session_id"), queryLimit(r, 100))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"runs": items})
+}
+
+func (h *Handler) adminRunTrace(w http.ResponseWriter, r *http.Request) {
+	customerID := r.URL.Query().Get("customer_id")
+	userID := r.URL.Query().Get("user_id")
+	runID := r.PathValue("run_id")
+	if customerID == "" || userID == "" || runID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id, user_id, and run_id are required"))
+		return
+	}
+	if _, err := h.store.AdminRunForUser(r.Context(), customerID, userID, runID); err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	trace, err := h.store.RunTrace(r.Context(), runID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, trace)
+}
+
+func (h *Handler) listAdminAgentDelegations(w http.ResponseWriter, r *http.Request) {
+	customerID := r.URL.Query().Get("customer_id")
+	userID := r.URL.Query().Get("user_id")
+	if customerID == "" || userID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("customer_id and user_id are required"))
+		return
+	}
+	items, err := h.store.AdminAgentDelegations(r.Context(), customerID, userID, queryLimit(r, 100))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"delegations": items})
 }
 
 func (h *Handler) listBackgroundRuns(w http.ResponseWriter, r *http.Request) {

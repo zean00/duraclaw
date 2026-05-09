@@ -43,12 +43,14 @@ type MCPCallRecord struct {
 }
 
 type RunTrace struct {
-	Steps           []RunStep             `json:"steps"`
-	ModelCalls      []ModelCallRecord     `json:"model_calls"`
-	ToolCalls       []ToolCallRecord      `json:"tool_calls"`
-	ProcessorCalls  []ProcessorCallRecord `json:"processor_calls"`
-	MCPCalls        []MCPCallRecord       `json:"mcp_calls"`
-	ToolEvaluations []ToolEvaluation      `json:"tool_evaluations,omitempty"`
+	Steps                   []RunStep                `json:"steps"`
+	Events                  []Event                  `json:"events,omitempty"`
+	ModelCalls              []ModelCallRecord        `json:"model_calls"`
+	ToolCalls               []ToolCallRecord         `json:"tool_calls"`
+	ProcessorCalls          []ProcessorCallRecord    `json:"processor_calls"`
+	MCPCalls                []MCPCallRecord          `json:"mcp_calls"`
+	ToolEvaluations         []ToolEvaluation         `json:"tool_evaluations,omitempty"`
+	RecommendationDecisions []RecommendationDecision `json:"recommendation_decisions,omitempty"`
 }
 
 func (s *Store) RunTrace(ctx context.Context, runID string) (*RunTrace, error) {
@@ -76,7 +78,15 @@ func (s *Store) RunTrace(ctx context.Context, runID string) (*RunTrace, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &RunTrace{Steps: steps, ModelCalls: models, ToolCalls: tools, ProcessorCalls: processors, MCPCalls: mcp, ToolEvaluations: evaluations}, nil
+	events, err := s.EventsPage(ctx, runID, 0, 1000)
+	if err != nil {
+		return nil, err
+	}
+	recommendations, err := s.recommendationDecisionsForTrace(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	return &RunTrace{Steps: steps, Events: events, ModelCalls: models, ToolCalls: tools, ProcessorCalls: processors, MCPCalls: mcp, ToolEvaluations: evaluations, RecommendationDecisions: recommendations}, nil
 }
 
 func (s *Store) runSteps(ctx context.Context, runID string) ([]RunStep, error) {
@@ -160,6 +170,29 @@ func (s *Store) mcpCalls(ctx context.Context, runID string) ([]MCPCallRecord, er
 			return nil, err
 		}
 		out = append(out, rec)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) recommendationDecisionsForTrace(ctx context.Context, runID string) ([]RecommendationDecision, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id::text, customer_id, run_id::text, user_id, session_id, scope_intent, context_mode, candidate_item_ids, selected_item_id::text, recommendation_text, reason, delivery_status, error, metadata, created_at
+		FROM recommendation_decisions
+		WHERE run_id=$1
+		ORDER BY created_at DESC`, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RecommendationDecision
+	for rows.Next() {
+		var d RecommendationDecision
+		var candidates []byte
+		if err := rows.Scan(&d.ID, &d.CustomerID, &d.RunID, &d.UserID, &d.SessionID, &d.ScopeIntent, &d.ContextMode, &candidates, &d.SelectedItemID, &d.RecommendationText, &d.Reason, &d.DeliveryStatus, &d.Error, &d.Metadata, &d.CreatedAt); err != nil {
+			return nil, err
+		}
+		d.CandidateItemIDs = decodeStringSlice(candidates)
+		out = append(out, d)
 	}
 	return out, rows.Err()
 }
