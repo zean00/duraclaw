@@ -50,13 +50,16 @@ Use durable database records first, then external logs/traces.
 Useful routes:
 
 - `GET /admin/observability/events?customer_id={customer_id}`
+- `GET /admin/sessions?customer_id={customer_id}&user_id={user_id}`
+- `GET /admin/runs?customer_id={customer_id}&user_id={user_id}`
+- `GET /admin/runs/{run_id}/trace?customer_id={customer_id}&user_id={user_id}`
 - `GET /admin/tool-evaluations?customer_id={customer_id}`
 - `POST /admin/runs/{run_id}/tool-evaluation?customer_id={customer_id}`
 - `GET /acp/runs/{run_id}/trace`
 - `GET /acp/runs/{run_id}/events`
 - `GET /acp/runs/{run_id}/background-status`
 
-Run trace output ties together run steps, model calls, tool calls, MCP calls, artifact processor calls, and policy evaluations. Tool evaluations are optional post-run audits for suspicious tool behavior; they can be enabled in the background or run manually for a specific run. Manual evaluation queues and claims the requested run's evaluation row directly, so it does not lease unrelated background evaluator work.
+Run trace output ties together run steps, run events, model calls, tool calls, MCP calls, artifact processor calls, recommendation decisions, and policy/tool-evaluation records. Use ACP trace for a known run ID in ACP context, or admin trace when an operations UI needs to enforce customer/user ownership in the query. Tool evaluations are optional post-run audits for suspicious tool behavior; they can be enabled in the background or run manually for a specific run. Manual evaluation queues and claims the requested run's evaluation row directly, so it does not lease unrelated background evaluator work.
 
 High-volume, non-critical telemetry is buffered through `async_write_jobs` when the async writer is enabled. This includes streaming model delta run events, agent activity run events, scope-judge audit events, prompt-injection block telemetry, checkpoint sidecar observability payloads, and optional OTLP sidecars. Critical durability records remain synchronous: run state, checkpoints, model/tool/MCP call intent and completion records, policy denials, quota failures, awaiting-user transitions, outbox writes, and final responses.
 

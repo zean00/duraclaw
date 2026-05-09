@@ -262,6 +262,7 @@ The GitHub Actions workflow runs the full suite with a `pgvector/pgvector:pg17` 
 - `/metrics` exposes in-process counters and duration histograms. Configure `DURACLAW_OTLP_ENDPOINT` to export OpenTelemetry SDK spans and metrics to an OTLP HTTP collector.
 - Use `GET /admin/observability/events?customer_id={customer_id}` for durable debug/audit events, including MCP notifications and policy decisions.
 - Use `GET /acp/runs/{run_id}/trace` with `X-Customer-ID` to inspect model, tool, MCP, processor, and run-step records for a single run.
+- Use `GET /admin/runs/{run_id}/trace?customer_id={customer_id}&user_id={user_id}` when an admin UI needs the same trace scoped through a user/run ownership check. Trace output also includes run events, tool-evaluation results, and recommendation decisions when present.
 - Failed artifact processors leave failed processor-call records and set the artifact state to `failed`; oversized processor payloads may be degraded according to configured limits.
 - Outbound failures remain in `async_outbox` for retry and are visible through queue depth and outbound-intent status.
 - `POST /admin/retention/run` can clean old artifacts, run events, outbox rows, async write jobs, observability events, and terminal broadcasts.
@@ -315,6 +316,11 @@ The GitHub Actions workflow runs the full suite with a `pgvector/pgvector:pg17` 
 - `GET /admin/scheduler/jobs?customer_id={customer_id}`
 - `PATCH /admin/scheduler/jobs/{job_id}`
 - `GET /admin/observability/events?customer_id={customer_id}`
+- `GET /admin/sessions?customer_id={customer_id}&user_id={user_id}`
+- `GET /admin/sessions/{session_id}/messages?customer_id={customer_id}&user_id={user_id}`
+- `GET /admin/runs?customer_id={customer_id}&user_id={user_id}`
+- `GET /admin/runs/{run_id}/trace?customer_id={customer_id}&user_id={user_id}`
+- `GET /admin/agent-delegations?customer_id={customer_id}&user_id={user_id}`
 - `GET /admin/outbound-intents?customer_id={customer_id}`
 - `GET /admin/background-runs?customer_id={customer_id}`
 - `PUT /admin/runtime-limits/customer/{customer_id}`

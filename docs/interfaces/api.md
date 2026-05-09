@@ -152,6 +152,7 @@ Supported part types include `text`, `artifact_ref`, `location`, `structured_dat
 - Memories and preferences.
 - Reminder subscriptions and scheduler jobs.
 - Observability events.
+- User-scoped session, message, run trace, and delegation introspection.
 - Outbound intents, broadcasts, and delivery status.
 - Background runs.
 - Manual session compaction.
@@ -166,6 +167,16 @@ Agent instance config import/export:
 
 - `POST /admin/agent-instances/{agent_instance_id}/versions/import?format=json|yaml`
 - `GET /admin/agent-instances/{agent_instance_id}/versions/{version_id}/export?format=json|yaml`
+
+Admin user/session introspection routes:
+
+- `GET /admin/sessions?customer_id={customer_id}&user_id={user_id}`
+- `GET /admin/sessions/{session_id}/messages?customer_id={customer_id}&user_id={user_id}`
+- `GET /admin/runs?customer_id={customer_id}&user_id={user_id}&session_id={session_id}`
+- `GET /admin/runs/{run_id}/trace?customer_id={customer_id}&user_id={user_id}`
+- `GET /admin/agent-delegations?customer_id={customer_id}&user_id={user_id}`
+
+The admin run trace route checks that the run belongs to the requested customer/user before returning the same durable trace shape as `GET /acp/runs/{run_id}/trace`. Trace output includes run steps, run events, model calls, built-in tool calls, MCP calls, artifact processor calls, tool-evaluation results, and recommendation decisions when present.
 
 Admin knowledge routes:
 
