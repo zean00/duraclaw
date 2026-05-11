@@ -2081,9 +2081,11 @@ func (w *Worker) agentInstanceVersionInstructions(ctx context.Context, run *db.R
 }
 
 type agentProfileConfig struct {
-	Personality          string   `json:"personality"`
-	CommunicationStyle   string   `json:"communication_style"`
-	LanguageCapabilities []string `json:"language_capabilities"`
+	DisplayName          string                `json:"display_name"`
+	Identity             identityProfileConfig `json:"identity"`
+	Personality          string                `json:"personality"`
+	CommunicationStyle   string                `json:"communication_style"`
+	LanguageCapabilities []string              `json:"language_capabilities"`
 	DomainScope          struct {
 		AllowedDomains      []string `json:"allowed_domains"`
 		ForbiddenDomains    []string `json:"forbidden_domains"`
@@ -2097,6 +2099,11 @@ type agentProfileConfig struct {
 	AgentDelegation agentDelegationProfileConfig `json:"agent_delegation"`
 	ReplyContext    replyContextProfileConfig    `json:"reply_context"`
 	PromptContext   promptContextProfileConfig   `json:"prompt_context"`
+}
+
+type identityProfileConfig struct {
+	Name        string `json:"name"`
+	DisplayName string `json:"display_name"`
 }
 
 type moderationProfileConfig struct {
@@ -2241,6 +2248,9 @@ func (w *Worker) agentProfileInstructions(ctx context.Context, run *db.Run) (str
 
 func agentProfileInstructionsFromConfig(cfg agentProfileConfig) string {
 	var lines []string
+	if name := agentDisplayName(cfg); name != "" {
+		lines = append(lines, "Agent name: "+name)
+	}
 	if strings.TrimSpace(cfg.Personality) != "" {
 		lines = append(lines, "Personality: "+strings.TrimSpace(cfg.Personality))
 	}
@@ -2263,6 +2273,15 @@ func agentProfileInstructionsFromConfig(cfg agentProfileConfig) string {
 		return ""
 	}
 	return "Agent profile:\n- " + strings.Join(lines, "\n- ")
+}
+
+func agentDisplayName(cfg agentProfileConfig) string {
+	for _, value := range []string{cfg.Identity.DisplayName, cfg.Identity.Name, cfg.DisplayName} {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 type scopeJudgement struct {

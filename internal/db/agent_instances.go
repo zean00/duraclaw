@@ -226,7 +226,7 @@ func validateAgentInstanceVersionSpec(spec AgentInstanceVersionSpec) error {
 	if err := validatePolicyConfigValues(spec.PolicyConfig); err != nil {
 		return err
 	}
-	if err := validateObjectConfig("profile_config", spec.ProfileConfig, []string{"personality", "communication_style", "language_capabilities", "domain_scope", "recommendation", "moderation", "tool_selection", "tool_evaluator", "agent_delegation", "reply_context", "prompt_context"}); err != nil {
+	if err := validateObjectConfig("profile_config", spec.ProfileConfig, []string{"display_name", "identity", "personality", "communication_style", "language_capabilities", "domain_scope", "recommendation", "moderation", "tool_selection", "tool_evaluator", "agent_delegation", "reply_context", "prompt_context"}); err != nil {
 		return err
 	}
 	if err := validateProfileConfigValues(spec.ProfileConfig); err != nil {
@@ -259,6 +259,24 @@ func validateProfileConfigValues(value any) error {
 	if raw, ok := obj["language_capabilities"]; ok {
 		if err := validateStringArray("profile_config.language_capabilities", raw); err != nil {
 			return err
+		}
+	}
+	if raw, ok := obj["display_name"]; ok {
+		if _, ok := raw.(string); !ok {
+			return fmt.Errorf("profile_config.display_name must be a string")
+		}
+	}
+	if raw, ok := obj["identity"]; ok {
+		identity, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("profile_config.identity must be an object")
+		}
+		for _, key := range []string{"name", "display_name"} {
+			if raw, ok := identity[key]; ok {
+				if _, ok := raw.(string); !ok {
+					return fmt.Errorf("profile_config.identity.%s must be a string", key)
+				}
+			}
 		}
 	}
 	if raw, ok := obj["domain_scope"]; ok {

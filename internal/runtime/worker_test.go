@@ -174,6 +174,23 @@ func TestProfileContextQueryRespectsHistoryPolicy(t *testing.T) {
 	}
 }
 
+func TestAgentProfileInstructionsIncludeAgentDisplayName(t *testing.T) {
+	got := agentProfileInstructionsFromConfig(agentProfileConfig{
+		DisplayName: "Legacy Name",
+		Identity: identityProfileConfig{
+			Name:        "Internal Name",
+			DisplayName: "Luma",
+		},
+		Personality: "calm",
+	})
+	if !strings.Contains(got, "Agent name: Luma") {
+		t.Fatalf("missing agent display name: %q", got)
+	}
+	if strings.Contains(got, "Legacy Name") || strings.Contains(got, "Internal Name") {
+		t.Fatalf("display name precedence not respected: %q", got)
+	}
+}
+
 func TestScopeContextKeepsScopeDeniedMessages(t *testing.T) {
 	denied, _ := json.Marshal(map[string]any{
 		"context_excluded": true,

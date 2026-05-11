@@ -8,6 +8,9 @@ Policy packs remain the reusable enforcement and audit mechanism. Profiles are t
 
 `profile_config` supports:
 
+- `display_name`
+- `identity.name`
+- `identity.display_name`
 - `personality`
 - `communication_style`
 - `language_capabilities`
@@ -40,6 +43,10 @@ Example:
 
 ```json
 {
+  "identity": {
+    "name": "luma",
+    "display_name": "Luma"
+  },
   "personality": "calm, direct, and precise",
   "communication_style": "concise but complete",
   "language_capabilities": ["en", "id"],
@@ -82,6 +89,8 @@ Example:
   }
 }
 ```
+
+`identity.display_name` is injected into the trusted agent profile prompt as `Agent name`. Use it when the assistant should answer identity questions such as "who are you?" with a stable product or persona name. `identity.name` is a stable internal identity fallback, and top-level `display_name` is accepted for simple profiles. Precedence is `identity.display_name`, then `identity.name`, then top-level `display_name`.
 
 Model refs are parsed as `provider/model`. If an agent is served through OpenRouter only, qualify profile model refs with `openrouter/`, for example `openrouter/openai/gpt-4.1-mini` or `openrouter/qwen/qwen3.6-35b-a3b`. Using `openai/gpt-4.1-mini` selects the Duraclaw `openai` provider, not the OpenRouter model namespace.
 
@@ -181,6 +190,10 @@ curl -X POST http://localhost:8080/admin/agent-instances/agent-1/versions \
     "name": "Support Agent v1",
     "system_instructions": "Help the user with the product.",
     "profile_config": {
+      "identity": {
+        "name": "support",
+        "display_name": "Luma"
+      },
       "personality": "calm and practical",
       "communication_style": "short answers first, details when needed",
       "language_capabilities": ["en", "id"],
@@ -208,6 +221,9 @@ model_config:
   primary: openrouter/openai/gpt-4.1-mini
 system_instructions: Help the user with the product.
 profile_config:
+  identity:
+    name: support
+    display_name: Luma
   personality: calm and practical
   communication_style: short answers first, details when needed
   language_capabilities: [en, id]

@@ -118,6 +118,10 @@ func TestValidateAgentInstanceVersionSpecRejectsEnabledRecommendationWithoutTime
 
 func TestValidateAgentInstanceVersionSpecRejectsInvalidProfileConfigValues(t *testing.T) {
 	cases := []map[string]any{
+		{"display_name": 123},
+		{"identity": "bad"},
+		{"identity": map[string]any{"name": 123}},
+		{"identity": map[string]any{"display_name": 123}},
 		{"domain_scope": map[string]any{"allowed_domains": "support"}},
 		{"moderation": map[string]any{"confidence_threshold": 2}},
 		{"moderation": map[string]any{"blocked_patterns": []string{"["}}},
