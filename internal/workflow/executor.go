@@ -143,6 +143,7 @@ type GraphRequest struct {
 	LocationContext      string         `json:"location_context,omitempty"`
 	EmailContext         string         `json:"email_context,omitempty"`
 	ReplyContext         string         `json:"reply_context,omitempty"`
+	GroupContext         string         `json:"group_context,omitempty"`
 	TraceID              string         `json:"trace_id,omitempty"`
 	TraceParent          string         `json:"traceparent,omitempty"`
 	WorkflowDefinitionID string         `json:"workflow_definition_id"`
@@ -1693,6 +1694,7 @@ func workflowPolicyFields(req GraphRequest) map[string]any {
 		"location":                req.LocationContext,
 		"email_context":           req.EmailContext,
 		"reply_context":           req.ReplyContext,
+		"whatsapp_group_context":  req.GroupContext,
 	}
 }
 
@@ -1727,6 +1729,9 @@ func workflowInitialContext(req GraphRequest) map[string]any {
 	}
 	if req.ReplyContext != "" {
 		out["reply_context"] = req.ReplyContext
+	}
+	if req.GroupContext != "" {
+		out["whatsapp_group_context"] = req.GroupContext
 	}
 	return out
 }

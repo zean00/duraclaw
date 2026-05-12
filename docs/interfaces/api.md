@@ -92,6 +92,8 @@ Duraclaw stores the normalized `X-Channel-Type` on the session. Normal recommend
 
 For `X-Channel-Type: email`, Nexus can include a `structured_data` part with `data.kind: "email_context"` containing trusted email metadata such as `subject`, `from`, `from_name`, `message_id`, `thread_id`, `in_reply_to`, and `references`. Duraclaw adds this metadata to trusted runtime context, scope and recommendation context, policies, and workflow context while keeping the email body and attachments as untrusted content. Inbound run `artifacts` are also persisted on the run, and matching `artifact_ref` parts make them available for artifact processing.
 
+For `X-Channel-Type: whatsapp_web`, Nexus can include a `structured_data` part with `data.kind: "whatsapp_group_context"` when a WhatsApp group message natively mentions the bot. Duraclaw injects the group ID, current message ID, and capped recent group transcript into trusted runtime context, scope/recommendation context, policies, and workflows. The transcript text is labeled as untrusted conversation data and is not treated as system instruction material.
+
 For non-email channels, Nexus can represent an explicit message reply with the top-level `reply_to` object above. Duraclaw also recognizes `parts[].type: "structured_data"` with `data.kind: "reply_context"` for clients that need to keep all channel metadata inside content parts.
 
 Artifacts:

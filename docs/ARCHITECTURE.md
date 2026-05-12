@@ -113,6 +113,8 @@ structured_data
 
 For email sessions, Nexus should send trusted email metadata as `structured_data` with `data.kind: "email_context"` instead of relying only on subject/body concatenation. Duraclaw reads `subject`, sender, message/thread IDs, reply references, and related fields into trusted runtime context for prompts, scope/recommendation context, policies, and workflows. Email body text, quoted thread content, signatures, and attachments remain untrusted user content.
 
+For WhatsApp Web group sessions, Nexus should store passive group messages locally and only call Duraclaw when the bot is natively mentioned. Mentioned turns can include `structured_data` with `data.kind: "whatsapp_group_context"` so Duraclaw can use a capped recent group transcript without forwarding every passive group message into ACP history.
+
 Artifact references should identify media by durable storage reference, signed URL, or object key plus metadata. Duraclaw should not depend on WhatsApp, Telegram, email, or browser-specific media URLs.
 
 Artifact reference fields:
