@@ -59,6 +59,8 @@ Useful routes:
 - `GET /acp/runs/{run_id}/events`
 - `GET /acp/runs/{run_id}/background-status`
 
+For Nexus `ACP_IMPLEMENTATION=sse`, configure Nexus with `ACP_BASE_URL` pointing at Duraclaw's ACP prefix, for example `http://localhost:8090/acp`. Duraclaw's SSE event endpoint emits strict run snapshots by default and keeps the stream open until a terminal run status; raw internal event SSE is still available with `?format=raw`.
+
 Run trace output ties together run steps, run events, model calls, tool calls, MCP calls, artifact processor calls, recommendation decisions, and policy/tool-evaluation records. Use ACP trace for a known run ID in ACP context, or admin trace when an operations UI needs to enforce customer/user ownership in the query. Tool evaluations are optional post-run audits for suspicious tool behavior; they can be enabled in the background or run manually for a specific run. Manual evaluation queues and claims the requested run's evaluation row directly, so it does not lease unrelated background evaluator work.
 
 High-volume, non-critical telemetry is buffered through `async_write_jobs` when the async writer is enabled. This includes streaming model delta run events, agent activity run events, scope-judge audit events, prompt-injection block telemetry, checkpoint sidecar observability payloads, and optional OTLP sidecars. Critical durability records remain synchronous: run state, checkpoints, model/tool/MCP call intent and completion records, policy denials, quota failures, awaiting-user transitions, outbox writes, and final responses.

@@ -66,6 +66,8 @@ Session and runs:
 - `GET /acp/sessions/{session_id}/runs/latest`
 - `GET /acp/sessions/{session_id}/runs/by-idempotency-key/{key}`
 
+`GET /acp/runs/{run_id}/events` supports JSON polling and `Accept: text/event-stream`. JSON polling returns raw Duraclaw run events. SSE defaults to a strict ACP-compatible projection for Nexus: each `data:` payload includes `id`, `session_id`, and `status`; streaming model deltas include `text`, `partial: true`, and `is_partial: true`; terminal events close the stream. Strict SSE follows by default so Nexus can open `/acp/runs/{run_id}/events` immediately after `POST /acp/runs`; pass `follow=false` to read the current page only. Use `?format=raw` for the legacy raw event SSE stream, where following still requires `follow=true`.
+
 Explicit session creation can optionally enqueue a durable greeting run:
 
 ```json

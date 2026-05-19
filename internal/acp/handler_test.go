@@ -6,6 +6,7 @@ import (
 	"duraclaw/internal/mcp"
 	"duraclaw/internal/observability"
 	"duraclaw/internal/policy"
+	"encoding/json"
 	"os"
 
 	"net/http"
@@ -124,6 +125,60 @@ func TestEventsRouteSupportsFollowSSE(t *testing.T) {
 	} {
 		if !strings.Contains(src, want) {
 			t.Fatalf("handler missing follow SSE hook %q", want)
+		}
+	}
+}
+
+func TestStrictSSEMapsModelDeltaAsPartialRunEvent(t *testing.T) {
+	run := &db.Run{ID: "run_1", SessionID: "session_1", State: "running"}
+	event := db.Event{ID: 9, RunID: run.ID, Type: "model.delta", Payload: json.RawMessage(`{"content":"hel"}`)}
+	payload, ok := NewHandler(nil).strictRunEventPayload(context.Background(), run, event)
+	if !ok {
+		t.Fatal("expected projected event")
+	}
+	if payload["id"] != "run_1" || payload["session_id"] != "session_1" || payload["status"] != "running" || payload["text"] != "hel" {
+		t.Fatalf("unexpected payload: %#v", payload)
+	}
+	if payload["partial"] != true || payload["is_partial"] != true {
+		t.Fatalf("expected partial flags: %#v", payload)
+	}
+}
+
+func TestStrictSSEAwaitPromptMatchesStrictACPByteShape(t *testing.T) {
+	run := &db.Run{ID: "run_1", SessionID: "session_1", State: "awaiting_user"}
+	event := db.Event{ID: 10, RunID: run.ID, Type: "run.awaiting_user", Payload: json.RawMessage(`{"question":"Continue?"}`)}
+	payload, ok := NewHandler(nil).strictRunEventPayload(context.Background(), run, event)
+	if !ok {
+		t.Fatal("expected projected event")
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		Await struct {
+			Prompt []byte `json:"prompt"`
+		} `json:"await"`
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(decoded.Await.Prompt), "Continue?") {
+		t.Fatalf("unexpected prompt payload: %s", decoded.Await.Prompt)
+	}
+}
+
+func TestStrictACPStatusNormalizesDuraclawStates(t *testing.T) {
+	cases := map[string]string{
+		"awaiting_user":    "awaiting",
+		"cancelled":        "canceled",
+		"expired":          "failed",
+		"leased":           "running",
+		"running_workflow": "running",
+	}
+	for in, want := range cases {
+		if got := strictACPStatus(in); got != want {
+			t.Fatalf("strictACPStatus(%q)=%q want %q", in, got, want)
 		}
 	}
 }

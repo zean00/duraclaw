@@ -3286,55 +3286,280 @@ func (h *Handler) events(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
-		w.Header().Set("Content-Type", "text/event-stream")
-		flusher, _ := w.(http.Flusher)
-		for _, event := range events {
-			writeSSEEvent(w, event)
-			after = event.ID
-		}
-		if flusher != nil {
-			flusher.Flush()
-		}
-		if r.URL.Query().Get("follow") != "true" && r.URL.Query().Get("follow") != "1" {
+		if strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("format")), "raw") {
+			h.rawEventsSSE(w, r, run, events, after, limit)
 			return
 		}
-		heartbeat := time.NewTicker(15 * time.Second)
-		poll := time.NewTicker(500 * time.Millisecond)
-		defer heartbeat.Stop()
-		defer poll.Stop()
-		for {
-			select {
-			case <-r.Context().Done():
-				return
-			case <-heartbeat.C:
-				_, _ = fmt.Fprint(w, ": keepalive\n\n")
-				if flusher != nil {
-					flusher.Flush()
-				}
-			case <-poll.C:
-				page, err := h.store.EventsPage(r.Context(), run.ID, after, limit)
-				if err != nil {
-					_, _ = fmt.Fprintf(w, "event: error\ndata: %q\n\n", err.Error())
-					if flusher != nil {
-						flusher.Flush()
-					}
-					return
-				}
-				for _, event := range page {
-					writeSSEEvent(w, event)
-					after = event.ID
-				}
-				if len(page) > 0 && flusher != nil {
-					flusher.Flush()
-				}
-			}
-		}
+		h.strictEventsSSE(w, r, run, events, after, limit)
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"events": events})
 }
 
 func writeSSEEvent(w io.Writer, event db.Event) {
 	_, _ = fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", event.ID, event.Type, event.Payload)
+}
+
+func (h *Handler) rawEventsSSE(w http.ResponseWriter, r *http.Request, _ *db.Run, events []db.Event, after int64, limit int) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	flusher, _ := w.(http.Flusher)
+	for _, event := range events {
+		writeSSEEvent(w, event)
+		after = event.ID
+	}
+	if flusher != nil {
+		flusher.Flush()
+	}
+	if r.URL.Query().Get("follow") != "true" && r.URL.Query().Get("follow") != "1" {
+		return
+	}
+	heartbeat := time.NewTicker(15 * time.Second)
+	poll := time.NewTicker(500 * time.Millisecond)
+	defer heartbeat.Stop()
+	defer poll.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-heartbeat.C:
+			_, _ = fmt.Fprint(w, ": keepalive\n\n")
+			if flusher != nil {
+				flusher.Flush()
+			}
+		case <-poll.C:
+			page, err := h.store.EventsPage(r.Context(), r.PathValue("run_id"), after, limit)
+			if err != nil {
+				writeSSEError(w, err)
+				if flusher != nil {
+					flusher.Flush()
+				}
+				return
+			}
+			for _, event := range page {
+				writeSSEEvent(w, event)
+				after = event.ID
+			}
+			if len(page) > 0 && flusher != nil {
+				flusher.Flush()
+			}
+		}
+	}
+}
+
+func (h *Handler) strictEventsSSE(w http.ResponseWriter, r *http.Request, run *db.Run, events []db.Event, after int64, limit int) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	flusher, _ := w.(http.Flusher)
+	terminal := false
+	for _, event := range events {
+		if h.writeStrictSSEEvent(r.Context(), w, run, event) {
+			terminal = true
+		}
+		after = event.ID
+	}
+	if flusher != nil {
+		flusher.Flush()
+	}
+	if terminal {
+		return
+	}
+	if isTerminalRunState(run.State) {
+		writeStrictSSEPayload(w, 0, h.strictRunSnapshot(r.Context(), run))
+		if flusher != nil {
+			flusher.Flush()
+		}
+		return
+	}
+	if strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("follow")), "false") || r.URL.Query().Get("follow") == "0" {
+		return
+	}
+	heartbeat := time.NewTicker(15 * time.Second)
+	poll := time.NewTicker(500 * time.Millisecond)
+	defer heartbeat.Stop()
+	defer poll.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-heartbeat.C:
+			_, _ = fmt.Fprint(w, ": keepalive\n\n")
+			if flusher != nil {
+				flusher.Flush()
+			}
+		case <-poll.C:
+			page, err := h.store.EventsPage(r.Context(), run.ID, after, limit)
+			if err != nil {
+				writeSSEError(w, err)
+				if flusher != nil {
+					flusher.Flush()
+				}
+				return
+			}
+			for _, event := range page {
+				if h.writeStrictSSEEvent(r.Context(), w, run, event) {
+					terminal = true
+				}
+				after = event.ID
+			}
+			if len(page) > 0 && flusher != nil {
+				flusher.Flush()
+			}
+			if terminal {
+				return
+			}
+		}
+	}
+}
+
+func (h *Handler) writeStrictSSEEvent(ctx context.Context, w io.Writer, run *db.Run, event db.Event) bool {
+	payload, ok := h.strictRunEventPayload(ctx, run, event)
+	if !ok {
+		return false
+	}
+	writeStrictSSEPayload(w, event.ID, payload)
+	status, _ := payload["status"].(string)
+	return isTerminalACPStatus(status)
+}
+
+func writeStrictSSEPayload(w io.Writer, id int64, payload map[string]any) {
+	raw, _ := json.Marshal(payload)
+	if id > 0 {
+		_, _ = fmt.Fprintf(w, "id: %d\nevent: message\ndata: %s\n\n", id, raw)
+		return
+	}
+	_, _ = fmt.Fprintf(w, "event: message\ndata: %s\n\n", raw)
+}
+
+func writeSSEError(w io.Writer, err error) {
+	raw, _ := json.Marshal(map[string]any{"status": "failed", "error": err.Error()})
+	_, _ = fmt.Fprintf(w, "event: error\ndata: %s\n\n", raw)
+}
+
+func (h *Handler) strictRunEventPayload(ctx context.Context, run *db.Run, event db.Event) (map[string]any, bool) {
+	payload := map[string]any{}
+	_ = json.Unmarshal(event.Payload, &payload)
+	out := strictRunBase(run)
+	switch event.Type {
+	case "run.queued":
+		out["status"] = "queued"
+	case "run.leased", "run.running", "workflow.running":
+		out["status"] = "running"
+	case "run.awaiting_user":
+		out["status"] = "awaiting"
+		question := firstNonEmptyStringFromAny(payload["question"], payload["body"], payload["text"])
+		if question != "" {
+			prompt, _ := json.Marshal(map[string]any{"body": question})
+			out["await"] = map[string]any{"prompt": prompt}
+		}
+	case "run.completed":
+		out["status"] = "completed"
+		h.addFinalResponseToStrictPayload(ctx, run, out)
+	case "run.completed_suppressed":
+		out["status"] = "completed"
+		out["metadata"] = map[string]any{"suppress_direct_outbound": true}
+	case "run.failed":
+		out["status"] = "failed"
+		if errText := firstNonEmptyStringFromAny(payload["error"]); errText != "" {
+			out["metadata"] = map[string]any{"error": errText}
+			out["output"] = errText
+		}
+	case "run.cancelled":
+		out["status"] = "canceled"
+	case "run.expired":
+		out["status"] = "failed"
+		out["metadata"] = map[string]any{"expired": true}
+	case "model.delta":
+		text := firstNonEmptyStringFromAny(payload["content"], payload["text"], payload["delta"])
+		if text == "" {
+			return nil, false
+		}
+		out["status"] = "running"
+		out["text"] = text
+		out["partial"] = true
+		out["is_partial"] = true
+	default:
+		return nil, false
+	}
+	return out, true
+}
+
+func strictRunBase(run *db.Run) map[string]any {
+	return map[string]any{
+		"id":         run.ID,
+		"session_id": run.SessionID,
+		"status":     strictACPStatus(run.State),
+	}
+}
+
+func (h *Handler) strictRunSnapshot(ctx context.Context, run *db.Run) map[string]any {
+	out := strictRunBase(run)
+	out["status"] = strictACPStatus(run.State)
+	if run.State == "completed" {
+		h.addFinalResponseToStrictPayload(ctx, run, out)
+	}
+	if run.Error != nil && strings.TrimSpace(*run.Error) != "" {
+		out["metadata"] = map[string]any{"error": strings.TrimSpace(*run.Error)}
+	}
+	return out
+}
+
+func (h *Handler) addFinalResponseToStrictPayload(ctx context.Context, run *db.Run, out map[string]any) {
+	if content, err := h.store.FinalMessageContent(ctx, run.ID); err == nil {
+		if text := messageContentText(content); text != "" {
+			out["output"] = text
+		}
+		if metadata := messageContentMetadata(content); len(metadata) > 0 {
+			out["metadata"] = metadata
+		}
+	}
+}
+
+func strictACPStatus(state string) string {
+	switch strings.TrimSpace(state) {
+	case "awaiting_user":
+		return "awaiting"
+	case "cancelled":
+		return "canceled"
+	case "expired":
+		return "failed"
+	case "leased", "running_workflow":
+		return "running"
+	default:
+		return strings.TrimSpace(state)
+	}
+}
+
+func isTerminalRunState(state string) bool {
+	switch strings.TrimSpace(state) {
+	case "completed", "failed", "cancelled", "expired":
+		return true
+	default:
+		return false
+	}
+}
+
+func isTerminalACPStatus(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "completed", "failed", "canceled":
+		return true
+	default:
+		return false
+	}
+}
+
+func firstNonEmptyStringFromAny(values ...any) string {
+	for _, value := range values {
+		switch v := value.(type) {
+		case string:
+			if strings.TrimSpace(v) != "" {
+				return strings.TrimSpace(v)
+			}
+		case *string:
+			if v != nil && strings.TrimSpace(*v) != "" {
+				return strings.TrimSpace(*v)
+			}
+		}
+	}
+	return ""
 }
 
 func (h *Handler) resume(w http.ResponseWriter, r *http.Request) {
