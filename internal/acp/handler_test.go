@@ -168,6 +168,42 @@ func TestStrictSSEAwaitPromptMatchesStrictACPByteShape(t *testing.T) {
 	}
 }
 
+func TestEventsStrictSSEProjectsNexusCompatiblePayloads(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	now := time.Now().UTC()
+	mock.ExpectQuery("FROM runs WHERE id=\\$1").WithArgs("run-1").
+		WillReturnRows(pgxmock.NewRows([]string{"id", "customer_id", "user_id", "agent_instance_id", "agent_instance_version_id", "session_id", "request_id", "idempotency_key", "state", "input", "error", "created_at", "updated_at", "completed_at"}).
+			AddRow("run-1", "c1", "u1", "a1", "", "s1", "req-1", "idem-1", "running", []byte(`{"text":"hi"}`), nil, now, now, nil))
+	mock.ExpectQuery("FROM run_events WHERE run_id=\\$1").WithArgs("run-1", int64(0), 500).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "run_id", "event_type", "payload", "created_at"}).
+			AddRow(int64(1), "run-1", "model.delta", []byte(`{"content":"hel"}`), now).
+			AddRow(int64(2), "run-1", "run.awaiting_user", []byte(`{"question":"Continue?"}`), now))
+
+	req := httptest.NewRequest(http.MethodGet, "/acp/runs/run-1/events?follow=false", nil)
+	req.Header.Set("X-Customer-ID", "c1")
+	req.Header.Set("Accept", "text/event-stream")
+	rec := httptest.NewRecorder()
+	NewHandler(db.NewStore(mock)).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"status":"running"`) || !strings.Contains(body, `"text":"hel"`) || !strings.Contains(body, `"partial":true`) {
+		t.Fatalf("missing strict partial event: %s", body)
+	}
+	if !strings.Contains(body, `"status":"awaiting"`) || strings.Contains(body, `"prompt":{"body"`) {
+		t.Fatalf("await prompt is not strict ACP byte encoded: %s", body)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestStrictACPStatusNormalizesDuraclawStates(t *testing.T) {
 	cases := map[string]string{
 		"awaiting_user":    "awaiting",
